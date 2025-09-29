@@ -1,5 +1,4 @@
-import { memo, useMemo } from 'react';
-import ReactFlow, { Background, Controls, MiniMap } from '@xyflow/react';
+
 import '@xyflow/react/dist/style.css';
 import type { ConversationNode } from '../lib/types';
 import { clsx } from 'clsx';
@@ -40,8 +39,6 @@ const ConversationTree = memo(({ nodes, selectedNodeId, onSelectNode }: Conversa
       bucket.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     }
 
-    const flowNodes: any[] = [];
-    const flowEdges: any[] = [];
 
     const assignPositions = (
       node: ConversationNode,
@@ -55,7 +52,7 @@ const ConversationTree = memo(({ nodes, selectedNodeId, onSelectNode }: Conversa
         id: node.id,
         type: 'default',
         position: { x, y },
-        data: node,
+
         style: {
           width: nodeWidth,
           height: nodeHeight
@@ -80,6 +77,7 @@ const ConversationTree = memo(({ nodes, selectedNodeId, onSelectNode }: Conversa
     return { flowNodes, flowEdges };
   }, [nodes]);
 
+
   return (
     <div className="relative h-full w-full rounded-2xl border border-slate-700 bg-slate-900/60">
       <ReactFlow
@@ -94,7 +92,7 @@ const ConversationTree = memo(({ nodes, selectedNodeId, onSelectNode }: Conversa
         nodesDraggable={false}
         nodesConnectable={false}
         elementsSelectable
-        onNodeClick={(_, element) => onSelectNode(element.id)}
+
       >
         <Background color="#1e293b" gap={32} size={1} />
         <MiniMap maskColor="rgba(15,23,42,0.7)" pannable zoomable />
