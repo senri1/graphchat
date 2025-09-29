@@ -18,20 +18,6 @@ npm install
 npm run dev
 ```
 
-### Running on Windows
-
-1. Install a recent [Node.js LTS build](https://nodejs.org/) for Windows. The installer includes `npm`.
-2. Open **PowerShell** (or **Command Prompt**) and navigate to the project directory, for example:
-   ```powershell
-   cd path\to\graphchat\client
-   ```
-3. Restore dependencies and start the development server:
-   ```powershell
-   npm install
-   npm run dev
-   ```
-4. Visit the printed local URL (typically `http://localhost:5173`) in your browser. Vite automatically reloads when you
-   save changes.
 
 The development server listens on port `5173` by default. Use a modern desktop or mobile browser to pan, zoom, and branch
 the conversation tree. If you are working in an offline or firewalled environment, installing dependencies from npm may

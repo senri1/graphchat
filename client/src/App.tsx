@@ -1,9 +1,5 @@
 import { useMemo } from 'react';
-import BranchComposer from './components/BranchComposer';
-import ConversationTree from './components/ConversationTree';
-import NodeContextPanel from './components/NodeContextPanel';
-import { useConversationTree } from './hooks/useConversationTree';
-import type { ConversationNode } from './lib/types';
+
 
 const buildAncestorPath = (nodes: ConversationNode[], nodeId: string | null): ConversationNode[] => {
   if (!nodeId) return [];
