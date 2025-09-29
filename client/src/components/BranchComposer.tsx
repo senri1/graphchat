@@ -30,9 +30,7 @@ const BranchComposer = ({ disabled = false, onSubmit }: BranchComposerProps) => 
           Continue or branch from the selected message
         </label>
         <p className="text-xs text-slate-400">
-          {disabled
-            ? 'Select a message bubble in the tree to decide where your new branch should begin.'
-            : 'Your follow-up will become a new branch and request a fresh assistant reply.'}
+
         </p>
       </div>
       <textarea

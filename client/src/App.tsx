@@ -1,10 +1,4 @@
 import { useMemo } from 'react';
-import BranchComposer from './components/BranchComposer';
-import ConversationTree from './components/ConversationTree';
-import NodeContextPanel from './components/NodeContextPanel';
-import StartConversation from './components/StartConversation';
-import { useConversationTree } from './hooks/useConversationTree';
-import type { ConversationNode } from './lib/types';
 
 const buildAncestorPath = (nodes: ConversationNode[], nodeId: string | null): ConversationNode[] => {
   if (!nodeId) return [];
@@ -19,25 +13,6 @@ const buildAncestorPath = (nodes: ConversationNode[], nodeId: string | null): Co
 };
 
 const App = () => {
-  const { nodes, selectedNodeId, setSelectedNodeId, createNode, resetConversation } = useConversationTree();
-
-  const selectedPath = useMemo(() => buildAncestorPath(nodes, selectedNodeId), [nodes, selectedNodeId]);
-
-  const handleStartConversation = async (message: string) => {
-    const rootNode = createNode({
-      parentId: null,
-      role: 'user',
-      content: message
-    });
-
-    const assistantNode = createNode({
-      parentId: rootNode.id,
-      role: 'assistant',
-      content: 'Assistant reply placeholder. Integrate with backend to fetch a real response.'
-    });
-
-    setSelectedNodeId(assistantNode.id);
-  };
 
   const handleBranchSubmit = async (message: string) => {
     if (!selectedNodeId) return;
@@ -47,16 +22,12 @@ const App = () => {
       content: message
     });
 
-    const assistantNode = createNode({
+
       parentId: userNode.id,
       role: 'assistant',
       content: 'Assistant reply placeholder. Integrate with backend to fetch a real response.'
     });
 
-    setSelectedNodeId(assistantNode.id);
-  };
-
-  const hasConversation = nodes.length > 0;
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
@@ -70,7 +41,7 @@ const App = () => {
           </div>
           <button
             type="button"
-            onClick={resetConversation}
+
             className="inline-flex items-center justify-center rounded-xl border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 transition hover:border-sky-500 hover:text-sky-200"
           >
             New conversation
@@ -79,29 +50,7 @@ const App = () => {
       </header>
 
       <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-4 py-6 md:px-6">
-        {!hasConversation && (
-          <div className="flex flex-1 items-center justify-center py-12">
-            <StartConversation onStart={handleStartConversation} />
-          </div>
-        )}
 
-        {hasConversation && (
-          <section className="grid flex-1 grid-cols-1 gap-6 xl:grid-cols-[2fr_1fr]">
-            <div className="flex min-h-[420px] flex-col gap-4">
-              <div className="relative flex-1 overflow-hidden">
-                <ConversationTree
-                  nodes={nodes}
-                  selectedNodeId={selectedNodeId}
-                  onSelectNode={setSelectedNodeId}
-                />
-              </div>
-              <BranchComposer disabled={!selectedNodeId} onSubmit={handleBranchSubmit} />
-            </div>
-            <div className="flex min-h-[320px] flex-col">
-              <NodeContextPanel path={selectedPath} />
-            </div>
-          </section>
-        )}
         <section className="grid grid-cols-1 gap-4 rounded-2xl border border-slate-800 bg-slate-900/50 p-4 text-sm text-slate-300 md:grid-cols-2">
           <div>
             <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Why a tree?</h2>
