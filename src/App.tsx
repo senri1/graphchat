@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
-import { Navigate, Route, Routes, useNavigate, useParams } from "react-router-dom";
+import { useEffect } from "react";
+import { Routes, Route, useNavigate, useParams } from "react-router-dom";
 import { useActions, useAppState } from "./state/store";
 import Sidebar from "./features/sidebar/Sidebar";
 import CanvasView from "./features/canvas/CanvasView";
@@ -8,63 +8,41 @@ import { useKeyboardShortcuts } from "./features/keyboard/useKeyboardShortcuts";
 
 function ChatRoute() {
   const { chatId } = useParams<{ chatId: string }>();
-  const navigate = useNavigate();
   const state = useAppState();
   const actions = useActions();
-  const hasSeededRef = useRef(false);
-
-  const explicitChat = chatId && state.chats[chatId] ? chatId : undefined;
-  const activeChat =
-    state.activeChatId && state.chats[state.activeChatId]
-      ? state.activeChatId
-      : undefined;
-  const fallbackChatId = explicitChat ?? activeChat ?? state.chatOrder[0];
 
   useEffect(() => {
-    if (!state.chatOrder.length && !hasSeededRef.current) {
-      hasSeededRef.current = true;
-      const newId = actions.createChat();
-      navigate(`/chat/${newId}`, { replace: true });
-      return;
+    if (!chatId) return;
+    if (!state.chats[chatId]) {
+      actions.setActiveChat(chatId);
+    } else if (state.activeChatId !== chatId) {
+      actions.setActiveChat(chatId);
     }
+  }, [actions, chatId, state.activeChatId, state.chats]);
 
-    if (fallbackChatId && state.activeChatId !== fallbackChatId) {
-      actions.setActiveChat(fallbackChatId);
-    }
-
-    if (!chatId && fallbackChatId) {
-      navigate(`/chat/${fallbackChatId}`, { replace: true });
-    }
-  }, [actions, chatId, fallbackChatId, navigate, state.activeChatId, state.chatOrder.length]);
-
-  const chat = fallbackChatId ? state.chats[fallbackChatId] : undefined;
-
-  useEffect(() => {
-    if (!fallbackChatId || !chat) return;
-    if (Object.keys(chat.nodes).length > 0) return;
-    const { viewport } = chat.meta;
-    const hasWindow = typeof window !== "undefined";
-    const worldX = hasWindow
-      ? (window.innerWidth / 2 - viewport.x) / viewport.zoom - 140
-      : 240;
-    const worldY = hasWindow
-      ? (window.innerHeight / 2 - viewport.y) / viewport.zoom - 80
-      : 160;
-    actions.createNode({ chatId: fallbackChatId, x: worldX, y: worldY });
-  }, [actions, chat, fallbackChatId]);
-
-  if (!fallbackChatId || !chat) {
-    return (
-      <div className="flex flex-1 items-center justify-center text-sm text-slate-400">
-        Loading chat…
-      </div>
-    );
+  if (!chatId) {
+    return <div className="flex-1" />;
   }
 
-  return <CanvasView chatId={fallbackChatId} />;
+  return <CanvasView chatId={chatId} />;
 }
 
 function AppRoutes() {
+  const navigate = useNavigate();
+  const actions = useActions();
+  const state = useAppState();
+
+  useEffect(() => {
+    if (!state.chatOrder.length) {
+      const id = actions.createChat();
+      navigate(`/chat/${id}`, { replace: true });
+      return;
+    }
+    if (!state.activeChatId) {
+      navigate(`/chat/${state.chatOrder[0]}`, { replace: true });
+    }
+  }, [actions, navigate, state.activeChatId, state.chatOrder]);
+
   useKeyboardShortcuts();
 
   return (
@@ -73,9 +51,8 @@ function AppRoutes() {
       <div className="flex flex-1 flex-col">
         <TopBar />
         <Routes>
-          <Route path="/" element={<ChatRoute />} />
           <Route path="/chat/:chatId" element={<ChatRoute />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="*" element={<div className="flex-1" />} />
         </Routes>
       </div>
     </div>

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { nanoid } from "nanoid";
-import { produce } from "immer";
+import produce from "immer";
 import type {
   AppState,
   Chat,
@@ -23,30 +23,16 @@ const initialViewport: ViewportState = {
   zoom: 0.9
 };
 
-function createChatWithRoot() {
-  const chat = createChatMeta();
-  const rootNode = createNodeSkeleton({
-    chatId: chat.meta.id,
-    x: 240,
-    y: 160,
-    role: "user"
-  });
-  chat.nodes[rootNode.id] = rootNode;
-  return { chat, rootId: rootNode.id };
-}
-
-const initialChat = createChatWithRoot();
-
 const emptyState: AppState = {
-  chats: { [initialChat.chat.meta.id]: initialChat.chat },
-  chatOrder: [initialChat.chat.meta.id],
-  activeChatId: initialChat.chat.meta.id,
-  selection: { nodeIds: [initialChat.rootId] },
+  chats: {},
+  chatOrder: [],
+  activeChatId: undefined,
+  selection: { nodeIds: [] },
   ui: {
     sidebarCollapsed: false,
     gridSnap: true,
     dragging: false,
-    editingNodeId: initialChat.rootId
+    editingNodeId: undefined
   }
 };
 
@@ -135,14 +121,13 @@ const useStore = create<StoreState>()(
           );
         },
         createChat: () => {
-          const { chat, rootId } = createChatWithRoot();
+          const chat = createChatMeta();
           set((state) => {
             const next = produce(state.history.present, (draft) => {
               draft.chats[chat.meta.id] = chat;
               draft.chatOrder.unshift(chat.meta.id);
               draft.activeChatId = chat.meta.id;
-              draft.selection = { nodeIds: [rootId] };
-              draft.ui.editingNodeId = rootId;
+              draft.selection = { nodeIds: [] };
             });
             return pushHistory(state, next);
           });
@@ -475,17 +460,6 @@ const useStore = create<StoreState>()(
             editingNodeId: undefined
           }
         };
-
-        if (!present.chatOrder.length) {
-          const { chat, rootId } = createChatWithRoot();
-          present.chats[chat.meta.id] = chat;
-          present.chatOrder = [chat.meta.id];
-          present.activeChatId = chat.meta.id;
-          present.selection = { nodeIds: [rootId] };
-          present.ui.editingNodeId = rootId;
-        } else if (!present.activeChatId || !present.chats[present.activeChatId]) {
-          present.activeChatId = present.chatOrder[0];
-        }
         return {
           history: { past: [], present, future: [] },
           actions: currentState.actions
