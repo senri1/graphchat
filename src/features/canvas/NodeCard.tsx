@@ -32,11 +32,6 @@ export default function NodeCard({
   const actions = useActions();
   const state = useAppState();
   const gridSnap = state.ui.gridSnap;
-  const chat = state.chats[node.chatId];
-  if (!chat) {
-    return null;
-  }
-  const viewport = chat.meta.viewport;
   const [isDragging, setDragging] = useState(false);
   const dragOffset = useRef({ x: 0, y: 0 });
   const resizeStart = useRef({ width: node.width, height: node.height, x: 0, y: 0 });
@@ -46,28 +41,31 @@ export default function NodeCard({
       if ((event.target as HTMLElement).closest("textarea")) return;
       event.preventDefault();
       dragOffset.current = {
-        x: event.clientX - node.x * scale - viewport.x,
-        y: event.clientY - node.y * scale - viewport.y
+        x: event.clientX - node.x * scale - state.chats[node.chatId].meta.viewport.x,
+        y: event.clientY - node.y * scale - state.chats[node.chatId].meta.viewport.y
       };
       setDragging(true);
       (event.target as HTMLElement).setPointerCapture(event.pointerId);
     },
-    [node.x, node.y, scale, viewport.x, viewport.y]
+    [node.chatId, node.x, node.y, scale, state.chats]
   );
 
   const handlePointerMove = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
       if (!isDragging) return;
       event.preventDefault();
-      const x = (event.clientX - dragOffset.current.x - viewport.x) / scale;
-      const y = (event.clientY - dragOffset.current.y - viewport.y) / scale;
+      const chat = state.chats[node.chatId];
+      const vx = chat.meta.viewport.x;
+      const vy = chat.meta.viewport.y;
+      const x = (event.clientX - dragOffset.current.x - vx) / scale;
+      const y = (event.clientY - dragOffset.current.y - vy) / scale;
       actions.setNodePosition(
         node.id,
         gridSnap ? snap(x, 8) : x,
         gridSnap ? snap(y, 8) : y
       );
     },
-    [actions, gridSnap, isDragging, node.id, scale, viewport.x, viewport.y]
+    [actions, gridSnap, isDragging, node.chatId, node.id, scale, state.chats]
   );
 
   const handlePointerUp = useCallback(
@@ -107,6 +105,8 @@ export default function NodeCard({
   }, []);
 
   const handleAskAi = useCallback(() => {
+    const chat = state.chats[node.chatId];
+    if (!chat) return;
     const messages = pathMessages(chat, node.id);
     const prompt = messages.map((m) => `${m.role}: ${m.content}`).join("\n");
     const childId = actions.createNode({
@@ -128,7 +128,7 @@ export default function NodeCard({
         actions.setNodeStatus(childId, "done");
       }
     }, 50);
-  }, [actions, chat, node]);
+  }, [actions, node, state.chats]);
 
   const roleStyles: Record<ChatNode["role"], string> = {
     user: "bg-slate-800/80 border border-slate-600",

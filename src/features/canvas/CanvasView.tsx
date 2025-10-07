@@ -15,9 +15,6 @@ export default function CanvasView({ chatId }: CanvasViewProps) {
   const state = useAppState();
   const actions = useActions();
   const chat = state.chats[chatId];
-  if (!chat) {
-    return <div className="flex-1" />;
-  }
   const viewport = chat.meta.viewport;
   const [linkingFrom, setLinkingFrom] = useState<string | undefined>();
   const [linkingPoint, setLinkingPoint] = useState<{ x: number; y: number } | undefined>();
