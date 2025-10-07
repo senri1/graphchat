@@ -8,32 +8,19 @@ import { useKeyboardShortcuts } from "./features/keyboard/useKeyboardShortcuts";
 
 function ChatRoute() {
   const { chatId } = useParams<{ chatId: string }>();
-  const navigate = useNavigate();
   const state = useAppState();
   const actions = useActions();
 
   useEffect(() => {
-    if (!chatId) {
-      if (state.chatOrder.length) {
-        navigate(`/chat/${state.chatOrder[0]}`, { replace: true });
-      }
-      return;
-    }
-
-    const chatExists = Boolean(state.chats[chatId]);
-    if (!chatExists) {
-      if (state.chatOrder.length) {
-        navigate(`/chat/${state.chatOrder[0]}`, { replace: true });
-      }
-      return;
-    }
-
-    if (state.activeChatId !== chatId) {
+    if (!chatId) return;
+    if (!state.chats[chatId]) {
+      actions.setActiveChat(chatId);
+    } else if (state.activeChatId !== chatId) {
       actions.setActiveChat(chatId);
     }
-  }, [actions, chatId, navigate, state.activeChatId, state.chatOrder, state.chats]);
+  }, [actions, chatId, state.activeChatId, state.chats]);
 
-  if (!chatId || !state.chats[chatId]) {
+  if (!chatId) {
     return <div className="flex-1" />;
   }
 
