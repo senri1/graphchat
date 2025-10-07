@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { nanoid } from "nanoid";
-import { produce } from "immer";
+import produce from "immer";
 import type {
   AppState,
   Chat,
@@ -122,19 +122,12 @@ const useStore = create<StoreState>()(
         },
         createChat: () => {
           const chat = createChatMeta();
-          const rootNode = createNodeSkeleton({
-            chatId: chat.meta.id,
-            x: 240,
-            y: 160
-          });
-          chat.nodes[rootNode.id] = rootNode;
           set((state) => {
             const next = produce(state.history.present, (draft) => {
               draft.chats[chat.meta.id] = chat;
               draft.chatOrder.unshift(chat.meta.id);
               draft.activeChatId = chat.meta.id;
-              draft.selection = { nodeIds: [rootNode.id] };
-              draft.ui.editingNodeId = rootNode.id;
+              draft.selection = { nodeIds: [] };
             });
             return pushHistory(state, next);
           });

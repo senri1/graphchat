@@ -8,47 +8,19 @@ import { useKeyboardShortcuts } from "./features/keyboard/useKeyboardShortcuts";
 
 function ChatRoute() {
   const { chatId } = useParams<{ chatId: string }>();
-  const navigate = useNavigate();
   const state = useAppState();
   const actions = useActions();
-  const chat = chatId ? state.chats[chatId] : undefined;
 
   useEffect(() => {
-    if (!chatId) {
-      if (state.chatOrder.length) {
-        navigate(`/chat/${state.chatOrder[0]}`, { replace: true });
-      }
-      return;
-    }
-
-    const chatExists = Boolean(state.chats[chatId]);
-    if (!chatExists) {
-      if (state.chatOrder.length) {
-        navigate(`/chat/${state.chatOrder[0]}`, { replace: true });
-      }
-      return;
-    }
-
-    if (state.activeChatId !== chatId) {
+    if (!chatId) return;
+    if (!state.chats[chatId]) {
+      actions.setActiveChat(chatId);
+    } else if (state.activeChatId !== chatId) {
       actions.setActiveChat(chatId);
     }
-  }, [actions, chatId, navigate, state.activeChatId, state.chatOrder, state.chats]);
+  }, [actions, chatId, state.activeChatId, state.chats]);
 
-  useEffect(() => {
-    if (!chatId || !chat) return;
-    if (Object.keys(chat.nodes).length > 0) return;
-    const { viewport } = chat.meta;
-    const hasWindow = typeof window !== "undefined";
-    const worldX = hasWindow
-      ? (window.innerWidth / 2 - viewport.x) / viewport.zoom - 140
-      : 240;
-    const worldY = hasWindow
-      ? (window.innerHeight / 2 - viewport.y) / viewport.zoom - 80
-      : 160;
-    actions.createNode({ chatId, x: worldX, y: worldY });
-  }, [actions, chat, chatId]);
-
-  if (!chatId || !chat) {
+  if (!chatId) {
     return <div className="flex-1" />;
   }
 
