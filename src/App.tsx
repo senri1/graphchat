@@ -8,82 +8,41 @@ import { useKeyboardShortcuts } from "./features/keyboard/useKeyboardShortcuts";
 
 function ChatRoute() {
   const { chatId } = useParams<{ chatId: string }>();
-  const navigate = useNavigate();
   const state = useAppState();
   const actions = useActions();
-  const chat = chatId ? state.chats[chatId] : undefined;
 
   useEffect(() => {
-    if (!chatId) {
-      if (state.chatOrder.length) {
-        navigate(`/chat/${state.chatOrder[0]}`, { replace: true });
-      }
-      return;
-    }
-
-    const chatExists = Boolean(state.chats[chatId]);
-    if (!chatExists) {
-      if (state.chatOrder.length) {
-        navigate(`/chat/${state.chatOrder[0]}`, { replace: true });
-      }
-      return;
-    }
-
-    if (state.activeChatId !== chatId) {
+    if (!chatId) return;
+    if (!state.chats[chatId]) {
+      actions.setActiveChat(chatId);
+    } else if (state.activeChatId !== chatId) {
       actions.setActiveChat(chatId);
     }
-  }, [actions, chatId, navigate, state.activeChatId, state.chatOrder, state.chats]);
+  }, [actions, chatId, state.activeChatId, state.chats]);
 
-  useEffect(() => {
-    if (!chatId || !chat) return;
-    if (Object.keys(chat.nodes).length > 0) return;
-    const { viewport } = chat.meta;
-    const hasWindow = typeof window !== "undefined";
-    const worldX = hasWindow
-      ? (window.innerWidth / 2 - viewport.x) / viewport.zoom - 140
-      : 240;
-    const worldY = hasWindow
-      ? (window.innerHeight / 2 - viewport.y) / viewport.zoom - 80
-      : 160;
-    actions.createNode({ chatId, x: worldX, y: worldY });
-  }, [actions, chat, chatId]);
-
-  if (!chatId || !chat) {
+  if (!chatId) {
     return <div className="flex-1" />;
   }
 
   return <CanvasView chatId={chatId} />;
 }
 
-function RootRedirect() {
+function AppRoutes() {
   const navigate = useNavigate();
   const actions = useActions();
   const state = useAppState();
-  const { activeChatId, chatOrder } = state;
 
   useEffect(() => {
-    let targetId = activeChatId && chatOrder.includes(activeChatId) ? activeChatId : undefined;
-
-    if (!chatOrder.length) {
-      targetId = actions.createChat();
-    } else if (!targetId) {
-      targetId = chatOrder[0];
-      actions.setActiveChat(targetId);
+    if (!state.chatOrder.length) {
+      const id = actions.createChat();
+      navigate(`/chat/${id}`, { replace: true });
+      return;
     }
-
-    if (targetId) {
-      navigate(`/chat/${targetId}`, { replace: true });
+    if (!state.activeChatId) {
+      navigate(`/chat/${state.chatOrder[0]}`, { replace: true });
     }
-  }, [actions, activeChatId, chatOrder, navigate]);
+  }, [actions, navigate, state.activeChatId, state.chatOrder]);
 
-  return (
-    <div className="flex flex-1 items-center justify-center text-sm text-slate-400">
-      Loading chat…
-    </div>
-  );
-}
-
-function AppRoutes() {
   useKeyboardShortcuts();
 
   return (
@@ -92,9 +51,8 @@ function AppRoutes() {
       <div className="flex flex-1 flex-col">
         <TopBar />
         <Routes>
-          <Route path="/" element={<RootRedirect />} />
           <Route path="/chat/:chatId" element={<ChatRoute />} />
-          <Route path="*" element={<RootRedirect />} />
+          <Route path="*" element={<div className="flex-1" />} />
         </Routes>
       </div>
     </div>
