@@ -102,3 +102,9 @@ export interface StoreActions {
   importData: (state: AppState) => void;
 }
 
+export interface SerializedState {
+  schemaVersion: number;
+  chats: Record<string, Chat>;
+  chatOrder: string[];
+  activeChatId?: string;
+}

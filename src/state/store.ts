@@ -1,11 +1,12 @@
 import { create } from "zustand";
-import { persist, type StateStorage, type StorageValue } from "zustand/middleware";
+import { persist } from "zustand/middleware";
 import { nanoid } from "nanoid";
-import { produce } from "immer";
+import produce from "immer";
 import type {
   AppState,
   Chat,
   ChatNode,
+  SerializedState,
   StoreActions,
   StoreState,
   ViewportState
@@ -15,84 +16,6 @@ import { isDescendant } from "../utils/tree";
 
 const SCHEMA_VERSION = 1;
 const STORAGE_KEY = "branch.v1";
-const STORAGE_TEST_KEY = "__branch_storage_test__";
-
-const fallbackStorage = (() => {
-  const store = new Map<string, string>();
-  return {
-    getItem: (key: string) => (store.has(key) ? store.get(key)! : null),
-    setItem: (key: string, value: string) => {
-      store.set(key, value);
-    },
-    removeItem: (key: string) => {
-      store.delete(key);
-    },
-    clear: () => {
-      store.clear();
-    },
-    key: (index: number) => Array.from(store.keys())[index] ?? null,
-    get length() {
-      return store.size;
-    }
-  } satisfies Storage;
-})();
-
-function resolveStorage(): Storage {
-  if (typeof window === "undefined") {
-    return fallbackStorage;
-  }
-  try {
-    window.localStorage.setItem(STORAGE_TEST_KEY, "1");
-    window.localStorage.removeItem(STORAGE_TEST_KEY);
-    return window.localStorage;
-  } catch (error) {
-    console.warn(
-      "Branch: falling back to in-memory storage because localStorage is unavailable.",
-      error
-    );
-    return fallbackStorage;
-  }
-}
-
-function createSafeJSONStorage<T>(getStorage: () => Storage): StateStorage {
-  let storage: Storage | undefined;
-  const get = () => {
-    if (!storage) {
-      storage = getStorage();
-    }
-    return storage;
-  };
-  return {
-    getItem: (name) => {
-      const target = get();
-      try {
-        const value = target.getItem(name);
-        if (!value) return null;
-        return JSON.parse(value) as StorageValue<T>;
-      } catch (error) {
-        console.warn("Branch: failed to parse persisted state. Resetting storage.", error);
-        try {
-          target.removeItem(name);
-        } catch (cleanupError) {
-          console.warn("Branch: failed to clear corrupted storage entry.", cleanupError);
-        }
-        return null;
-      }
-    },
-    setItem: (name, newValue) => {
-      const target = get();
-      target.setItem(name, JSON.stringify(newValue));
-    },
-    removeItem: (name) => {
-      const target = get();
-      target.removeItem(name);
-    }
-  } satisfies StateStorage;
-}
-
-function isValidDate(value?: string) {
-  return !!value && !Number.isNaN(new Date(value).getTime());
-}
 
 const initialViewport: ViewportState = {
   x: 0,
@@ -100,34 +23,18 @@ const initialViewport: ViewportState = {
   zoom: 0.9
 };
 
-function createChatWithRoot() {
-  const chat = createChatMeta();
-  const rootNode = createNodeSkeleton({
-    chatId: chat.meta.id,
-    x: 240,
-    y: 160,
-    role: "user"
-  });
-  chat.nodes[rootNode.id] = rootNode;
-  return { chat, rootId: rootNode.id };
-}
-
-const initialChat = createChatWithRoot();
-
 const emptyState: AppState = {
-  chats: { [initialChat.chat.meta.id]: initialChat.chat },
-  chatOrder: [initialChat.chat.meta.id],
-  activeChatId: initialChat.chat.meta.id,
-  selection: { nodeIds: [initialChat.rootId] },
+  chats: {},
+  chatOrder: [],
+  activeChatId: undefined,
+  selection: { nodeIds: [] },
   ui: {
     sidebarCollapsed: false,
     gridSnap: true,
     dragging: false,
-    editingNodeId: initialChat.rootId
+    editingNodeId: undefined
   }
 };
-
-const bootState = sanitizeAppState(emptyState);
 
 function createChatMeta(): Chat {
   const id = nanoid();
@@ -201,150 +108,6 @@ function createNodeSkeleton(params: {
   };
 }
 
-function sanitizeAppState(state: AppState): AppState {
-  return produce(state, (draft) => {
-    if (!draft.ui) {
-      draft.ui = {
-        sidebarCollapsed: false,
-        gridSnap: true,
-        dragging: false,
-        editingNodeId: undefined
-      };
-    }
-
-    draft.ui.sidebarCollapsed = Boolean(draft.ui.sidebarCollapsed);
-    draft.ui.gridSnap = draft.ui.gridSnap ?? true;
-    draft.ui.dragging = false;
-
-    const filteredOrder = draft.chatOrder.filter((id) => draft.chats[id]);
-    draft.chatOrder = filteredOrder;
-
-    for (const id of Object.keys(draft.chats)) {
-      if (!draft.chatOrder.includes(id)) {
-        draft.chatOrder.push(id);
-      }
-    }
-
-    if (!draft.chatOrder.length) {
-      const { chat, rootId } = createChatWithRoot();
-      draft.chats = { [chat.meta.id]: chat };
-      draft.chatOrder = [chat.meta.id];
-      draft.activeChatId = chat.meta.id;
-      draft.selection = { nodeIds: [rootId] };
-      draft.ui.editingNodeId = rootId;
-      draft.ui.sidebarCollapsed = false;
-      draft.ui.gridSnap = true;
-      draft.selection.edge = undefined;
-      return;
-    }
-
-    if (!draft.activeChatId || !draft.chats[draft.activeChatId]) {
-      draft.activeChatId = draft.chatOrder[0];
-    }
-
-    const nowIso = new Date().toISOString();
-
-    for (const chatId of draft.chatOrder) {
-      const chat = draft.chats[chatId];
-      if (!chat) continue;
-
-      if (!chat.meta.title) {
-        chat.meta.title = "Untitled chat";
-      }
-
-      if (!isValidDate(chat.meta.createdAt)) {
-        chat.meta.createdAt = nowIso;
-      }
-      if (!isValidDate(chat.meta.updatedAt)) {
-        chat.meta.updatedAt = chat.meta.createdAt;
-      }
-
-      chat.meta.viewport = chat.meta.viewport ?? { ...initialViewport };
-      if (!Number.isFinite(chat.meta.viewport.x)) chat.meta.viewport.x = 0;
-      if (!Number.isFinite(chat.meta.viewport.y)) chat.meta.viewport.y = 0;
-      if (!Number.isFinite(chat.meta.viewport.zoom)) {
-        chat.meta.viewport.zoom = initialViewport.zoom;
-      } else {
-        chat.meta.viewport.zoom = clamp(chat.meta.viewport.zoom, 0.25, 2);
-      }
-
-      let nodeIds = Object.keys(chat.nodes);
-      if (!nodeIds.length) {
-        const rootNode = createNodeSkeleton({
-          chatId: chat.meta.id,
-          x: 240,
-          y: 160,
-          role: "user"
-        });
-        chat.nodes[rootNode.id] = rootNode;
-        nodeIds = [rootNode.id];
-        chat.meta.updatedAt = rootNode.updatedAt;
-      }
-
-      for (const nodeId of nodeIds) {
-        const node = chat.nodes[nodeId];
-        if (!node) continue;
-        if (!isValidDate(node.createdAt)) {
-          node.createdAt = nowIso;
-        }
-        if (!isValidDate(node.updatedAt)) {
-          node.updatedAt = node.createdAt;
-        }
-        if (!Number.isFinite(node.x)) node.x = 0;
-        if (!Number.isFinite(node.y)) node.y = 0;
-        node.width = clamp(node.width ?? 280, 180, 1200);
-        node.height = clamp(node.height ?? 160, 80, 1000);
-        if (node.parentId && !chat.nodes[node.parentId]) {
-          node.parentId = undefined;
-        }
-      }
-
-      for (const node of Object.values(chat.nodes)) {
-        node.children = node.children.filter((childId) => chat.nodes[childId]);
-      }
-    }
-
-    const activeChat = draft.activeChatId ? draft.chats[draft.activeChatId] : undefined;
-
-    if (draft.selection.edge) {
-      const { parentId, childId } = draft.selection.edge;
-      if (!activeChat || !activeChat.nodes[parentId] || !activeChat.nodes[childId]) {
-        draft.selection.edge = undefined;
-      }
-    }
-
-    if (!draft.selection) {
-      draft.selection = { nodeIds: [] };
-    }
-
-    const validSelection = activeChat
-      ? Array.from(
-          new Set(draft.selection.nodeIds.filter((id) => Boolean(activeChat.nodes[id])))
-        )
-      : [];
-
-    if (validSelection.length) {
-      draft.selection.nodeIds = validSelection;
-    } else if (activeChat) {
-      const firstNode = Object.keys(activeChat.nodes)[0];
-      draft.selection = firstNode ? { nodeIds: [firstNode] } : { nodeIds: [] };
-    } else {
-      draft.selection = { nodeIds: [] };
-    }
-
-    if (draft.selection.nodeIds.length) {
-      if (
-        !draft.ui.editingNodeId ||
-        !draft.selection.nodeIds.includes(draft.ui.editingNodeId)
-      ) {
-        draft.ui.editingNodeId = draft.selection.nodeIds[0];
-      }
-    } else {
-      draft.ui.editingNodeId = undefined;
-    }
-  });
-}
-
 const useStore = create<StoreState>()(
   persist(
     (set, get) => {
@@ -358,14 +121,13 @@ const useStore = create<StoreState>()(
           );
         },
         createChat: () => {
-          const { chat, rootId } = createChatWithRoot();
+          const chat = createChatMeta();
           set((state) => {
             const next = produce(state.history.present, (draft) => {
               draft.chats[chat.meta.id] = chat;
               draft.chatOrder.unshift(chat.meta.id);
               draft.activeChatId = chat.meta.id;
-              draft.selection = { nodeIds: [rootId] };
-              draft.ui.editingNodeId = rootId;
+              draft.selection = { nodeIds: [] };
             });
             return pushHistory(state, next);
           });
@@ -649,14 +411,14 @@ const useStore = create<StoreState>()(
           });
         },
         importData: (appState) => {
-          set((state) => pushHistory(state, sanitizeAppState(appState)));
+          set((state) => pushHistory(state, appState));
         }
       };
 
       return {
         history: {
           past: [],
-          present: bootState,
+          present: emptyState,
           future: []
         },
         actions
@@ -665,42 +427,41 @@ const useStore = create<StoreState>()(
     {
       name: STORAGE_KEY,
       version: SCHEMA_VERSION,
-      storage: createSafeJSONStorage<StoreState>(() => resolveStorage()),
-      partialize: (state) => ({
-        history: {
-          past: [],
-          present: state.history.present,
-          future: []
-        }
-      }),
+      partialize: (state) => {
+        const present = state.history.present;
+        const serialized: SerializedState = {
+          schemaVersion: SCHEMA_VERSION,
+          chats: present.chats,
+          chatOrder: present.chatOrder,
+          activeChatId: present.activeChatId
+        };
+        return {
+          history: {
+            past: [],
+            present,
+            future: []
+          },
+          actions: state.actions,
+          ...serialized
+        } as unknown as StoreState;
+      },
       merge: (persistedState, currentState) => {
         if (!persistedState) return currentState;
-        const parsed = persistedState as Partial<StoreState> & {
-          chats?: AppState["chats"];
-          chatOrder?: AppState["chatOrder"];
-          activeChatId?: AppState["activeChatId"];
+        const parsed = persistedState as StoreState & SerializedState;
+        const present: AppState = {
+          chats: parsed.chats ?? {},
+          chatOrder: parsed.chatOrder ?? [],
+          activeChatId: parsed.activeChatId,
+          selection: { nodeIds: [] },
+          ui: {
+            sidebarCollapsed: false,
+            gridSnap: true,
+            dragging: false,
+            editingNodeId: undefined
+          }
         };
-
-        let present = parsed.history?.present;
-        if (!present) {
-          present = {
-            chats: parsed.chats ?? {},
-            chatOrder: parsed.chatOrder ?? [],
-            activeChatId: parsed.activeChatId,
-            selection: { nodeIds: [] },
-            ui: {
-              sidebarCollapsed: false,
-              gridSnap: true,
-              dragging: false,
-              editingNodeId: undefined
-            }
-          };
-        }
-
-        const sanitized = sanitizeAppState(present);
-
         return {
-          history: { past: [], present: sanitized, future: [] },
+          history: { past: [], present, future: [] },
           actions: currentState.actions
         };
       }

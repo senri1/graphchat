@@ -69,15 +69,6 @@ export default function Sidebar() {
         <ul className="space-y-1 px-2 py-2">
           {chats.map((chat) => {
             const active = location.pathname.includes(chat.meta.id);
-            let updatedLabel = "Updated just now";
-            const updatedDate = new Date(chat.meta.updatedAt);
-            if (!Number.isNaN(updatedDate.getTime())) {
-              try {
-                updatedLabel = `Updated ${formatDistanceToNow(updatedDate, { addSuffix: true })}`;
-              } catch (error) {
-                console.warn("Failed to format chat timestamp", error);
-              }
-            }
             return (
               <li key={chat.meta.id}>
                 <Link
@@ -91,7 +82,9 @@ export default function Sidebar() {
                       <ChatBubbleLeftRightIcon className="h-4 w-4" />
                       <span className="truncate">{chat.meta.title || "Untitled chat"}</span>
                     </span>
-                    <span className="mt-1 text-xs text-slate-400">{updatedLabel}</span>
+                    <span className="mt-1 text-xs text-slate-400">
+                      Updated {formatDistanceToNow(new Date(chat.meta.updatedAt), { addSuffix: true })}
+                    </span>
                   </div>
                   <button
                     type="button"
