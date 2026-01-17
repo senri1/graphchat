@@ -47,6 +47,23 @@ export default function App() {
           onClose={() => engineRef.current?.clearSelection()}
         />
       ) : null}
+      <div
+        className="controls"
+        onPointerDown={(e) => e.stopPropagation()}
+        onPointerMove={(e) => e.stopPropagation()}
+        onPointerUp={(e) => e.stopPropagation()}
+        onWheel={(e) => e.stopPropagation()}
+      >
+        <button className="controls__btn" type="button" onClick={() => engineRef.current?.spawnLatexStressTest(50)}>
+          +50 nodes
+        </button>
+        <button className="controls__btn" type="button" onClick={() => engineRef.current?.spawnLatexStressTest(200)}>
+          +200 nodes
+        </button>
+        <button className="controls__btn" type="button" onClick={() => engineRef.current?.clearStressNodes()}>
+          Reset
+        </button>
+      </div>
       <div className="hud">
         <div style={{ fontWeight: 650, marginBottom: 2 }}>GraphChatV1</div>
         <div style={{ opacity: 0.9 }}>

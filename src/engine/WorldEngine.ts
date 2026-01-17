@@ -1,7 +1,8 @@
 import { chooseNiceStep, clamp } from './math';
 import { Camera } from './Camera';
 import { InputController } from './InputController';
-import type { Rect, Vec2 } from './types';
+import { rectsIntersect, type Rect, type Vec2 } from './types';
+import { rasterizeMarkdownMathToImage } from './raster/textRaster';
 
 export type WorldEngineDebug = {
   cssW: number;
@@ -13,6 +14,20 @@ export type WorldEngineDebug = {
   interacting: boolean;
 };
 
+function fnv1a32(input: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+function fingerprintText(input: string): string {
+  const s = input ?? '';
+  return `${s.length.toString(36)}.${fnv1a32(s).toString(36)}`;
+}
+
 type DemoNodeBase = {
   id: string;
   title: string;
@@ -22,6 +37,7 @@ type TextNode = DemoNodeBase & {
   kind: 'text';
   rect: Rect;
   content: string;
+  contentHash: string;
 };
 
 type PlaceholderNode = DemoNodeBase & {
@@ -85,6 +101,36 @@ export class WorldEngine {
   private readonly minNodeW = 160;
   private readonly minNodeH = 110;
 
+  private readonly textRasterQueue: Array<{
+    key: string;
+    sig: string;
+    rasterScale: number;
+    width: number;
+    height: number;
+    source: string;
+  }> = [];
+  private textRasterQueuedKeys = new Set<string>();
+  private textRasterRunning = false;
+  private textRasterGeneration = 0;
+
+  private readonly textRasterCache = new Map<
+    string,
+    {
+      key: string;
+      sig: string;
+      rasterScale: number;
+      width: number;
+      height: number;
+      image: CanvasImageSource;
+      bitmapBytesEstimate: number;
+      readyAt: number;
+    }
+  >();
+  private textRasterCacheBytes = 0;
+  private readonly bestTextRasterKeyBySig = new Map<string, { key: string; rasterScale: number }>();
+  private readonly textRasterCacheMaxEntries = 2500;
+  private readonly textRasterCacheMaxBytes = 256 * 1024 * 1024;
+
   private readonly nodes: WorldNode[] = [
     {
       kind: 'text',
@@ -100,6 +146,7 @@ export class WorldEngine {
         '\\]\n\n' +
         '- list item\n' +
         '- emoji: :rocket:\n',
+      contentHash: '',
     },
     {
       kind: 'pdf',
@@ -115,6 +162,8 @@ export class WorldEngine {
     },
   ];
 
+  private nodeSeq = 1;
+
   constructor(opts: { canvas: HTMLCanvasElement }) {
     this.canvas = opts.canvas;
     const ctx = this.canvas.getContext('2d', { alpha: false, desynchronized: true });
@@ -126,6 +175,7 @@ export class WorldEngine {
       onInteractingChange: (v) => {
         this.interacting = v;
         this.requestRender();
+        if (!v) this.kickTextRasterQueue();
         this.emitDebug({ force: true });
       },
       onPointerDown: (p, info) => this.handlePointerDown(p, info),
@@ -134,6 +184,192 @@ export class WorldEngine {
       onPointerCancel: (info) => this.handlePointerCancel(info),
       onTap: (p, info) => this.handleTap(p, info),
     });
+
+    // Initialize hashes for seeded nodes.
+    for (const n of this.nodes) {
+      if (n.kind === 'text') n.contentHash = fingerprintText(n.content);
+    }
+  }
+
+  spawnLatexStressTest(count: number): void {
+    const n = Math.max(0, Math.min(5000, Math.floor(count)));
+    if (n === 0) return;
+
+    const center = this.camera.screenToWorld({ x: this.cssW * 0.5, y: this.cssH * 0.5 });
+    const cols = Math.max(1, Math.min(30, Math.ceil(Math.sqrt(n))));
+    const spacingX = 460;
+    const spacingY = 320;
+    const startX = center.x - (cols - 1) * 0.5 * spacingX;
+    const startY = center.y - Math.ceil(n / cols) * 0.5 * spacingY;
+
+    const heavy = (i: number) =>
+      `# Test node ${i + 1}\n\n` +
+      `Inline: \\(e^{i\\pi}+1=0\\), \\(\\sum_{k=1}^n k = \\frac{n(n+1)}{2}\\)\n\n` +
+      `\\[\n` +
+      `\\nabla \\cdot \\mathbf{E} = \\frac{\\rho}{\\varepsilon_0},\\qquad\n` +
+      `\\nabla \\times \\mathbf{E} = -\\frac{\\partial \\mathbf{B}}{\\partial t}\n` +
+      `\\]\n\n` +
+      `\\[\n` +
+      `\\int_0^1 x^2\\,dx = \\frac{1}{3},\\qquad\n` +
+      `\\prod_{j=1}^{m} (1 + x_j)\\n` +
+      `\\]\n\n` +
+      `- emoji: :rocket:\n` +
+      `- code: \`const x = 1;\`\n`;
+
+    for (let i = 0; i < n; i++) {
+      const id = `t${Date.now().toString(36)}-${(this.nodeSeq++).toString(36)}`;
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const content = heavy(i);
+      const node: TextNode = {
+        kind: 'text',
+        id,
+        rect: { x: startX + col * spacingX, y: startY + row * spacingY, w: 420, h: 260 },
+        title: 'Text node (Markdown + LaTeX)',
+        content,
+        contentHash: fingerprintText(content),
+      };
+      this.nodes.push(node);
+    }
+
+    // Close editor so the canvas is the thing being tested.
+    this.selectedNodeId = null;
+    this.editingNodeId = null;
+    this.textRasterGeneration += 1;
+
+    this.requestRender();
+    this.emitUiState();
+  }
+
+  clearStressNodes(): void {
+    const keepIds = new Set(['n1', 'n2', 'n3']);
+    const before = this.nodes.length;
+    for (let i = this.nodes.length - 1; i >= 0; i--) {
+      const node = this.nodes[i]!;
+      if (keepIds.has(node.id)) continue;
+      this.nodes.splice(i, 1);
+    }
+    if (this.nodes.length === before) return;
+    this.selectedNodeId = 'n1';
+    this.editingNodeId = 'n1';
+    this.requestRender();
+    this.emitUiState();
+  }
+
+  private closeImage(image: CanvasImageSource | null | undefined): void {
+    try {
+      (image as any)?.close?.();
+    } catch {
+      // ignore
+    }
+  }
+
+  private evictOldTextRasters(): void {
+    while (
+      this.textRasterCache.size > this.textRasterCacheMaxEntries ||
+      this.textRasterCacheBytes > this.textRasterCacheMaxBytes
+    ) {
+      const oldestKey = this.textRasterCache.keys().next().value as string | undefined;
+      if (!oldestKey) return;
+      const entry = this.textRasterCache.get(oldestKey);
+      if (entry) {
+        this.textRasterCacheBytes -= entry.bitmapBytesEstimate || 0;
+        this.closeImage(entry.image);
+      }
+      this.textRasterCache.delete(oldestKey);
+    }
+  }
+
+  private touchTextRaster(key: string): void {
+    const entry = this.textRasterCache.get(key);
+    if (!entry) return;
+    this.textRasterCache.delete(key);
+    this.textRasterCache.set(key, entry);
+  }
+
+  private enqueueTextRaster(job: {
+    key: string;
+    sig: string;
+    rasterScale: number;
+    width: number;
+    height: number;
+    source: string;
+  }): void {
+    if (!job.key) return;
+    if (this.textRasterCache.has(job.key)) return;
+    if (this.textRasterQueuedKeys.has(job.key)) return;
+    this.textRasterQueuedKeys.add(job.key);
+    this.textRasterQueue.push(job);
+  }
+
+  private kickTextRasterQueue(): void {
+    if (this.textRasterRunning) return;
+    if (this.interacting) return;
+    if (this.textRasterQueue.length === 0) return;
+    void this.runTextRasterQueue();
+  }
+
+  private async runTextRasterQueue(): Promise<void> {
+    if (this.textRasterRunning) return;
+    this.textRasterRunning = true;
+    const gen = this.textRasterGeneration;
+
+    try {
+      while (this.textRasterQueue.length > 0) {
+        if (this.interacting) return;
+        if (this.textRasterGeneration !== gen) return;
+
+        const job = this.textRasterQueue.shift();
+        if (!job) return;
+        this.textRasterQueuedKeys.delete(job.key);
+
+        if (this.textRasterCache.has(job.key)) continue;
+
+        try {
+          const res = await rasterizeMarkdownMathToImage(job.source, {
+            width: job.width,
+            height: job.height,
+            rasterScale: job.rasterScale,
+          });
+          if (this.textRasterGeneration !== gen) {
+            this.closeImage(res.image);
+            return;
+          }
+
+          const readyAt = performance.now();
+          this.textRasterCache.set(job.key, {
+            key: job.key,
+            sig: job.sig,
+            rasterScale: job.rasterScale,
+            width: job.width,
+            height: job.height,
+            image: res.image,
+            bitmapBytesEstimate: res.bitmapBytesEstimate,
+            readyAt,
+          });
+          this.textRasterCacheBytes += res.bitmapBytesEstimate || 0;
+
+          const prevBest = this.bestTextRasterKeyBySig.get(job.sig);
+          if (!prevBest || job.rasterScale >= prevBest.rasterScale) {
+            this.bestTextRasterKeyBySig.set(job.sig, { key: job.key, rasterScale: job.rasterScale });
+          }
+
+          this.evictOldTextRasters();
+          this.requestRender();
+        } catch {
+          // ignore; leave missing (LOD0 will display)
+        }
+
+        // Yield between jobs to keep the UI responsive.
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      }
+    } finally {
+      this.textRasterRunning = false;
+      if (!this.interacting && this.textRasterQueue.length > 0) {
+        // If work remains, schedule another burst.
+        this.kickTextRasterQueue();
+      }
+    }
   }
 
   start(): void {
@@ -193,6 +429,8 @@ export class WorldEngine {
     const text = typeof next === 'string' ? next : String(next ?? '');
     if (node.content === text) return;
     node.content = text;
+    node.contentHash = fingerprintText(text);
+    this.textRasterGeneration += 1;
     this.requestRender();
     this.emitUiState();
   }
@@ -209,6 +447,82 @@ export class WorldEngine {
 
   private emitUiState(): void {
     this.onUiState?.(this.getUiState());
+  }
+
+  private textContentRect(nodeRect: Rect): Rect {
+    const PAD = 14;
+    const HEADER_H = 50;
+    const x = nodeRect.x + PAD;
+    const y = nodeRect.y + HEADER_H;
+    const w = Math.max(1, nodeRect.w - PAD * 2);
+    const h = Math.max(1, nodeRect.h - HEADER_H - PAD);
+    return { x, y, w, h };
+  }
+
+  private chooseTextRasterScale(): number {
+    const ideal = (this.camera.zoom || 1) * (this.dpr || 1);
+    const cap = this.interacting ? 1 : 2;
+    const target = Math.max(0.5, Math.min(cap, ideal));
+    if (target < 0.75) return 0.5;
+    if (target < 1.5) return 1;
+    return 2;
+  }
+
+  private getBestTextRaster(sig: string): { key: string; image: CanvasImageSource } | null {
+    const best = this.bestTextRasterKeyBySig.get(sig);
+    if (!best) return null;
+    const entry = this.textRasterCache.get(best.key);
+    if (!entry) {
+      this.bestTextRasterKeyBySig.delete(sig);
+      return null;
+    }
+    this.touchTextRaster(best.key);
+    return { key: best.key, image: entry.image };
+  }
+
+  private updateTextRastersForViewport(): void {
+    const view = this.worldViewportRect({ overscan: 320 });
+    const desiredScale = this.chooseTextRasterScale();
+
+    for (const n of this.nodes) {
+      if (n.kind !== 'text') continue;
+      if (n.id === this.editingNodeId) continue;
+      if (!rectsIntersect(n.rect, view)) continue;
+
+      const contentRect = this.textContentRect(n.rect);
+      const sig = `${n.contentHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
+      const best = this.bestTextRasterKeyBySig.get(sig);
+      const hasBest = !!best && this.textRasterCache.has(best.key);
+      if (hasBest && best!.rasterScale >= desiredScale) continue;
+
+      const key = `${sig}|s${desiredScale}`;
+      if (this.textRasterCache.has(key)) {
+        this.bestTextRasterKeyBySig.set(sig, { key, rasterScale: desiredScale });
+        continue;
+      }
+
+      this.enqueueTextRaster({
+        key,
+        sig,
+        rasterScale: desiredScale,
+        width: contentRect.w,
+        height: contentRect.h,
+        source: n.content,
+      });
+    }
+
+    this.kickTextRasterQueue();
+  }
+
+  private worldViewportRect(opts?: { overscan?: number }): Rect {
+    const over = Math.max(0, Math.round(opts?.overscan ?? 0));
+    const a = this.camera.screenToWorld({ x: -over, y: -over });
+    const b = this.camera.screenToWorld({ x: this.cssW + over, y: this.cssH + over });
+    const x0 = Math.min(a.x, b.x);
+    const y0 = Math.min(a.y, b.y);
+    const x1 = Math.max(a.x, b.x);
+    const y1 = Math.max(a.y, b.y);
+    return { x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) };
   }
 
   private bringNodeToFront(nodeId: string): void {
@@ -517,10 +831,32 @@ export class WorldEngine {
 
       ctx.fillStyle = 'rgba(255,255,255,0.55)';
       ctx.font = `${12 / (this.camera.zoom || 1)}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
+
+      // Header separator.
+      ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+      ctx.lineWidth = 1 / (this.camera.zoom || 1);
+      ctx.beginPath();
+      ctx.moveTo(x + 12, y + 48);
+      ctx.lineTo(x + w - 12, y + 48);
+      ctx.stroke();
+
       if (node.kind === 'text') {
-        const line = node.content.split('\n')[0] ?? '';
-        const preview = line.replace(/^#+\s*/, '').slice(0, 46);
-        ctx.fillText(preview ? preview : `id: ${node.id}`, x + 14, y + 34);
+        const contentRect = this.textContentRect(node.rect);
+        const sig = `${node.contentHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
+        const raster = this.getBestTextRaster(sig);
+        if (raster) {
+          try {
+            ctx.drawImage(raster.image, contentRect.x, contentRect.y, contentRect.w, contentRect.h);
+          } catch {
+            // ignore; fall back to placeholder
+          }
+        } else {
+          const line = node.content.split('\n').find((s) => s.trim()) ?? '';
+          const preview = line.replace(/^#+\s*/, '').slice(0, 120);
+          ctx.fillText(preview ? preview : '…', x + 14, y + 34);
+          ctx.fillStyle = 'rgba(255,255,255,0.45)';
+          ctx.fillText('Rendering…', contentRect.x, contentRect.y);
+        }
       } else {
         ctx.fillText(`id: ${node.id}`, x + 14, y + 34);
       }
@@ -582,6 +918,7 @@ export class WorldEngine {
     this.drawGrid();
     this.drawDemoNodes();
 
+    this.updateTextRastersForViewport();
     this.drawScreenHud();
     this.emitDebug();
   }

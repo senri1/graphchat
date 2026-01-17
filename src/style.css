@@ -53,6 +53,37 @@ body {
   backdrop-filter: blur(10px);
 }
 
+.controls {
+  position: absolute;
+  left: 10px;
+  top: 64px;
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(10px);
+  pointer-events: auto;
+  user-select: none;
+  touch-action: auto;
+}
+
+.controls__btn {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(0, 0, 0, 0.25);
+  color: rgba(255, 255, 255, 0.9);
+  border-radius: 10px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.controls__btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
 .editor {
   position: absolute;
   right: 12px;
