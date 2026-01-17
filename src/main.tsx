@@ -2,6 +2,8 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import './style.css';
+import 'katex/dist/katex.min.css';
+import 'katex/dist/contrib/copy-tex.mjs';
 
 function installBrowserZoomBlockers(): void {
   if (typeof window === 'undefined') return;

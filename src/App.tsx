@@ -1,11 +1,13 @@
 import React, { useLayoutEffect, useRef, useState } from 'react';
 import { WorldEngine, type WorldEngineDebug } from './engine/WorldEngine';
+import TextNodeEditor from './components/TextNodeEditor';
 
 export default function App() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const engineRef = useRef<WorldEngine | null>(null);
   const [debug, setDebug] = useState<WorldEngineDebug | null>(null);
+  const [ui, setUi] = useState(() => ({ selectedNodeId: null as string | null, editingNodeId: null as string | null, editingText: '' }));
 
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -14,8 +16,10 @@ export default function App() {
 
     const engine = new WorldEngine({ canvas });
     engine.onDebug = setDebug;
+    engine.onUiState = setUi;
     engine.start();
     engineRef.current = engine;
+    setUi(engine.getUiState());
 
     const resize = () => {
       const rect = container.getBoundingClientRect();
@@ -36,6 +40,13 @@ export default function App() {
   return (
     <div className="app" ref={containerRef}>
       <canvas className="stage" ref={canvasRef} />
+      {ui.editingNodeId ? (
+        <TextNodeEditor
+          value={ui.editingText}
+          onChange={(next) => engineRef.current?.setEditingText(next)}
+          onClose={() => engineRef.current?.clearSelection()}
+        />
+      ) : null}
       <div className="hud">
         <div style={{ fontWeight: 650, marginBottom: 2 }}>GraphChatV1</div>
         <div style={{ opacity: 0.9 }}>
