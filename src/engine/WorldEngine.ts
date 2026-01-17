@@ -137,15 +137,118 @@ export class WorldEngine {
       id: 'n1',
       rect: { x: 80, y: 80, w: 420, h: 260 },
       title: 'Text node (Markdown + LaTeX)',
-      content:
-        '# Markdown + LaTeX\n\n' +
-        'Inline: \\(e^{i\\pi} + 1 = 0\\)\n\n' +
-        'Display:\n\n' +
-        '\\[\n' +
-        '\\int_0^1 x^2\\,dx = \\frac{1}{3}\n' +
-        '\\]\n\n' +
-        '- list item\n' +
-        '- emoji: :rocket:\n',
+      content: String.raw`Yes—here is the “one diagram” version, with the currying/product–exponential isomorphism made explicit.
+I’ll write \(T:=\mathrm{Form}^\#_P\) (the \(\to\)-free term algebra) and \(X:=\mathrm{NNF}_P\). Let \(\mathrm{Pol}:=\{+,-\}\).
+
+1) Two target algebras: pairs vs functions-of-polarity
+(A) The pair algebra \(X\times X\)
+This is Option A: interpret each formula \(\psi\) as a pair \((\psi^+,\psi^-)\).
+Operations on \(X\times X\):
+
+constants/literals (for \(A\in P\)):\[
+  A \mapsto (A,\neg A),\quad
+  \top\mapsto(\top,\bot),\quad
+  \bot\mapsto(\bot,\top)
+  \]
+negation:\[
+  \neg_{\times}(u,v) := (v,u)
+  \]
+conjunction/disjunction:\[
+  (u_1,v_1)\wedge_{\times}(u_2,v_2) := (u_1\wedge u_2,\ v_1\vee v_2),
+  \]\[
+  (u_1,v_1)\vee_{\times}(u_2,v_2) := (u_1\vee u_2,\ v_1\wedge v_2).
+  \]
+
+(B) The function (exponential) algebra \(X^{\mathrm{Pol}}\)
+This is Option B “in fold form”: interpret each formula \(\psi\) as a function \(\mathrm{Pol}\to X\), i.e. “given a polarity, produce the right NNF”.
+Operations on \(X^{\mathrm{Pol}}\) (for \(f,g:\mathrm{Pol}\to X\)):
+
+constants/literals (for \(A\in P\)):\[
+  A \mapsto f_A\text{ where }f_A(+)=A,\ f_A(-)=\neg A,
+  \]and similarly for \(\top,\bot\).
+negation flips polarity:\[
+  (\neg_{\exp} f)(\epsilon) := f(\overline{\epsilon})
+  \]
+conjunction/disjunction depend on polarity (De Morgan “built in”):\[
+  (f\wedge_{\exp} g)(+):=f(+)\wedge g(+),\qquad (f\wedge_{\exp} g)(-):=f(-)\vee g(-),
+  \]\[
+  (f\vee_{\exp} g)(+):=f(+)\vee g(+),\qquad (f\vee_{\exp} g)(-):=f(-)\wedge g(-).
+  \]
+
+
+2) The isomorphism \(X^{\mathrm{Pol}}\cong X\times X\) (product–exponential)
+Define
+\[
+\theta: X^{\mathrm{Pol}}\to X\times X,\qquad \theta(f):=(f(+),f(-)).
+\]with inverse
+\[
+\theta^{-1}:X\times X\to X^{\mathrm{Pol}},\qquad
+\theta^{-1}(u,v)(+)=u,\ \theta^{-1}(u,v)(-)=v.
+\]Key fact: \(\theta\) is not just a bijection of sets; it is an isomorphism of \(\{\neg,\wedge,\vee\}\)-algebras, i.e. it respects the interpretations above:
+\[
+\theta(\neg_{\exp} f)=\neg_{\times}(\theta(f)),
+\quad
+\theta(f\wedge_{\exp} g)=\theta(f)\wedge_{\times}\theta(g),
+\quad
+\theta(f\vee_{\exp} g)=\theta(f)\vee_{\times}\theta(g),
+\]and similarly for constants. (Each is a one-line check by evaluating at \(+\) and \(-\).)
+This is the “transport across the isomorphism” part.
+
+3) The commuting diagram (folds + currying in one place)
+Because \(T=\mathrm{Form}^\#_P\) is initial for this signature, there are unique homomorphisms (folds)
+
+\(k:T\to X^{\mathrm{Pol}}\) (Option B-as-fold), and
+\(h:T\to X\times X\) (Option A).
+
+And because \(\theta\) is an algebra homomorphism, \(\theta\circ k:T\to X\times X\) is also a homomorphism. By uniqueness of the fold into \(X\times X\), it must equal \(h\). That is exactly the commutativity:
+\[
+\boxed{h \;=\; \theta\circ k.}
+\]To include currying/uncurrying explicitly, introduce the evaluation/selection maps
+
+\(\mathrm{ev}:X^{\mathrm{Pol}}\times \mathrm{Pol}\to X\), \(\mathrm{ev}(f,\epsilon)=f(\epsilon)\),
+\(\mathrm{choose}:(X\times X)\times \mathrm{Pol}\to X\), \(\mathrm{choose}((u,v),+)=u,\ \mathrm{choose}((u,v),-)=v\).
+
+Then \(\mathrm{ev}\) corresponds to \(\mathrm{choose}\) through \(\theta\):
+\[
+\mathrm{ev} \;=\; \mathrm{choose}\circ(\theta\times \mathrm{id}_{\mathrm{Pol}}).
+\]Now the single big commutative diagram is:
+\[
+\begin{array}{ccccc}
+T\times \mathrm{Pol}
+& \xrightarrow{\ k\times \mathrm{id}\ }
+& X^{\mathrm{Pol}}\times \mathrm{Pol}
+& \xrightarrow{\ \mathrm{ev}\ }
+& X
+\\
+\Big\| & & \Big\downarrow{\ \theta\times \mathrm{id}\ } & & \Big\|
+\\
+T\times \mathrm{Pol}
+& \xrightarrow{\ h\times \mathrm{id}\ }
+& (X\times X)\times \mathrm{Pol}
+& \xrightarrow{\ \mathrm{choose}\ }
+& X
+\end{array}
+\]Reading it:
+
+Top route: compute the fold \(k(\varphi)\in X^{\mathrm{Pol}}\), then uncurry by feeding a polarity \(\epsilon\) via \(\mathrm{ev}\).
+Bottom route: compute the fold \(h(\varphi)\in X\times X\), then select a component via \(\mathrm{choose}\).
+The square says these are the same computation because \(X^{\mathrm{Pol}}\cong X\times X\).
+
+In particular, the actual NNF you want is
+\[
+\mathrm{NNF}(\varphi) = \mathrm{ev}(k(\varphi),+) = \mathrm{choose}(h(\varphi),+)=\pi_1(h(\varphi)).
+\]
+What this shows conceptually
+
+“Option B” is the curried view: a fold into an exponential \(X^{\mathrm{Pol}}\).
+“Option A” is the same fold after transporting along the canonical isomorphism \(X^{\{+,-\}}\cong X\times X\).
+The fact you observed about identical traces is exactly this diagram: demanding only the \(+\) output corresponds to evaluating at \(+\) after currying, or projecting the first component after the product isomorphism.
+
+If you want, I can also write the hom-set adjunction statement explicitly here:
+\[
+\mathrm{Hom}(T\times \mathrm{Pol},X)\ \cong\ \mathrm{Hom}(T,X^{\mathrm{Pol}})
+\]and show that the uncurried map \((\varphi,\epsilon)\mapsto \mathrm{nnf}(\varphi,\epsilon)\) corresponds under this bijection to the fold \(k:T\to X^{\mathrm{Pol}}\)."
+`,
       contentHash: '',
     },
     {
@@ -224,7 +327,7 @@ export class WorldEngine {
       const node: TextNode = {
         kind: 'text',
         id,
-        rect: { x: startX + col * spacingX, y: startY + row * spacingY, w: 420, h: 260 },
+        rect: { x: startX + col * spacingX, y: startY + row * spacingY, w: 1000, h: 2000 },
         title: 'Text node (Markdown + LaTeX)',
         content,
         contentHash: fingerprintText(content),
