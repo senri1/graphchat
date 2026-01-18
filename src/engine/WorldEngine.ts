@@ -1575,8 +1575,33 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     }
 
     const textEl = overlay.getTextLayerElement();
+
+    // Only update the caret when the pointer is *actually over* a text span.
+    // `caretRangeFromPoint` will otherwise snap to "nearest" text even when the
+    // pointer is in whitespace (e.g. right margin / between paragraphs), which
+    // causes large unintended selection jumps.
+    const hitSpan = overlay.withPointerEventsEnabled(() => {
+      try {
+        const hit = document.elementFromPoint(point.x, point.y) as Element | null;
+        return hit?.closest?.('span[role="presentation"]') ?? null;
+      } catch {
+        return null;
+      }
+    });
+    if (!hitSpan || !textEl.contains(hitSpan)) return;
+
     const caret = this.caretRangeFromClientPointForPdfLod2(point.x, point.y);
     if (!caret || !textEl.contains(caret.startContainer)) return;
+
+    // `caretRangeFromPoint` can return a caret on the text-layer container itself when
+    // hovering in whitespace (e.g. right margin / between lines). Treat that as "no caret"
+    // to avoid selection jumps and huge highlight rects.
+    const caretContainerEl =
+      caret.startContainer.nodeType === Node.ELEMENT_NODE
+        ? (caret.startContainer as Element)
+        : (((caret.startContainer as any).parentElement as Element | null) ?? null);
+    const caretSpan = caretContainerEl?.closest?.('span[role="presentation"]') ?? null;
+    if (!caretSpan || !textEl.contains(caretSpan)) return;
 
     if (!this.pdfSelectAnchor) {
       this.pdfSelectAnchor = caret;

@@ -14,6 +14,30 @@ function clamp(v: number, min: number, max: number): number {
   return v;
 }
 
+function caretRangeFromClientPoint(doc: Document, clientX: number, clientY: number): Range | null {
+  const anyDoc = doc as any;
+  if (typeof anyDoc?.caretRangeFromPoint === 'function') {
+    try {
+      return anyDoc.caretRangeFromPoint(clientX, clientY) as Range | null;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof anyDoc?.caretPositionFromPoint === 'function') {
+    try {
+      const pos = anyDoc.caretPositionFromPoint(clientX, clientY) as { offsetNode?: Node; offset?: number } | null;
+      if (!pos?.offsetNode || typeof pos.offset !== 'number') return null;
+      const range = doc.createRange();
+      range.setStart(pos.offsetNode, pos.offset);
+      range.collapse(true);
+      return range;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 async function writeClipboardText(text: string): Promise<boolean> {
   const t = (text ?? '').toString();
   if (!t) return false;
@@ -69,6 +93,18 @@ function extractPlainTextFromRange(baseRange: Range): string {
 }
 
 const PDF_TEXT_LAYER_CSS = `
+.gc-pdfTextLod2{
+  --scale-factor:1;
+}
+.gc-pdfTextLod2 [data-main-rotation="90"]{
+  transform:rotate(90deg) translateY(-100%);
+}
+.gc-pdfTextLod2 [data-main-rotation="180"]{
+  transform:rotate(180deg) translate(-100%, -100%);
+}
+.gc-pdfTextLod2 [data-main-rotation="270"]{
+  transform:rotate(270deg) translateX(-100%);
+}
 .gc-pdfTextLod2 .textLayer{
   position:absolute;
   text-align:initial;
@@ -77,11 +113,15 @@ const PDF_TEXT_LAYER_CSS = `
   opacity:1;
   line-height:1;
   -webkit-text-size-adjust:none;
+  -moz-text-size-adjust:none;
   text-size-adjust:none;
   forced-color-adjust:none;
   transform-origin:0 0;
   caret-color:CanvasText;
   z-index:0;
+}
+.gc-pdfTextLod2 .textLayer.highlighting{
+  touch-action:none;
 }
 .gc-pdfTextLod2 .textLayer :is(span,br){
   color:transparent;
@@ -90,10 +130,24 @@ const PDF_TEXT_LAYER_CSS = `
   cursor:text;
   transform-origin:0% 0%;
 }
+.gc-pdfTextLod2 .textLayer > :not(.markedContent),
+.gc-pdfTextLod2 .textLayer .markedContent span:not(.markedContent){
+  z-index:1;
+}
+.gc-pdfTextLod2 .textLayer span.markedContent{
+  top:0;
+  height:0;
+}
 .gc-pdfTextLod2 .textLayer span[role="img"]{
   -webkit-user-select:none;
   user-select:none;
   cursor:default;
+}
+.gc-pdfTextLod2 .textLayer br::selection{
+  background:transparent;
+}
+.gc-pdfTextLod2 .textLayer br::-moz-selection{
+  background:transparent;
 }
 .gc-pdfTextLod2 .textLayer ::selection{
   background:rgba(0, 0, 255, 0.25);
@@ -123,7 +177,11 @@ export class PdfTextLod2Overlay {
   private lastZoom = 1;
   private menuText: string | null = null;
   private interactive = false;
-  private nativePointerId: number | null = null;
+  private selectPointerId: number | null = null;
+  private selectAnchor: Range | null = null;
+  private selectRange: Range | null = null;
+  private selectLastClient: { x: number; y: number } | null = null;
+  private selectRaf: number | null = null;
 
   private textLayer: TextLayer | null = null;
   private textLayerReadyKey: string | null = null;
@@ -152,40 +210,169 @@ export class PdfTextLod2Overlay {
     if ((e.pointerType || 'mouse') !== 'mouse') return;
     if (e.button !== 0) return;
     e.stopPropagation();
-    this.nativePointerId = e.pointerId;
+    e.preventDefault();
+
+    // Custom selection (instead of native DOM selection) to avoid browser "snap"
+    // issues when dragging across PDF whitespace.
+    this.selectPointerId = e.pointerId;
+    this.selectAnchor = null;
+    this.selectRange = null;
+    this.selectLastClient = { x: e.clientX, y: e.clientY };
+    if (this.selectRaf != null) {
+      try {
+        cancelAnimationFrame(this.selectRaf);
+      } catch {
+        // ignore
+      }
+      this.selectRaf = null;
+    }
     this.clearHighlights();
     this.closeMenu({ suppressCallback: true });
 
     try {
+      window.getSelection?.()?.removeAllRanges();
+    } catch {
+      // ignore
+    }
+
+    try {
+      (this.root as any).setPointerCapture?.(e.pointerId);
+    } catch {
+      // ignore
+    }
+
+    try {
+      document.addEventListener('pointermove', this.onNativePointerMoveCapture, true);
       document.addEventListener('pointerup', this.onNativePointerUpCapture, true);
       document.addEventListener('pointercancel', this.onNativePointerCancelCapture, true);
     } catch {
       // ignore
     }
+
+    this.schedulePointerSelectionUpdate();
   };
 
-  private finishNativeSelection = () => {
-    requestAnimationFrame(() => {
-      const sel = window.getSelection?.() ?? null;
-      if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+  private updatePointerSelectionFromLastPoint(): void {
+    if (typeof document === 'undefined') return;
+    const point = this.selectLastClient;
+    if (!point) return;
 
-      const anchor = sel.anchorNode;
-      const focus = sel.focusNode;
-      if (!anchor || !focus) return;
-      if (!this.textLayerEl.contains(anchor) || !this.textLayerEl.contains(focus)) return;
+    // Only update when directly over a text span; avoid caret "nearest" snapping in whitespace.
+    const hitSpan = (() => {
+      try {
+        const hit = document.elementFromPoint(point.x, point.y) as Element | null;
+        return hit?.closest?.('span[role="presentation"]') ?? null;
+      } catch {
+        return null;
+      }
+    })();
+    if (!hitSpan || !this.textLayerEl.contains(hitSpan)) return;
 
-      const range = (() => {
-        try {
-          return sel.getRangeAt(0).cloneRange();
-        } catch {
-          return null;
-        }
-      })();
-      if (!range) return;
+    const caret = caretRangeFromClientPoint(document, point.x, point.y);
+    if (!caret || !this.textLayerEl.contains(caret.startContainer)) return;
 
-      const text = extractPlainTextFromRange(range);
-      if (!text) return;
+    const caretContainerEl =
+      caret.startContainer.nodeType === Node.ELEMENT_NODE
+        ? (caret.startContainer as Element)
+        : (((caret.startContainer as any).parentElement as Element | null) ?? null);
+    const caretSpan = caretContainerEl?.closest?.('span[role="presentation"]') ?? null;
+    if (!caretSpan || !this.textLayerEl.contains(caretSpan)) return;
 
+    if (!this.selectAnchor) {
+      try {
+        this.selectAnchor = caret.cloneRange();
+      } catch {
+        this.selectAnchor = caret;
+      }
+      this.selectRange = null;
+      this.clearHighlights();
+      return;
+    }
+
+    let forward = true;
+    try {
+      forward = this.selectAnchor.compareBoundaryPoints(Range.START_TO_START, caret) <= 0;
+    } catch {
+      forward = true;
+    }
+
+    const range = document.createRange();
+    if (forward) {
+      range.setStart(this.selectAnchor.startContainer, this.selectAnchor.startOffset);
+      range.setEnd(caret.startContainer, caret.startOffset);
+    } else {
+      range.setStart(caret.startContainer, caret.startOffset);
+      range.setEnd(this.selectAnchor.startContainer, this.selectAnchor.startOffset);
+    }
+
+    this.selectRange = range;
+
+    const contentRect = this.textLayerEl.getBoundingClientRect();
+    const z = Math.max(0.01, this.lastZoom || 1);
+    const rects: HighlightRect[] = Array.from(range.getClientRects())
+      .map((r) => ({
+        left: (r.left - contentRect.left) / z,
+        top: (r.top - contentRect.top) / z,
+        width: r.width / z,
+        height: r.height / z,
+      }))
+      .filter((r) => r.width > 0.5 && r.height > 0.5);
+
+    this.setHighlightRects(rects);
+  }
+
+  private schedulePointerSelectionUpdate(): void {
+    if (this.selectRaf != null) return;
+    this.selectRaf = requestAnimationFrame(() => {
+      this.selectRaf = null;
+      this.updatePointerSelectionFromLastPoint();
+    });
+  }
+
+  private readonly onNativePointerMoveCapture = (e: PointerEvent) => {
+    if ((e.pointerType || 'mouse') !== 'mouse') return;
+    if (this.selectPointerId == null || this.selectPointerId !== e.pointerId) return;
+    e.stopPropagation();
+    e.preventDefault();
+    this.selectLastClient = { x: e.clientX, y: e.clientY };
+    this.schedulePointerSelectionUpdate();
+  };
+
+  private readonly onNativePointerUpCapture = (e: PointerEvent) => {
+    if ((e.pointerType || 'mouse') !== 'mouse') return;
+    if (this.selectPointerId == null || this.selectPointerId !== e.pointerId) return;
+    e.stopPropagation();
+    e.preventDefault();
+    this.selectPointerId = null;
+
+    try {
+      document.removeEventListener('pointermove', this.onNativePointerMoveCapture, true);
+      document.removeEventListener('pointerup', this.onNativePointerUpCapture, true);
+      document.removeEventListener('pointercancel', this.onNativePointerCancelCapture, true);
+    } catch {
+      // ignore
+    }
+
+    try {
+      (this.root as any).releasePointerCapture?.(e.pointerId);
+    } catch {
+      // ignore
+    }
+
+    this.selectLastClient = { x: e.clientX, y: e.clientY };
+    if (this.selectRaf != null) {
+      try {
+        cancelAnimationFrame(this.selectRaf);
+      } catch {
+        // ignore
+      }
+      this.selectRaf = null;
+    }
+    this.updatePointerSelectionFromLastPoint();
+
+    const range = this.selectRange;
+    const text = range ? extractPlainTextFromRange(range) : '';
+    if (range && text) {
       const rect = (() => {
         try {
           const rects = Array.from(range.getClientRects());
@@ -194,37 +381,50 @@ export class PdfTextLod2Overlay {
           return null;
         }
       })();
-      if (!rect) return;
-
-      this.openMenu({ anchorRect: rect, text });
-    });
-  };
-
-  private readonly onNativePointerUpCapture = (e: PointerEvent) => {
-    if (!this.interactive) return;
-    if ((e.pointerType || 'mouse') !== 'mouse') return;
-    if (this.nativePointerId == null || this.nativePointerId !== e.pointerId) return;
-    this.nativePointerId = null;
-
-    try {
-      document.removeEventListener('pointerup', this.onNativePointerUpCapture, true);
-      document.removeEventListener('pointercancel', this.onNativePointerCancelCapture, true);
-    } catch {
-      // ignore
+      if (rect) {
+        this.openMenu({ anchorRect: rect, text });
+      } else {
+        this.clearHighlights();
+        this.closeMenu({ suppressCallback: true });
+      }
+    } else {
+      this.clearHighlights();
+      this.closeMenu({ suppressCallback: true });
     }
 
-    this.finishNativeSelection();
+    this.selectAnchor = null;
+    this.selectRange = null;
+    this.selectLastClient = null;
   };
 
   private readonly onNativePointerCancelCapture = (e: PointerEvent) => {
-    if (this.nativePointerId == null || this.nativePointerId !== e.pointerId) return;
-    this.nativePointerId = null;
+    if (this.selectPointerId == null || this.selectPointerId !== e.pointerId) return;
+    this.selectPointerId = null;
     try {
+      document.removeEventListener('pointermove', this.onNativePointerMoveCapture, true);
       document.removeEventListener('pointerup', this.onNativePointerUpCapture, true);
       document.removeEventListener('pointercancel', this.onNativePointerCancelCapture, true);
     } catch {
       // ignore
     }
+    try {
+      (this.root as any).releasePointerCapture?.(e.pointerId);
+    } catch {
+      // ignore
+    }
+    if (this.selectRaf != null) {
+      try {
+        cancelAnimationFrame(this.selectRaf);
+      } catch {
+        // ignore
+      }
+      this.selectRaf = null;
+    }
+    this.selectAnchor = null;
+    this.selectRange = null;
+    this.selectLastClient = null;
+    this.clearHighlights();
+    this.closeMenu({ suppressCallback: true });
   };
 
   constructor(opts: { host: HTMLElement; onRequestCloseSelection?: () => void; onTextLayerReady?: () => void }) {
@@ -336,6 +536,7 @@ export class PdfTextLod2Overlay {
     try {
       document.removeEventListener('pointerdown', this.onDocPointerDownCapture, true);
       window.removeEventListener('keydown', this.onKeyDown);
+      document.removeEventListener('pointermove', this.onNativePointerMoveCapture, true);
       document.removeEventListener('pointerup', this.onNativePointerUpCapture, true);
       document.removeEventListener('pointercancel', this.onNativePointerCancelCapture, true);
     } catch {
@@ -436,6 +637,12 @@ export class PdfTextLod2Overlay {
       if (!res) return;
       if (this.renderToken !== token) return;
 
+      try {
+        this.textLayerEl.style.setProperty('--scale-factor', String(res.viewport.scale || 1));
+      } catch {
+        // ignore
+      }
+
       const tl = new TextLayer({
         textContentSource: res.textContentSource,
         container: this.textLayerEl,
@@ -521,7 +728,25 @@ export class PdfTextLod2Overlay {
     this.visiblePageNumber = null;
     this.mode = null;
     this.interactive = false;
-    this.nativePointerId = null;
+    this.selectPointerId = null;
+    this.selectAnchor = null;
+    this.selectRange = null;
+    this.selectLastClient = null;
+    if (this.selectRaf != null) {
+      try {
+        cancelAnimationFrame(this.selectRaf);
+      } catch {
+        // ignore
+      }
+      this.selectRaf = null;
+    }
+    try {
+      document.removeEventListener('pointermove', this.onNativePointerMoveCapture, true);
+      document.removeEventListener('pointerup', this.onNativePointerUpCapture, true);
+      document.removeEventListener('pointercancel', this.onNativePointerCancelCapture, true);
+    } catch {
+      // ignore
+    }
     this.renderToken += 1;
     this.clearTextLayer();
     this.clearHighlights();
