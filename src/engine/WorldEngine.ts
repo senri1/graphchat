@@ -47,6 +47,16 @@ type PlaceholderNode = DemoNodeBase & {
 
 type WorldNode = TextNode | PlaceholderNode;
 
+type TextRasterJob = {
+  nodeId: string;
+  key: string;
+  sig: string;
+  rasterScale: number;
+  width: number;
+  height: number;
+  source: string;
+};
+
 export type WorldEngineUiState = {
   selectedNodeId: string | null;
   editingNodeId: string | null;
@@ -101,15 +111,7 @@ export class WorldEngine {
   private readonly minNodeW = 160;
   private readonly minNodeH = 110;
 
-  private readonly textRasterQueue: Array<{
-    key: string;
-    sig: string;
-    rasterScale: number;
-    width: number;
-    height: number;
-    source: string;
-  }> = [];
-  private textRasterQueuedKeys = new Set<string>();
+  private readonly textRasterQueueByNodeId = new Map<string, TextRasterJob>();
   private textRasterRunning = false;
   private textRasterGeneration = 0;
 
@@ -386,25 +388,18 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.textRasterCache.set(key, entry);
   }
 
-  private enqueueTextRaster(job: {
-    key: string;
-    sig: string;
-    rasterScale: number;
-    width: number;
-    height: number;
-    source: string;
-  }): void {
-    if (!job.key) return;
+  private enqueueTextRaster(job: TextRasterJob): void {
+    if (!job.nodeId || !job.key) return;
     if (this.textRasterCache.has(job.key)) return;
-    if (this.textRasterQueuedKeys.has(job.key)) return;
-    this.textRasterQueuedKeys.add(job.key);
-    this.textRasterQueue.push(job);
+    const prev = this.textRasterQueueByNodeId.get(job.nodeId);
+    if (prev && prev.key === job.key) return;
+    this.textRasterQueueByNodeId.set(job.nodeId, job);
   }
 
   private kickTextRasterQueue(): void {
     if (this.textRasterRunning) return;
     if (this.interacting) return;
-    if (this.textRasterQueue.length === 0) return;
+    if (this.textRasterQueueByNodeId.size === 0) return;
     void this.runTextRasterQueue();
   }
 
@@ -414,13 +409,14 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const gen = this.textRasterGeneration;
 
     try {
-      while (this.textRasterQueue.length > 0) {
+      while (this.textRasterQueueByNodeId.size > 0) {
         if (this.interacting) return;
         if (this.textRasterGeneration !== gen) return;
 
-        const job = this.textRasterQueue.shift();
-        if (!job) return;
-        this.textRasterQueuedKeys.delete(job.key);
+        const next = this.textRasterQueueByNodeId.entries().next();
+        if (next.done) return;
+        const [nodeId, job] = next.value;
+        this.textRasterQueueByNodeId.delete(nodeId);
 
         if (this.textRasterCache.has(job.key)) continue;
 
@@ -459,12 +455,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           // ignore; leave missing (LOD0 will display)
         }
 
-        // Yield between jobs to keep the UI responsive.
+        // Yield between rasterizations to keep the UI responsive.
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       }
     } finally {
       this.textRasterRunning = false;
-      if (!this.interacting && this.textRasterQueue.length > 0) {
+      if (!this.interacting && this.textRasterQueueByNodeId.size > 0) {
         // If work remains, schedule another burst.
         this.kickTextRasterQueue();
       }
@@ -582,6 +578,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   private updateTextRastersForViewport(): void {
     const view = this.worldViewportRect({ overscan: 320 });
     const desiredScale = this.chooseTextRasterScale();
+    const desiredNodeIds = new Set<string>();
 
     for (const n of this.nodes) {
       if (n.kind !== 'text') continue;
@@ -600,7 +597,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         continue;
       }
 
+      desiredNodeIds.add(n.id);
       this.enqueueTextRaster({
+        nodeId: n.id,
         key,
         sig,
         rasterScale: desiredScale,
@@ -608,6 +607,14 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         height: contentRect.h,
         source: n.content,
       });
+    }
+
+    // Drop any queued rasters that are no longer needed for the current viewport
+    // (prevents long "catch-up" bursts after panning/zooming/resizing).
+    if (this.textRasterQueueByNodeId.size > 0) {
+      for (const nodeId of this.textRasterQueueByNodeId.keys()) {
+        if (!desiredNodeIds.has(nodeId)) this.textRasterQueueByNodeId.delete(nodeId);
+      }
     }
 
     this.kickTextRasterQueue();
