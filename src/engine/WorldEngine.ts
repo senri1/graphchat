@@ -6,7 +6,9 @@ import { rasterizeMarkdownMathToImage } from './raster/textRaster';
 import { renderMarkdownMath } from '../markdown/renderMarkdownMath';
 import { normalizeMathDelimitersFromCopyTex } from '../markdown/mathDelimiters';
 import { TextLod2Overlay, type HighlightRect, type TextLod2Mode } from './TextLod2Overlay';
+import { PdfTextLod2Overlay, type HighlightRect as PdfHighlightRect } from './PdfTextLod2Overlay';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
+import type { PDFPageProxy, PageViewport } from 'pdfjs-dist';
 import { loadPdfDocument } from './pdf/pdfjs';
 
 export type WorldEngineDebug = {
@@ -234,7 +236,15 @@ type ActiveTextSelectGesture = {
   nodeId: string;
 };
 
-type ActiveGesture = ActiveNodeGesture | ActiveInkGesture | ActiveTextSelectGesture;
+type ActivePdfTextSelectGesture = {
+  kind: 'pdf-text-select';
+  pointerId: number;
+  nodeId: string;
+  token: number;
+  pageNumber: number;
+};
+
+type ActiveGesture = ActiveNodeGesture | ActiveInkGesture | ActiveTextSelectGesture | ActivePdfTextSelectGesture;
 
 export class WorldEngine {
   private readonly canvas: HTMLCanvasElement;
@@ -274,6 +284,17 @@ export class WorldEngine {
   private textSelectRaf: number | null = null;
 
   private hoverTextNodeId: string | null = null;
+  private hoverPdfPage: { nodeId: string; token: number; pageNumber: number } | null = null;
+
+  private pdfTextLod2: PdfTextLod2Overlay | null = null;
+  private pdfLod2Target: { nodeId: string; token: number; pageNumber: number } | null = null;
+
+  private pdfSelectTarget: { nodeId: string; token: number; pageNumber: number } | null = null;
+  private pdfSelectPointerId: number | null = null;
+  private pdfSelectAnchor: Range | null = null;
+  private pdfSelectRange: Range | null = null;
+  private pdfSelectLastClient: { x: number; y: number } | null = null;
+  private pdfSelectRaf: number | null = null;
 
   private readonly resizeHandleDrawPx = 12;
   private readonly resizeHandleHitPx = 22;
@@ -1000,11 +1021,17 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     this.input.dispose();
     this.clearTextSelection({ suppressOverlayCallback: true });
+    this.clearPdfTextSelection({ suppressOverlayCallback: true });
     this.textResizeHold = null;
     this.textLod2Target = null;
+    this.pdfLod2Target = null;
     if (this.textLod2) {
       this.textLod2.dispose();
       this.textLod2 = null;
+    }
+    if (this.pdfTextLod2) {
+      this.pdfTextLod2.dispose();
+      this.pdfTextLod2 = null;
     }
     for (const state of this.pdfStateByNodeId.values()) {
       try {
@@ -1043,7 +1070,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     const world = this.camera.screenToWorld(p);
     const hit = this.findTopmostNodeAtWorld(world);
-    let nextHover: string | null = null;
+    let nextTextHover: string | null = null;
+    let nextPdfHover: { nodeId: string; token: number; pageNumber: number } | null = null;
 
     if (hit && hit.kind === 'text') {
       const contentRect = this.textContentRect(hit.rect);
@@ -1052,11 +1080,27 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         world.x <= contentRect.x + contentRect.w &&
         world.y >= contentRect.y &&
         world.y <= contentRect.y + contentRect.h;
-      if (inContent) nextHover = hit.id;
+      if (inContent) nextTextHover = hit.id;
+    } else if (hit && hit.kind === 'pdf') {
+      const state = this.pdfStateByNodeId.get(hit.id);
+      if (hit.status === 'ready' && state && state.token) {
+        const contentRect = this.textContentRect(hit.rect);
+        const inContent =
+          world.x >= contentRect.x &&
+          world.x <= contentRect.x + contentRect.w &&
+          world.y >= contentRect.y &&
+          world.y <= contentRect.y + contentRect.h;
+        if (inContent) {
+          const pageHit = this.findPdfPageAtWorld(hit, state, world);
+          if (pageHit) nextPdfHover = { nodeId: hit.id, token: state.token, pageNumber: pageHit.pageNumber };
+        }
+      }
     }
 
-    if (nextHover !== this.hoverTextNodeId) {
-      this.hoverTextNodeId = nextHover;
+    const changed = nextTextHover !== this.hoverTextNodeId || nextPdfHover?.pageNumber !== this.hoverPdfPage?.pageNumber || nextPdfHover?.nodeId !== this.hoverPdfPage?.nodeId || nextPdfHover?.token !== this.hoverPdfPage?.token;
+    if (changed) {
+      this.hoverTextNodeId = nextTextHover;
+      this.hoverPdfPage = nextPdfHover;
       this.requestRender();
     }
   };
@@ -1175,6 +1219,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const changed = this.selectedNodeId != null || this.editingNodeId != null;
     this.selectedNodeId = null;
     this.editingNodeId = null;
+    this.clearTextSelection({ suppressOverlayCallback: true });
+    this.clearPdfTextSelection({ suppressOverlayCallback: true });
     if (changed) {
       this.requestRender();
       this.emitUiState();
@@ -1210,6 +1256,25 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return this.textLod2;
   }
 
+  private ensurePdfTextLod2Overlay(): PdfTextLod2Overlay | null {
+    if (this.pdfTextLod2) return this.pdfTextLod2;
+    if (typeof document === 'undefined') return null;
+    const host = this.overlayHost;
+    if (!host) return null;
+    this.pdfTextLod2 = new PdfTextLod2Overlay({
+      host,
+      onRequestCloseSelection: () => {
+        this.clearPdfTextSelection({ suppressOverlayCallback: true });
+        this.requestRender();
+      },
+      onTextLayerReady: () => {
+        if (this.pdfSelectLastClient && this.pdfSelectTarget) this.schedulePdfPenSelectionUpdate();
+        this.requestRender();
+      },
+    });
+    return this.pdfTextLod2;
+  }
+
   private localToClient(p: Vec2): { x: number; y: number } {
     const r = this.canvas.getBoundingClientRect();
     return { x: r.left + p.x, y: r.top + p.y };
@@ -1228,6 +1293,32 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       this.textSelectRaf = null;
     }
     const overlay = this.textLod2;
+    if (overlay) {
+      overlay.clearHighlights();
+      overlay.closeMenu({ suppressCallback: opts?.suppressOverlayCallback });
+    }
+
+    try {
+      window.getSelection?.()?.removeAllRanges();
+    } catch {
+      // ignore
+    }
+  }
+
+  clearPdfTextSelection(opts?: { suppressOverlayCallback?: boolean }): void {
+    this.pdfSelectTarget = null;
+    this.pdfSelectPointerId = null;
+    this.pdfSelectAnchor = null;
+    this.pdfSelectRange = null;
+    this.pdfSelectLastClient = null;
+    if (this.pdfSelectRaf != null) {
+      try {
+        cancelAnimationFrame(this.pdfSelectRaf);
+      } catch { }
+      this.pdfSelectRaf = null;
+    }
+
+    const overlay = this.pdfTextLod2;
     if (overlay) {
       overlay.clearHighlights();
       overlay.closeMenu({ suppressCallback: opts?.suppressOverlayCallback });
@@ -1270,6 +1361,27 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return null;
   }
 
+  private computePdfLod2Target(): { nodeId: string; token: number; pageNumber: number } | null {
+    if (this.editingNodeId) return null;
+
+    const g = this.activeGesture;
+    if (g?.kind === 'pdf-text-select') return { nodeId: g.nodeId, token: g.token, pageNumber: g.pageNumber };
+
+    if (this.pdfSelectTarget) return this.pdfSelectTarget;
+
+    const overlay = this.pdfTextLod2;
+    if (overlay?.isMenuOpen()) {
+      const nodeId = overlay.getNodeId();
+      const token = overlay.getToken();
+      const pageNumber = overlay.getPageNumber();
+      if (nodeId && token != null && pageNumber != null) return { nodeId, token, pageNumber };
+    }
+
+    if (this.hoverPdfPage) return this.hoverPdfPage;
+
+    return null;
+  }
+
   private renderTextLod2Target(target: { nodeId: string; mode: TextLod2Mode } | null): void {
     const overlay = this.textLod2;
     if (!target) {
@@ -1305,9 +1417,96 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     });
   }
 
+  private renderPdfTextLod2Target(target: { nodeId: string; token: number; pageNumber: number } | null): void {
+    const overlay = this.pdfTextLod2;
+    if (!target) {
+      if (overlay) overlay.hide();
+      return;
+    }
+
+    const node = this.nodes.find((n): n is PdfNode => n.id === target.nodeId && n.kind === 'pdf');
+    if (!node || node.status !== 'ready') {
+      if (overlay) overlay.hide();
+      return;
+    }
+
+    const state = this.pdfStateByNodeId.get(node.id);
+    if (!state || state.token !== target.token) {
+      if (overlay) overlay.hide();
+      return;
+    }
+
+    const pageRect = this.getPdfPageRect(node, state, target.pageNumber);
+    if (!pageRect) {
+      if (overlay) overlay.hide();
+      return;
+    }
+
+    const lod2 = this.ensurePdfTextLod2Overlay();
+    if (!lod2) return;
+
+    const tl = this.camera.worldToScreen({ x: pageRect.x, y: pageRect.y });
+    const z = Math.max(0.001, this.camera.zoom || 1);
+    const screenRect: Rect = { x: tl.x, y: tl.y, w: pageRect.w * z, h: pageRect.h * z };
+
+    const pageW = Math.max(1, pageRect.w);
+    const key = `${node.id}|t${state.token}|p${target.pageNumber}|w${Math.round(pageW)}`;
+
+    const isPenSelection =
+      this.pdfSelectTarget?.nodeId === node.id &&
+      this.pdfSelectTarget?.token === state.token &&
+      this.pdfSelectTarget?.pageNumber === target.pageNumber;
+    const interactive = !isPenSelection;
+
+    lod2.show({
+      nodeId: node.id,
+      token: state.token,
+      pageNumber: target.pageNumber,
+      mode: 'select',
+      interactive,
+      screenRect,
+      worldW: pageRect.w,
+      worldH: pageRect.h,
+      zoom: z,
+      pageKey: key,
+      ensureTextLayer: async () => {
+        const latest = this.pdfStateByNodeId.get(node.id);
+        if (!latest || latest.token !== state.token) return null;
+        if (target.pageNumber < 1 || target.pageNumber > latest.pageCount) return null;
+        let page: PDFPageProxy;
+        try {
+          page = await latest.doc.getPage(target.pageNumber);
+        } catch {
+          return null;
+        }
+        const viewport1 = page.getViewport({ scale: 1 });
+        const scale = pageW / Math.max(1, viewport1.width);
+        const viewport: PageViewport = page.getViewport({ scale });
+        let textContentSource: any;
+        try {
+          textContentSource = page.streamTextContent();
+        } catch {
+          try {
+            textContentSource = await page.getTextContent();
+          } catch {
+            return null;
+          }
+        }
+        return { viewport, textContentSource };
+      },
+    });
+  }
+
   private caretRangeFromClientPointForLod2(clientX: number, clientY: number): Range | null {
     if (typeof document === 'undefined') return null;
     const overlay = this.textLod2;
+    if (!overlay) return caretRangeFromClientPoint(document, clientX, clientY);
+    return overlay.withPointerEventsEnabled(() => caretRangeFromClientPoint(document, clientX, clientY));
+  }
+
+  private caretRangeFromClientPointForPdfLod2(clientX: number, clientY: number): Range | null {
+    if (typeof document === 'undefined') return null;
+    const overlay = this.pdfTextLod2;
     if (!overlay) return caretRangeFromClientPoint(document, clientX, clientY);
     return overlay.withPointerEventsEnabled(() => caretRangeFromClientPoint(document, clientX, clientY));
   }
@@ -1362,6 +1561,131 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       this.textSelectRaf = null;
       this.updatePenSelectionFromLastPoint();
     });
+  }
+
+  private updatePdfPenSelectionFromLastPoint(): void {
+    if (typeof document === 'undefined') return;
+    const target = this.pdfSelectTarget;
+    const point = this.pdfSelectLastClient;
+    const overlay = this.pdfTextLod2;
+    if (!target || !point || !overlay) return;
+
+    if (overlay.getNodeId() !== target.nodeId || overlay.getToken() !== target.token || overlay.getPageNumber() !== target.pageNumber) {
+      return;
+    }
+
+    const textEl = overlay.getTextLayerElement();
+    const caret = this.caretRangeFromClientPointForPdfLod2(point.x, point.y);
+    if (!caret || !textEl.contains(caret.startContainer)) return;
+
+    if (!this.pdfSelectAnchor) {
+      this.pdfSelectAnchor = caret;
+      this.pdfSelectRange = null;
+      overlay.clearHighlights();
+      return;
+    }
+
+    let forward = true;
+    try {
+      forward = this.pdfSelectAnchor.compareBoundaryPoints(Range.START_TO_START, caret) <= 0;
+    } catch {
+      forward = true;
+    }
+
+    const range = document.createRange();
+    if (forward) {
+      range.setStart(this.pdfSelectAnchor.startContainer, this.pdfSelectAnchor.startOffset);
+      range.setEnd(caret.startContainer, caret.startOffset);
+    } else {
+      range.setStart(caret.startContainer, caret.startOffset);
+      range.setEnd(this.pdfSelectAnchor.startContainer, this.pdfSelectAnchor.startOffset);
+    }
+
+    this.pdfSelectRange = range;
+
+    const contentRect = textEl.getBoundingClientRect();
+    const z = Math.max(0.01, overlay.getZoom() || 1);
+    const rects: PdfHighlightRect[] = Array.from(range.getClientRects())
+      .map((r) => ({
+        left: (r.left - contentRect.left) / z,
+        top: (r.top - contentRect.top) / z,
+        width: r.width / z,
+        height: r.height / z,
+      }))
+      .filter((r) => r.width > 0.5 && r.height > 0.5);
+
+    overlay.setHighlightRects(rects);
+  }
+
+  private schedulePdfPenSelectionUpdate(): void {
+    if (this.pdfSelectRaf != null) return;
+    this.pdfSelectRaf = requestAnimationFrame(() => {
+      this.pdfSelectRaf = null;
+      this.updatePdfPenSelectionFromLastPoint();
+    });
+  }
+
+  private extractPlainTextFromRange(baseRange: Range): string {
+    try {
+      const range = baseRange.cloneRange();
+      const frag = range.cloneContents();
+      const tmp = document.createElement('div');
+      tmp.style.position = 'fixed';
+      tmp.style.left = '-99999px';
+      tmp.style.top = '0';
+      tmp.style.whiteSpace = 'pre-wrap';
+      tmp.style.pointerEvents = 'none';
+      tmp.appendChild(frag);
+      document.body.appendChild(tmp);
+      const raw = tmp.innerText;
+      tmp.remove();
+      return raw.trim();
+    } catch {
+      try {
+        return baseRange.toString().trim();
+      } catch {
+        return '';
+      }
+    }
+  }
+
+  private getPdfPageRect(node: PdfNode, state: PdfNodeState, pageNumber: number): Rect | null {
+    if (pageNumber < 1 || pageNumber > state.pageCount) return null;
+    const contentRect = this.textContentRect(node.rect);
+    const pageW = Math.max(1, contentRect.w);
+    const pageGap = 16;
+    let y = contentRect.y;
+
+    for (let p = 1; p <= state.pageCount; p += 1) {
+      const meta = state.metas[p - 1];
+      const aspect = meta?.aspect ?? state.defaultAspect;
+      const pageH = Math.max(1, pageW * (Number.isFinite(aspect) && aspect > 0 ? aspect : state.defaultAspect));
+      const r: Rect = { x: contentRect.x, y, w: pageW, h: pageH };
+      if (p === pageNumber) return r;
+      y += pageH + pageGap;
+    }
+    return null;
+  }
+
+  private findPdfPageAtWorld(node: PdfNode, state: PdfNodeState, world: Vec2): { pageNumber: number; pageRect: Rect } | null {
+    const contentRect = this.textContentRect(node.rect);
+    const pageW = Math.max(1, contentRect.w);
+    const pageGap = 16;
+    let y = contentRect.y;
+
+    for (let p = 1; p <= state.pageCount; p += 1) {
+      const meta = state.metas[p - 1];
+      const aspect = meta?.aspect ?? state.defaultAspect;
+      const pageH = Math.max(1, pageW * (Number.isFinite(aspect) && aspect > 0 ? aspect : state.defaultAspect));
+      const r: Rect = { x: contentRect.x, y, w: pageW, h: pageH };
+      if (world.y >= y && world.y <= y + pageH) {
+        if (world.x >= r.x && world.x <= r.x + r.w) return { pageNumber: p, pageRect: r };
+        return null;
+      }
+      y += pageH + pageGap;
+      if (world.y < y) return null;
+    }
+    return null;
   }
 
   private chooseInkRasterScale(): number {
@@ -1741,6 +2065,56 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       }
     }
 
+    // Pen drag-to-highlight for PDF pages (text layer LOD2 DOM overlay).
+    if (hit && hit.kind === 'pdf' && info.pointerType === 'pen' && hit.status === 'ready') {
+      const state = this.pdfStateByNodeId.get(hit.id);
+      if (state) {
+        const contentRect = this.textContentRect(hit.rect);
+        const inContent =
+          world.x >= contentRect.x &&
+          world.x <= contentRect.x + contentRect.w &&
+          world.y >= contentRect.y &&
+          world.y <= contentRect.y + contentRect.h;
+        if (inContent) {
+          const pageHit = this.findPdfPageAtWorld(hit, state, world);
+          if (pageHit) {
+            this.clearPdfTextSelection({ suppressOverlayCallback: true });
+
+            const selectionChanged = this.selectedNodeId !== hit.id || this.editingNodeId !== null;
+            this.selectedNodeId = hit.id;
+            this.editingNodeId = null;
+            this.bringNodeToFront(hit.id);
+
+            this.pdfSelectTarget = { nodeId: hit.id, token: state.token, pageNumber: pageHit.pageNumber };
+            this.renderPdfTextLod2Target(this.pdfSelectTarget);
+
+            try {
+              window.getSelection?.()?.removeAllRanges();
+            } catch {
+              // ignore
+            }
+
+            this.pdfSelectPointerId = info.pointerId;
+            this.pdfSelectAnchor = null;
+            this.pdfSelectLastClient = this.localToClient(p);
+            this.pdfSelectRange = null;
+
+            this.activeGesture = {
+              kind: 'pdf-text-select',
+              pointerId: info.pointerId,
+              nodeId: hit.id,
+              token: state.token,
+              pageNumber: pageHit.pageNumber,
+            };
+            this.suppressTapPointerIds.add(info.pointerId);
+            this.requestRender();
+            if (selectionChanged) this.emitUiState();
+            return 'text';
+          }
+        }
+      }
+    }
+
     if (this.shouldDrawInk(info.pointerType)) {
       const stroke: InkStroke = {
         points: [],
@@ -1845,6 +2219,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (g.kind === 'text-select') {
       this.textSelectLastClient = this.localToClient(p);
       this.schedulePenSelectionUpdate();
+      return;
+    }
+
+    if (g.kind === 'pdf-text-select') {
+      this.pdfSelectLastClient = this.localToClient(p);
+      this.schedulePdfPenSelectionUpdate();
       return;
     }
 
@@ -2005,6 +2385,49 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       return;
     }
 
+    if (g.kind === 'pdf-text-select') {
+      const client = this.localToClient(p);
+      this.pdfSelectLastClient = client;
+      if (this.pdfSelectRaf != null) {
+        try {
+          cancelAnimationFrame(this.pdfSelectRaf);
+        } catch { }
+        this.pdfSelectRaf = null;
+      }
+      this.updatePdfPenSelectionFromLastPoint();
+
+      this.activeGesture = null;
+      this.suppressTapPointerIds.delete(info.pointerId);
+
+      this.pdfSelectPointerId = null;
+      this.pdfSelectAnchor = null;
+      this.pdfSelectLastClient = null;
+
+      const overlay = this.pdfTextLod2;
+      const range = this.pdfSelectRange;
+      const text = range ? this.extractPlainTextFromRange(range) : '';
+      if (overlay && range && text) {
+        const rect = (() => {
+          try {
+            const rects = Array.from(range.getClientRects());
+            return (rects[rects.length - 1] ?? range.getBoundingClientRect()) || null;
+          } catch {
+            return null;
+          }
+        })();
+        if (rect) {
+          overlay.openMenu({ anchorRect: rect, text });
+        } else {
+          this.clearPdfTextSelection({ suppressOverlayCallback: true });
+        }
+      } else {
+        this.clearPdfTextSelection({ suppressOverlayCallback: true });
+      }
+
+      this.requestRender();
+      return;
+    }
+
     if (g.kind === 'ink-world') {
       const world = this.camera.screenToWorld(p);
       this.pushInkPoint(g.stroke, { x: world.x, y: world.y }, this.inkMinPointDistWorld(g.pointerType));
@@ -2061,6 +2484,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const g = this.activeGesture;
     if (g && g.pointerId === info.pointerId) {
       if (g.kind === 'text-select') this.clearTextSelection({ suppressOverlayCallback: true });
+      if (g.kind === 'pdf-text-select') this.clearPdfTextSelection({ suppressOverlayCallback: true });
       this.activeGesture = null;
     }
     this.suppressTapPointerIds.delete(info.pointerId);
@@ -2405,6 +2829,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   draw(): void {
     const nextTextLod2Target = this.computeTextLod2Target();
     this.textLod2Target = nextTextLod2Target;
+    const nextPdfLod2Target = this.computePdfLod2Target();
+    this.pdfLod2Target = nextPdfLod2Target;
 
     const ctx = this.ctx;
     this.applyScreenTransform();
@@ -2418,6 +2844,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.updateTextRastersForViewport();
     this.updatePdfPageRendersForViewport();
     this.renderTextLod2Target(nextTextLod2Target);
+    this.renderPdfTextLod2Target(nextPdfLod2Target);
     this.drawScreenHud();
     this.emitDebug();
   }
