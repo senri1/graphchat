@@ -3,6 +3,9 @@ import { Camera } from './Camera';
 import { InputController, type PointerCaptureMode } from './InputController';
 import { rectsIntersect, type Rect, type Vec2 } from './types';
 import { rasterizeMarkdownMathToImage } from './raster/textRaster';
+import { renderMarkdownMath } from '../markdown/renderMarkdownMath';
+import { normalizeMathDelimitersFromCopyTex } from '../markdown/mathDelimiters';
+import { TextLod2Overlay, type HighlightRect, type TextLod2Mode } from './TextLod2Overlay';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { loadPdfDocument } from './pdf/pdfjs';
 
@@ -28,6 +31,77 @@ function fnv1a32(input: string): number {
 function fingerprintText(input: string): string {
   const s = input ?? '';
   return `${s.length.toString(36)}.${fnv1a32(s).toString(36)}`;
+}
+
+function caretRangeFromClientPoint(doc: Document, clientX: number, clientY: number): Range | null {
+  const anyDoc = doc as any;
+  if (typeof anyDoc?.caretRangeFromPoint === 'function') {
+    try {
+      return anyDoc.caretRangeFromPoint(clientX, clientY) as Range | null;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof anyDoc?.caretPositionFromPoint === 'function') {
+    try {
+      const pos = anyDoc.caretPositionFromPoint(clientX, clientY) as { offsetNode?: Node; offset?: number } | null;
+      if (!pos?.offsetNode || typeof pos.offset !== 'number') return null;
+      const range = doc.createRange();
+      range.setStart(pos.offsetNode, pos.offset);
+      range.collapse(true);
+      return range;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function extractTextFromRange(baseRange: Range): string {
+  try {
+    const range = baseRange.cloneRange();
+    const closestKatex = (node: Node | null): Element | null => {
+      if (!node) return null;
+      const el =
+        node.nodeType === Node.ELEMENT_NODE ? (node as Element) : ((node as any).parentElement as Element | null);
+      return el ? el.closest('.katex') : null;
+    };
+    const startKatex = closestKatex(range.startContainer);
+    if (startKatex) range.setStartBefore(startKatex);
+    const endKatex = closestKatex(range.endContainer);
+    if (endKatex) range.setEndAfter(endKatex);
+
+    const frag = range.cloneContents();
+    const katexEls = Array.from(frag.querySelectorAll('.katex'));
+    for (const k of katexEls) {
+      const ann = k.querySelector('annotation[encoding="application/x-tex"]') as HTMLElement | null;
+      const tex = (ann?.textContent ?? '').trim();
+      if (!tex) continue;
+      const isDisplay = Boolean(k.closest('.katex-display'));
+      const open = isDisplay ? '$$' : '$';
+      const close = isDisplay ? '$$' : '$';
+      k.replaceWith(document.createTextNode(`${open}${tex}${close}`));
+    }
+
+    // Use `innerText` to preserve reasonable newlines for block elements / <br>.
+    const tmp = document.createElement('div');
+    tmp.style.position = 'fixed';
+    tmp.style.left = '-99999px';
+    tmp.style.top = '0';
+    tmp.style.whiteSpace = 'pre-wrap';
+    tmp.style.pointerEvents = 'none';
+    tmp.appendChild(frag);
+    document.body.appendChild(tmp);
+    const raw = tmp.innerText;
+    tmp.remove();
+    return normalizeMathDelimitersFromCopyTex(raw).trim();
+  } catch {
+    try {
+      return baseRange.toString().trim();
+    } catch {
+      return '';
+    }
+  }
 }
 
 type DemoNodeBase = {
@@ -154,7 +228,13 @@ type ActiveInkGesture =
       stroke: InkStroke;
     };
 
-type ActiveGesture = ActiveNodeGesture | ActiveInkGesture;
+type ActiveTextSelectGesture = {
+  kind: 'text-select';
+  pointerId: number;
+  nodeId: string;
+};
+
+type ActiveGesture = ActiveNodeGesture | ActiveInkGesture | ActiveTextSelectGesture;
 
 export class WorldEngine {
   private readonly canvas: HTMLCanvasElement;
@@ -180,6 +260,18 @@ export class WorldEngine {
   private tool: Tool = 'select';
   private activeGesture: ActiveGesture | null = null;
   private suppressTapPointerIds = new Set<number>();
+
+  private readonly overlayHost: HTMLElement | null;
+  private textLod2: TextLod2Overlay | null = null;
+  private textLod2Target: { nodeId: string; mode: TextLod2Mode } | null = null;
+  private textResizeHold: { nodeId: string; sig: string; expiresAt: number } | null = null;
+
+  private textSelectNodeId: string | null = null;
+  private textSelectPointerId: number | null = null;
+  private textSelectAnchor: Range | null = null;
+  private textSelectRange: Range | null = null;
+  private textSelectLastClient: { x: number; y: number } | null = null;
+  private textSelectRaf: number | null = null;
 
   private readonly resizeHandleDrawPx = 12;
   private readonly resizeHandleHitPx = 22;
@@ -380,8 +472,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
   private nodeSeq = 1;
 
-  constructor(opts: { canvas: HTMLCanvasElement }) {
+  constructor(opts: { canvas: HTMLCanvasElement; overlayHost?: HTMLElement | null }) {
     this.canvas = opts.canvas;
+    this.overlayHost = opts.overlayHost ?? this.canvas.parentElement;
     const ctx = this.canvas.getContext('2d', { alpha: false, desynchronized: true });
     if (!ctx) throw new Error('Missing 2D canvas context');
     this.ctx = ctx;
@@ -893,6 +986,13 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
   dispose(): void {
     this.input.dispose();
+    this.clearTextSelection({ suppressOverlayCallback: true });
+    this.textResizeHold = null;
+    this.textLod2Target = null;
+    if (this.textLod2) {
+      this.textLod2.dispose();
+      this.textLod2 = null;
+    }
     for (const state of this.pdfStateByNodeId.values()) {
       try {
         void state.doc.destroy();
@@ -1045,6 +1145,159 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const w = Math.max(1, nodeRect.w - PAD * 2);
     const h = Math.max(1, nodeRect.h - HEADER_H - PAD);
     return { x, y, w, h };
+  }
+
+  private ensureTextLod2Overlay(): TextLod2Overlay | null {
+    if (this.textLod2) return this.textLod2;
+    if (typeof document === 'undefined') return null;
+    const host = this.overlayHost;
+    if (!host) return null;
+    this.textLod2 = new TextLod2Overlay({
+      host,
+      onRequestCloseSelection: () => {
+        this.clearTextSelection({ suppressOverlayCallback: true });
+        this.requestRender();
+      },
+    });
+    return this.textLod2;
+  }
+
+  private localToClient(p: Vec2): { x: number; y: number } {
+    const r = this.canvas.getBoundingClientRect();
+    return { x: r.left + p.x, y: r.top + p.y };
+  }
+
+  clearTextSelection(opts?: { suppressOverlayCallback?: boolean }): void {
+    this.textSelectNodeId = null;
+    this.textSelectPointerId = null;
+    this.textSelectAnchor = null;
+    this.textSelectRange = null;
+    this.textSelectLastClient = null;
+    if (this.textSelectRaf != null) {
+      try {
+        cancelAnimationFrame(this.textSelectRaf);
+      } catch { }
+      this.textSelectRaf = null;
+    }
+    const overlay = this.textLod2;
+    if (overlay) {
+      overlay.clearHighlights();
+      overlay.closeMenu({ suppressCallback: opts?.suppressOverlayCallback });
+    }
+  }
+
+  private computeTextLod2Target(): { nodeId: string; mode: TextLod2Mode } | null {
+    if (this.editingNodeId) return null;
+
+    const g = this.activeGesture;
+    if (g?.kind === 'resize') return { nodeId: g.nodeId, mode: 'resize' };
+
+    if (this.textSelectNodeId) return { nodeId: this.textSelectNodeId, mode: 'select' };
+
+    const hold = this.textResizeHold;
+    if (hold) {
+      const now = performance.now();
+      const best = this.getBestTextRaster(hold.sig);
+      if (best || now > hold.expiresAt) {
+        this.textResizeHold = null;
+      } else {
+        return { nodeId: hold.nodeId, mode: 'resize' };
+      }
+    }
+
+    return null;
+  }
+
+  private renderTextLod2Target(target: { nodeId: string; mode: TextLod2Mode } | null): void {
+    const overlay = this.textLod2;
+    if (!target) {
+      if (overlay) overlay.hide();
+      return;
+    }
+
+    const node = this.nodes.find((n): n is TextNode => n.id === target.nodeId && n.kind === 'text');
+    if (!node) {
+      if (overlay) overlay.hide();
+      return;
+    }
+
+    const lod2 = this.ensureTextLod2Overlay();
+    if (!lod2) return;
+
+    const contentRect = this.textContentRect(node.rect);
+    const tl = this.camera.worldToScreen({ x: contentRect.x, y: contentRect.y });
+    const z = Math.max(0.001, this.camera.zoom || 1);
+    const screenRect: Rect = { x: tl.x, y: tl.y, w: contentRect.w * z, h: contentRect.h * z };
+    const html = renderMarkdownMath(node.content ?? '');
+    lod2.show({
+      nodeId: node.id,
+      mode: target.mode,
+      screenRect,
+      worldW: contentRect.w,
+      worldH: contentRect.h,
+      zoom: z,
+      contentHash: node.contentHash,
+      html,
+    });
+  }
+
+  private caretRangeFromClientPointForLod2(clientX: number, clientY: number): Range | null {
+    if (typeof document === 'undefined') return null;
+    const overlay = this.textLod2;
+    if (!overlay) return caretRangeFromClientPoint(document, clientX, clientY);
+    return overlay.withPointerEventsEnabled(() => caretRangeFromClientPoint(document, clientX, clientY));
+  }
+
+  private updatePenSelectionFromLastPoint(): void {
+    if (typeof document === 'undefined') return;
+    const nodeId = this.textSelectNodeId;
+    const anchor = this.textSelectAnchor;
+    const point = this.textSelectLastClient;
+    const overlay = this.textLod2;
+    if (!nodeId || !anchor || !point || !overlay) return;
+
+    const contentEl = overlay.getContentElement();
+    const focus = this.caretRangeFromClientPointForLod2(point.x, point.y);
+    if (!focus || !contentEl.contains(focus.startContainer)) return;
+
+    let forward = true;
+    try {
+      forward = anchor.compareBoundaryPoints(Range.START_TO_START, focus) <= 0;
+    } catch {
+      forward = true;
+    }
+
+    const range = document.createRange();
+    if (forward) {
+      range.setStart(anchor.startContainer, anchor.startOffset);
+      range.setEnd(focus.startContainer, focus.startOffset);
+    } else {
+      range.setStart(focus.startContainer, focus.startOffset);
+      range.setEnd(anchor.startContainer, anchor.startOffset);
+    }
+
+    this.textSelectRange = range;
+
+    const contentRect = contentEl.getBoundingClientRect();
+    const z = Math.max(0.01, overlay.getZoom() || 1);
+    const rects: HighlightRect[] = Array.from(range.getClientRects())
+      .map((r) => ({
+        left: (r.left - contentRect.left) / z,
+        top: (r.top - contentRect.top) / z,
+        width: r.width / z,
+        height: r.height / z,
+      }))
+      .filter((r) => r.width > 0.5 && r.height > 0.5);
+
+    overlay.setHighlightRects(rects);
+  }
+
+  private schedulePenSelectionUpdate(): void {
+    if (this.textSelectRaf != null) return;
+    this.textSelectRaf = requestAnimationFrame(() => {
+      this.textSelectRaf = null;
+      this.updatePenSelectionFromLastPoint();
+    });
   }
 
   private chooseInkRasterScale(): number {
@@ -1374,6 +1627,55 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (this.editingNodeId) return null;
 
     const world = this.camera.screenToWorld(p);
+    const hit = this.findTopmostNodeAtWorld(world);
+
+    // Pen drag-to-highlight for text nodes (LOD2 DOM overlay).
+    if (hit && hit.kind === 'text' && info.pointerType === 'pen') {
+      const contentRect = this.textContentRect(hit.rect);
+      const inContent =
+        world.x >= contentRect.x &&
+        world.x <= contentRect.x + contentRect.w &&
+        world.y >= contentRect.y &&
+        world.y <= contentRect.y + contentRect.h;
+
+      if (inContent) {
+        this.clearTextSelection({ suppressOverlayCallback: true });
+
+        const selectionChanged = this.selectedNodeId !== hit.id || this.editingNodeId !== null;
+        this.selectedNodeId = hit.id;
+        this.editingNodeId = null;
+        this.bringNodeToFront(hit.id);
+
+        this.textSelectNodeId = hit.id;
+        this.renderTextLod2Target({ nodeId: hit.id, mode: 'select' });
+
+        const client = this.localToClient(p);
+        const anchor = this.caretRangeFromClientPointForLod2(client.x, client.y);
+        const contentEl = this.textLod2?.getContentElement() ?? null;
+
+        if (anchor && contentEl && contentEl.contains(anchor.startContainer)) {
+          try {
+            window.getSelection?.()?.removeAllRanges();
+          } catch {
+            // ignore
+          }
+
+          this.textSelectPointerId = info.pointerId;
+          this.textSelectAnchor = anchor;
+          this.textSelectLastClient = client;
+          this.textSelectRange = null;
+
+          this.activeGesture = { kind: 'text-select', pointerId: info.pointerId, nodeId: hit.id };
+          this.suppressTapPointerIds.add(info.pointerId);
+          this.requestRender();
+          if (selectionChanged) this.emitUiState();
+          return 'text';
+        }
+
+        // Failed to map the pen point into DOM text; fall back to normal interaction.
+        this.clearTextSelection({ suppressOverlayCallback: true });
+      }
+    }
 
     if (this.shouldDrawInk(info.pointerType)) {
       const stroke: InkStroke = {
@@ -1422,7 +1724,6 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       return 'draw';
     }
 
-    const hit = this.findTopmostNodeAtWorld(world);
     if (!hit) return null;
 
     const selectionChanged = this.selectedNodeId !== hit.id || this.editingNodeId !== null;
@@ -1456,6 +1757,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         startRect,
       };
       this.suppressTapPointerIds.add(info.pointerId);
+      this.textResizeHold = null;
+      this.renderTextLod2Target({ nodeId: hit.id, mode: 'resize' });
     } else {
       this.activeGesture = {
         kind: 'drag',
@@ -1474,6 +1777,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   private handlePointerMove(p: Vec2, info: { pointerType: string; pointerId: number }): void {
     const g = this.activeGesture;
     if (!g || g.pointerId !== info.pointerId) return;
+
+    if (g.kind === 'text-select') {
+      this.textSelectLastClient = this.localToClient(p);
+      this.schedulePenSelectionUpdate();
+      return;
+    }
 
     if (g.kind === 'ink-world') {
       const world = this.camera.screenToWorld(p);
@@ -1588,6 +1897,50 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const g = this.activeGesture;
     if (!g || g.pointerId !== info.pointerId) return;
 
+    if (g.kind === 'text-select') {
+      const client = this.localToClient(p);
+      this.textSelectLastClient = client;
+      if (this.textSelectRaf != null) {
+        try {
+          cancelAnimationFrame(this.textSelectRaf);
+        } catch { }
+        this.textSelectRaf = null;
+      }
+      this.updatePenSelectionFromLastPoint();
+
+      this.activeGesture = null;
+      this.suppressTapPointerIds.delete(info.pointerId);
+
+      // End the drag gesture but keep the selection alive while the menu is open.
+      this.textSelectPointerId = null;
+      this.textSelectAnchor = null;
+      this.textSelectLastClient = null;
+
+      const overlay = this.textLod2;
+      const range = this.textSelectRange;
+      const text = range ? extractTextFromRange(range) : '';
+      if (overlay && range && text) {
+        const rect = (() => {
+          try {
+            const rects = Array.from(range.getClientRects());
+            return (rects[rects.length - 1] ?? range.getBoundingClientRect()) || null;
+          } catch {
+            return null;
+          }
+        })();
+        if (rect) {
+          overlay.openMenu({ anchorRect: rect, text });
+        } else {
+          this.clearTextSelection({ suppressOverlayCallback: true });
+        }
+      } else {
+        this.clearTextSelection({ suppressOverlayCallback: true });
+      }
+
+      this.requestRender();
+      return;
+    }
+
     if (g.kind === 'ink-world') {
       const world = this.camera.screenToWorld(p);
       this.pushInkPoint(g.stroke, { x: world.x, y: world.y }, this.inkMinPointDistWorld(g.pointerType));
@@ -1626,6 +1979,15 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       return;
     }
 
+    if (g.kind === 'resize') {
+      const node = this.nodes.find((n): n is TextNode => n.id === g.nodeId && n.kind === 'text');
+      if (node) {
+        const contentRect = this.textContentRect(node.rect);
+        const sig = `${node.contentHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
+        this.textResizeHold = { nodeId: node.id, sig, expiresAt: performance.now() + 2200 };
+      }
+    }
+
     this.activeGesture = null;
     if (info.wasDrag) this.suppressTapPointerIds.delete(info.pointerId);
     this.requestRender();
@@ -1633,7 +1995,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
   private handlePointerCancel(info: { pointerType: string; pointerId: number }): void {
     const g = this.activeGesture;
-    if (g && g.pointerId === info.pointerId) this.activeGesture = null;
+    if (g && g.pointerId === info.pointerId) {
+      if (g.kind === 'text-select') this.clearTextSelection({ suppressOverlayCallback: true });
+      this.activeGesture = null;
+    }
     this.suppressTapPointerIds.delete(info.pointerId);
     this.requestRender();
   }
@@ -1795,20 +2160,24 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
       if (node.kind === 'text') {
         const contentRect = this.textContentRect(node.rect);
-        const sig = `${node.contentHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
-        const raster = this.getBestTextRaster(sig);
-        if (raster) {
-          try {
-            ctx.drawImage(raster.image, contentRect.x, contentRect.y, contentRect.w, contentRect.h);
-          } catch {
-            // ignore; fall back to placeholder
+
+        // When LOD2 is active for this node, the DOM overlay is responsible for the content.
+        if (this.textLod2Target?.nodeId !== node.id) {
+          const sig = `${node.contentHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
+          const raster = this.getBestTextRaster(sig);
+          if (raster) {
+            try {
+              ctx.drawImage(raster.image, contentRect.x, contentRect.y, contentRect.w, contentRect.h);
+            } catch {
+              // ignore; fall back to placeholder
+            }
+          } else {
+            const line = node.content.split('\n').find((s) => s.trim()) ?? '';
+            const preview = line.replace(/^#+\s*/, '').slice(0, 120);
+            ctx.fillText(preview ? preview : '…', x + 14, y + 34);
+            ctx.fillStyle = 'rgba(255,255,255,0.45)';
+            ctx.fillText('Rendering…', contentRect.x, contentRect.y);
           }
-        } else {
-          const line = node.content.split('\n').find((s) => s.trim()) ?? '';
-          const preview = line.replace(/^#+\s*/, '').slice(0, 120);
-          ctx.fillText(preview ? preview : '…', x + 14, y + 34);
-          ctx.fillStyle = 'rgba(255,255,255,0.45)';
-          ctx.fillText('Rendering…', contentRect.x, contentRect.y);
         }
       } else if (node.kind === 'pdf') {
         const contentRect = this.textContentRect(node.rect);
@@ -1970,6 +2339,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   }
 
   draw(): void {
+    const nextTextLod2Target = this.computeTextLod2Target();
+    this.textLod2Target = nextTextLod2Target;
+
     const ctx = this.ctx;
     this.applyScreenTransform();
     ctx.clearRect(0, 0, this.cssW, this.cssH);
@@ -1981,6 +2353,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     this.updateTextRastersForViewport();
     this.updatePdfPageRendersForViewport();
+    this.renderTextLod2Target(nextTextLod2Target);
     this.drawScreenHud();
     this.emitDebug();
   }

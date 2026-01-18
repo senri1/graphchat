@@ -27,7 +27,7 @@ export type InputControllerEvents = {
   onPointerCancel?: (info: { pointerType: string; pointerId: number }) => void;
 };
 
-export type PointerCaptureMode = 'node' | 'draw';
+export type PointerCaptureMode = 'node' | 'draw' | 'text';
 
 function isPrimaryButton(ev: PointerEvent): boolean {
   if (ev.pointerType === 'mouse') return ev.button === 0;
@@ -134,7 +134,7 @@ export class InputController {
     const mode = this.events.onPointerDown?.(pos, { pointerType: info.type, pointerId: ev.pointerId }) ?? null;
     if (mode) {
       this.capturedPointers.set(ev.pointerId, mode);
-      if (mode === 'draw') this.dragBegan.add(ev.pointerId);
+      if (mode === 'draw' || mode === 'text') this.dragBegan.add(ev.pointerId);
     }
 
     try {
@@ -161,11 +161,11 @@ export class InputController {
       const captureMode = this.capturedPointers.get(ev.pointerId) ?? null;
 
       if (captureMode) {
-        if (captureMode !== 'draw' && !this.dragBegan.has(ev.pointerId)) {
+        if (captureMode !== 'draw' && captureMode !== 'text' && !this.dragBegan.has(ev.pointerId)) {
           const fromStart = hypot2(pos.x - info.startPos.x, pos.y - info.startPos.y);
           if (fromStart >= this.dragThresholdPx) this.dragBegan.add(ev.pointerId);
         }
-        if ((dx || dy) && (captureMode === 'draw' || this.dragBegan.has(ev.pointerId))) {
+        if ((dx || dy) && (captureMode === 'draw' || captureMode === 'text' || this.dragBegan.has(ev.pointerId))) {
           this.events.onPointerMove?.(pos, { pointerType: info.type, pointerId: ev.pointerId });
         }
       } else if (this.pointers.size === 1) {
