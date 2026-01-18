@@ -21,11 +21,13 @@ export type InputControllerEvents = {
   onChange?: () => void;
   onInteractingChange?: (isInteracting: boolean) => void;
   onTap?: (p: Vec2, info: { pointerType: string; pointerId: number }) => void;
-  onPointerDown?: (p: Vec2, info: { pointerType: string; pointerId: number }) => boolean;
+  onPointerDown?: (p: Vec2, info: { pointerType: string; pointerId: number }) => PointerCaptureMode | null;
   onPointerMove?: (p: Vec2, info: { pointerType: string; pointerId: number }) => void;
   onPointerUp?: (p: Vec2, info: { pointerType: string; pointerId: number; wasDrag: boolean }) => void;
   onPointerCancel?: (info: { pointerType: string; pointerId: number }) => void;
 };
+
+export type PointerCaptureMode = 'node' | 'draw';
 
 function isPrimaryButton(ev: PointerEvent): boolean {
   if (ev.pointerType === 'mouse') return ev.button === 0;
@@ -49,7 +51,7 @@ export class InputController {
   private pinch: PinchState | null = null;
   private dragThresholdPx = 4;
   private dragBegan = new Set<number>();
-  private capturedPointers = new Set<number>();
+  private capturedPointers = new Map<number, PointerCaptureMode>();
   private isInteracting = false;
   private wheelIdleTimeout: number | null = null;
 
@@ -129,9 +131,10 @@ export class InputController {
     this.dragBegan.delete(ev.pointerId);
     this.capturedPointers.delete(ev.pointerId);
 
-    const wantsCapture = Boolean(this.events.onPointerDown?.(pos, { pointerType: info.type, pointerId: ev.pointerId }));
-    if (wantsCapture) {
-      this.capturedPointers.add(ev.pointerId);
+    const mode = this.events.onPointerDown?.(pos, { pointerType: info.type, pointerId: ev.pointerId }) ?? null;
+    if (mode) {
+      this.capturedPointers.set(ev.pointerId, mode);
+      if (mode === 'draw') this.dragBegan.add(ev.pointerId);
     }
 
     try {
@@ -152,18 +155,26 @@ export class InputController {
 
     if (this.pinch) {
       this.updatePinch();
-    } else if (this.pointers.size === 1) {
+    } else {
       const dx = pos.x - info.lastPos.x;
       const dy = pos.y - info.lastPos.y;
-      const hasDrag = this.dragBegan.has(ev.pointerId);
-      if (!hasDrag) {
-        const fromStart = hypot2(pos.x - info.startPos.x, pos.y - info.startPos.y);
-        if (fromStart >= this.dragThresholdPx) this.dragBegan.add(ev.pointerId);
-      }
-      if (this.dragBegan.has(ev.pointerId) && (dx || dy)) {
-        if (this.capturedPointers.has(ev.pointerId)) {
+      const captureMode = this.capturedPointers.get(ev.pointerId) ?? null;
+
+      if (captureMode) {
+        if (captureMode !== 'draw' && !this.dragBegan.has(ev.pointerId)) {
+          const fromStart = hypot2(pos.x - info.startPos.x, pos.y - info.startPos.y);
+          if (fromStart >= this.dragThresholdPx) this.dragBegan.add(ev.pointerId);
+        }
+        if ((dx || dy) && (captureMode === 'draw' || this.dragBegan.has(ev.pointerId))) {
           this.events.onPointerMove?.(pos, { pointerType: info.type, pointerId: ev.pointerId });
-        } else {
+        }
+      } else if (this.pointers.size === 1) {
+        const hasDrag = this.dragBegan.has(ev.pointerId);
+        if (!hasDrag) {
+          const fromStart = hypot2(pos.x - info.startPos.x, pos.y - info.startPos.y);
+          if (fromStart >= this.dragThresholdPx) this.dragBegan.add(ev.pointerId);
+        }
+        if (this.dragBegan.has(ev.pointerId) && (dx || dy)) {
           this.camera.panByScreen(dx, dy);
           this.events.onChange?.();
         }
@@ -183,8 +194,8 @@ export class InputController {
     const didDrag = this.dragBegan.has(ev.pointerId);
     this.dragBegan.delete(ev.pointerId);
 
-    const wasCaptured = this.capturedPointers.has(ev.pointerId);
-    if (wasCaptured && info) {
+    const captureMode = this.capturedPointers.get(ev.pointerId) ?? null;
+    if (captureMode && info) {
       const pos = this.getLocalPos(ev);
       this.events.onPointerUp?.(pos, { pointerType: info.type, pointerId: ev.pointerId, wasDrag: didDrag });
     }
@@ -219,7 +230,7 @@ export class InputController {
 
     if (!wasPinching && this.capturedPointers.size > 0) {
       // Pinch takes precedence: cancel any custom interactions.
-      for (const id of this.capturedPointers) {
+      for (const id of this.capturedPointers.keys()) {
         const p = this.pointers.get(id);
         this.events.onPointerCancel?.({ pointerType: p?.type ?? 'touch', pointerId: id });
       }

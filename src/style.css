@@ -58,6 +58,7 @@ body {
   left: 10px;
   top: 64px;
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 8px;
   border-radius: 12px;
@@ -82,6 +83,11 @@ body {
 
 .controls__btn:hover {
   background: rgba(255, 255, 255, 0.08);
+}
+
+.controls__btn--active {
+  border-color: rgba(147, 197, 253, 0.65);
+  background: rgba(147, 197, 253, 0.16);
 }
 
 .controls__fileInput {

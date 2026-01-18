@@ -8,7 +8,12 @@ export default function App() {
   const pdfInputRef = useRef<HTMLInputElement | null>(null);
   const engineRef = useRef<WorldEngine | null>(null);
   const [debug, setDebug] = useState<WorldEngineDebug | null>(null);
-  const [ui, setUi] = useState(() => ({ selectedNodeId: null as string | null, editingNodeId: null as string | null, editingText: '' }));
+  const [ui, setUi] = useState(() => ({
+    selectedNodeId: null as string | null,
+    editingNodeId: null as string | null,
+    editingText: '',
+    tool: 'select' as 'select' | 'draw',
+  }));
   const [viewport, setViewport] = useState(() => ({ w: 1, h: 1 }));
 
   useLayoutEffect(() => {
@@ -109,6 +114,26 @@ export default function App() {
         />
         <button className="controls__btn" type="button" onClick={() => pdfInputRef.current?.click()}>
           Import PDF
+        </button>
+        <button
+          className={`controls__btn ${ui.tool === 'select' ? 'controls__btn--active' : ''}`}
+          type="button"
+          onClick={() => engineRef.current?.setTool('select')}
+        >
+          Select
+        </button>
+        <button
+          className={`controls__btn ${ui.tool === 'draw' ? 'controls__btn--active' : ''}`}
+          type="button"
+          onClick={() => engineRef.current?.setTool('draw')}
+        >
+          Draw
+        </button>
+        <button className="controls__btn" type="button" onClick={() => engineRef.current?.spawnInkNode()}>
+          New Ink Node
+        </button>
+        <button className="controls__btn" type="button" onClick={() => engineRef.current?.clearWorldInk()}>
+          Clear Ink
         </button>
         <button className="controls__btn" type="button" onClick={() => engineRef.current?.spawnLatexStressTest(50)}>
           +50 nodes

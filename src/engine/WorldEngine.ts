@@ -1,6 +1,6 @@
 import { chooseNiceStep, clamp } from './math';
 import { Camera } from './Camera';
-import { InputController } from './InputController';
+import { InputController, type PointerCaptureMode } from './InputController';
 import { rectsIntersect, type Rect, type Vec2 } from './types';
 import { rasterizeMarkdownMathToImage } from './raster/textRaster';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
@@ -54,6 +54,8 @@ type PdfNode = DemoNodeBase & {
 type InkNode = DemoNodeBase & {
   kind: 'ink';
   rect: Rect;
+  strokes: InkStroke[];
+  raster: InkRaster | null;
 };
 
 type WorldNode = TextNode | PdfNode | InkNode;
@@ -97,9 +99,28 @@ export type WorldEngineUiState = {
   selectedNodeId: string | null;
   editingNodeId: string | null;
   editingText: string;
+  tool: Tool;
 };
 
 type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
+
+type Tool = 'select' | 'draw';
+
+type InkPoint = { x: number; y: number };
+
+type InkStroke = {
+  points: InkPoint[];
+  width: number;
+  color: string;
+};
+
+type InkRaster = {
+  scale: number;
+  worldW: number;
+  worldH: number;
+  canvas: HTMLCanvasElement;
+  drawnStrokeCount: number;
+};
 
 type ActiveNodeGesture =
   | {
@@ -117,6 +138,23 @@ type ActiveNodeGesture =
       startWorld: Vec2;
       startRect: Rect;
     };
+
+type ActiveInkGesture =
+  | {
+      kind: 'ink-world';
+      pointerId: number;
+      pointerType: string;
+      stroke: InkStroke;
+    }
+  | {
+      kind: 'ink-node';
+      pointerId: number;
+      pointerType: string;
+      nodeId: string;
+      stroke: InkStroke;
+    };
+
+type ActiveGesture = ActiveNodeGesture | ActiveInkGesture;
 
 export class WorldEngine {
   private readonly canvas: HTMLCanvasElement;
@@ -139,7 +177,8 @@ export class WorldEngine {
 
   private selectedNodeId: string | null = 'n1';
   private editingNodeId: string | null = null;
-  private activeGesture: ActiveNodeGesture | null = null;
+  private tool: Tool = 'select';
+  private activeGesture: ActiveGesture | null = null;
   private suppressTapPointerIds = new Set<number>();
 
   private readonly resizeHandleDrawPx = 12;
@@ -196,6 +235,8 @@ export class WorldEngine {
   private pdfPageCacheBytes = 0;
   private readonly pdfPageCacheMaxEntries = 220;
   private readonly pdfPageCacheMaxBytes = 192 * 1024 * 1024;
+
+  private worldInkStrokes: InkStroke[] = [];
 
   private readonly nodes: WorldNode[] = [
     {
@@ -332,6 +373,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       id: 'n3',
       rect: { x: 240, y: 390, w: 360, h: 240 },
       title: 'Ink node (vector → bitmap)',
+      strokes: [],
+      raster: null,
     },
   ];
 
@@ -422,11 +465,53 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       if (node.kind === 'pdf') this.disposePdfNode(node.id);
       this.nodes.splice(i, 1);
     }
-    if (this.nodes.length === before) return;
+    this.worldInkStrokes = [];
+    const baseInk = this.nodes.find((n): n is InkNode => n.kind === 'ink' && n.id === 'n3');
+    if (baseInk) {
+      baseInk.strokes = [];
+      baseInk.raster = null;
+    }
     this.selectedNodeId = 'n1';
     this.editingNodeId = null;
+    this.tool = 'select';
     this.requestRender();
     this.emitUiState();
+  }
+
+  setTool(tool: Tool): void {
+    const next = tool === 'draw' ? 'draw' : 'select';
+    if (this.tool === next) return;
+    this.tool = next;
+    this.requestRender();
+    this.emitUiState();
+  }
+
+  spawnInkNode(): void {
+    const id = `i${Date.now().toString(36)}-${(this.nodeSeq++).toString(36)}`;
+    const center = this.camera.screenToWorld({ x: this.cssW * 0.5, y: this.cssH * 0.5 });
+    const nodeW = 420;
+    const nodeH = 280;
+    const node: InkNode = {
+      kind: 'ink',
+      id,
+      rect: { x: center.x - nodeW * 0.5, y: center.y - nodeH * 0.5, w: nodeW, h: nodeH },
+      title: 'Ink node',
+      strokes: [],
+      raster: null,
+    };
+    this.nodes.push(node);
+    const changed = this.selectedNodeId !== id || this.editingNodeId !== null;
+    this.selectedNodeId = id;
+    this.editingNodeId = null;
+    this.bringNodeToFront(id);
+    this.requestRender();
+    if (changed) this.emitUiState();
+  }
+
+  clearWorldInk(): void {
+    if (this.worldInkStrokes.length === 0) return;
+    this.worldInkStrokes = [];
+    this.requestRender();
   }
 
   async importPdfFromFile(file: File): Promise<void> {
@@ -858,6 +943,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       selectedNodeId: this.selectedNodeId,
       editingNodeId: this.editingNodeId,
       editingText,
+      tool: this.tool,
     };
   }
 
@@ -959,6 +1045,117 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const w = Math.max(1, nodeRect.w - PAD * 2);
     const h = Math.max(1, nodeRect.h - HEADER_H - PAD);
     return { x, y, w, h };
+  }
+
+  private chooseInkRasterScale(): number {
+    const ideal = this.dpr || 1;
+    const cap = 2;
+    const target = Math.max(1, Math.min(cap, ideal));
+    return target < 1.5 ? 1 : 2;
+  }
+
+  private inkStrokeWidthWorld(pointerType: string): number {
+    const z = Math.max(0.01, this.camera.zoom || 1);
+    const basePx = pointerType === 'pen' ? 2.75 : 2.5;
+    return basePx / z;
+  }
+
+  private inkMinPointDistWorld(pointerType: string): number {
+    const z = Math.max(0.01, this.camera.zoom || 1);
+    const basePx = pointerType === 'pen' ? 0.45 : 0.9;
+    return basePx / z;
+  }
+
+  private pushInkPoint(stroke: InkStroke, p: InkPoint, minDistWorld: number): void {
+    const pts = stroke.points;
+    const last = pts.length > 0 ? pts[pts.length - 1] : null;
+    if (!last) {
+      pts.push(p);
+      return;
+    }
+    const dx = p.x - last.x;
+    const dy = p.y - last.y;
+    if (dx * dx + dy * dy < minDistWorld * minDistWorld) return;
+    pts.push(p);
+  }
+
+  private drawInkStroke(ctx: CanvasRenderingContext2D, stroke: InkStroke, opts?: { offsetX?: number; offsetY?: number }): void {
+    const pts = stroke.points;
+    if (pts.length === 0) return;
+    const ox = opts?.offsetX ?? 0;
+    const oy = opts?.offsetY ?? 0;
+
+    ctx.strokeStyle = stroke.color;
+    ctx.lineWidth = Math.max(0.0001, stroke.width);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    if (pts.length === 1) {
+      const p0 = pts[0]!;
+      ctx.fillStyle = stroke.color;
+      ctx.beginPath();
+      ctx.arc(p0.x + ox, p0.y + oy, Math.max(0.0001, stroke.width) * 0.5, 0, Math.PI * 2);
+      ctx.fill();
+      return;
+    }
+
+    ctx.beginPath();
+    ctx.moveTo(pts[0]!.x + ox, pts[0]!.y + oy);
+    for (let i = 1; i < pts.length; i++) {
+      const p = pts[i]!;
+      ctx.lineTo(p.x + ox, p.y + oy);
+    }
+    ctx.stroke();
+  }
+
+  private ensureInkNodeRaster(node: InkNode, contentRect: Rect): InkRaster | null {
+    if (node.strokes.length === 0) {
+      node.raster = null;
+      return null;
+    }
+
+    const scale = this.chooseInkRasterScale();
+    const worldW = Math.max(1, contentRect.w);
+    const worldH = Math.max(1, contentRect.h);
+    const pxW = Math.max(1, Math.round(worldW * scale));
+    const pxH = Math.max(1, Math.round(worldH * scale));
+
+    const raster = node.raster;
+    const needsRebuild =
+      !raster ||
+      raster.scale !== scale ||
+      Math.abs(raster.worldW - worldW) > 0.5 ||
+      Math.abs(raster.worldH - worldH) > 0.5 ||
+      raster.drawnStrokeCount > node.strokes.length ||
+      raster.canvas.width !== pxW ||
+      raster.canvas.height !== pxH;
+
+    if (needsRebuild) {
+      const canvas = document.createElement('canvas');
+      canvas.width = pxW;
+      canvas.height = pxH;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+      ctx.clearRect(0, 0, pxW, pxH);
+      ctx.setTransform(scale, 0, 0, scale, 0, 0);
+      for (const s of node.strokes) this.drawInkStroke(ctx, s);
+      node.raster = { scale, worldW, worldH, canvas, drawnStrokeCount: node.strokes.length };
+      return node.raster;
+    }
+
+    if (raster.drawnStrokeCount < node.strokes.length) {
+      const ctx = raster.canvas.getContext('2d');
+      if (ctx) {
+        ctx.setTransform(scale, 0, 0, scale, 0, 0);
+        for (let i = raster.drawnStrokeCount; i < node.strokes.length; i++) {
+          const s = node.strokes[i]!;
+          this.drawInkStroke(ctx, s);
+        }
+        raster.drawnStrokeCount = node.strokes.length;
+      }
+    }
+
+    return raster;
   }
 
   private updatePdfNodeDerivedHeight(node: PdfNode, state: PdfNodeState): void {
@@ -1131,6 +1328,25 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return null;
   }
 
+  private findTopmostInkNodeAtWorld(world: Vec2): InkNode | null {
+    for (let i = this.nodes.length - 1; i >= 0; i--) {
+      const n = this.nodes[i]!;
+      if (n.kind !== 'ink') continue;
+      const r = n.rect;
+      if (world.x >= r.x && world.x <= r.x + r.w && world.y >= r.y && world.y <= r.y + r.h) {
+        return n;
+      }
+    }
+    return null;
+  }
+
+  private shouldDrawInk(pointerType: string): boolean {
+    const t = pointerType || 'mouse';
+    if (t === 'touch') return false;
+    if (t === 'pen') return true;
+    return this.tool === 'draw';
+  }
+
   private hitResizeHandle(world: Vec2, rect: Rect): ResizeCorner | null {
     const z = Math.max(0.01, this.camera.zoom || 1);
     const hw = this.resizeHandleHitPx / z;
@@ -1152,16 +1368,66 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return null;
   }
 
-  private handlePointerDown(p: Vec2, info: { pointerType: string; pointerId: number }): boolean {
-    // Only capture when starting a node drag/resize. Otherwise let InputController pan the camera.
-    if (this.activeGesture) return false;
-    const world = this.camera.screenToWorld(p);
-    const hit = this.findTopmostNodeAtWorld(world);
-    if (!hit) return false;
+  private handlePointerDown(p: Vec2, info: { pointerType: string; pointerId: number }): PointerCaptureMode | null {
+    // Only capture when starting a custom interaction. Otherwise let InputController pan the camera.
+    if (this.activeGesture) return null;
+    if (this.editingNodeId) return null;
 
-    const nextSelected = hit.id;
-    const selectionChanged = nextSelected !== this.selectedNodeId;
-    this.selectedNodeId = nextSelected;
+    const world = this.camera.screenToWorld(p);
+
+    if (this.shouldDrawInk(info.pointerType)) {
+      const stroke: InkStroke = {
+        points: [],
+        width: this.inkStrokeWidthWorld(info.pointerType),
+        color: 'rgba(147,197,253,0.92)',
+      };
+
+      const inkNode = this.findTopmostInkNodeAtWorld(world);
+      if (inkNode) {
+        const contentRect = this.textContentRect(inkNode.rect);
+        const inContent =
+          world.x >= contentRect.x &&
+          world.x <= contentRect.x + contentRect.w &&
+          world.y >= contentRect.y &&
+          world.y <= contentRect.y + contentRect.h;
+        if (inContent) {
+          const local: InkPoint = {
+            x: clamp(world.x - contentRect.x, 0, contentRect.w),
+            y: clamp(world.y - contentRect.y, 0, contentRect.h),
+          };
+          stroke.points.push(local);
+          this.activeGesture = {
+            kind: 'ink-node',
+            pointerId: info.pointerId,
+            pointerType: info.pointerType,
+            nodeId: inkNode.id,
+            stroke,
+          };
+
+          const selectionChanged = this.selectedNodeId !== inkNode.id || this.editingNodeId !== null;
+          this.selectedNodeId = inkNode.id;
+          this.editingNodeId = null;
+          this.bringNodeToFront(inkNode.id);
+          this.suppressTapPointerIds.add(info.pointerId);
+          this.requestRender();
+          if (selectionChanged) this.emitUiState();
+          return 'draw';
+        }
+      }
+
+      stroke.points.push({ x: world.x, y: world.y });
+      this.activeGesture = { kind: 'ink-world', pointerId: info.pointerId, pointerType: info.pointerType, stroke };
+      this.suppressTapPointerIds.add(info.pointerId);
+      this.requestRender();
+      return 'draw';
+    }
+
+    const hit = this.findTopmostNodeAtWorld(world);
+    if (!hit) return null;
+
+    const selectionChanged = this.selectedNodeId !== hit.id || this.editingNodeId !== null;
+    this.selectedNodeId = hit.id;
+    this.editingNodeId = null;
     this.bringNodeToFront(hit.id);
 
     if (hit.kind === 'pdf') {
@@ -1175,7 +1441,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         world.y <= contentRect.y + contentRect.h;
       this.requestRender();
       if (selectionChanged) this.emitUiState();
-      if (inContent) return false;
+      if (inContent) return null;
     }
 
     const corner = hit.kind === 'text' ? this.hitResizeHandle(world, hit.rect) : null;
@@ -1202,12 +1468,36 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     this.requestRender();
     if (selectionChanged) this.emitUiState();
-    return true;
+    return 'node';
   }
 
   private handlePointerMove(p: Vec2, info: { pointerType: string; pointerId: number }): void {
     const g = this.activeGesture;
     if (!g || g.pointerId !== info.pointerId) return;
+
+    if (g.kind === 'ink-world') {
+      const world = this.camera.screenToWorld(p);
+      this.pushInkPoint(g.stroke, { x: world.x, y: world.y }, this.inkMinPointDistWorld(g.pointerType));
+      this.requestRender();
+      return;
+    }
+
+    if (g.kind === 'ink-node') {
+      const node = this.nodes.find((n): n is InkNode => n.id === g.nodeId && n.kind === 'ink');
+      if (!node) return;
+      const contentRect = this.textContentRect(node.rect);
+      const world = this.camera.screenToWorld(p);
+      this.pushInkPoint(
+        g.stroke,
+        {
+          x: clamp(world.x - contentRect.x, 0, contentRect.w),
+          y: clamp(world.y - contentRect.y, 0, contentRect.h),
+        },
+        this.inkMinPointDistWorld(g.pointerType),
+      );
+      this.requestRender();
+      return;
+    }
 
     const node = this.nodes.find((n) => n.id === g.nodeId);
     if (!node) return;
@@ -1297,6 +1587,45 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   private handlePointerUp(p: Vec2, info: { pointerType: string; pointerId: number; wasDrag: boolean }): void {
     const g = this.activeGesture;
     if (!g || g.pointerId !== info.pointerId) return;
+
+    if (g.kind === 'ink-world') {
+      const world = this.camera.screenToWorld(p);
+      this.pushInkPoint(g.stroke, { x: world.x, y: world.y }, this.inkMinPointDistWorld(g.pointerType));
+      if (g.stroke.points.length > 0) this.worldInkStrokes.push(g.stroke);
+      this.activeGesture = null;
+      this.suppressTapPointerIds.delete(info.pointerId);
+      this.requestRender();
+      return;
+    }
+
+    if (g.kind === 'ink-node') {
+      const node = this.nodes.find((n): n is InkNode => n.id === g.nodeId && n.kind === 'ink');
+      if (!node) {
+        this.activeGesture = null;
+        this.suppressTapPointerIds.delete(info.pointerId);
+        this.requestRender();
+        return;
+      }
+      const contentRect = this.textContentRect(node.rect);
+      const world = this.camera.screenToWorld(p);
+      this.pushInkPoint(
+        g.stroke,
+        {
+          x: clamp(world.x - contentRect.x, 0, contentRect.w),
+          y: clamp(world.y - contentRect.y, 0, contentRect.h),
+        },
+        this.inkMinPointDistWorld(g.pointerType),
+      );
+      if (g.stroke.points.length > 0) {
+        node.strokes.push(g.stroke);
+        void this.ensureInkNodeRaster(node, contentRect);
+      }
+      this.activeGesture = null;
+      this.suppressTapPointerIds.delete(info.pointerId);
+      this.requestRender();
+      return;
+    }
+
     this.activeGesture = null;
     if (info.wasDrag) this.suppressTapPointerIds.delete(info.pointerId);
     this.requestRender();
@@ -1544,12 +1873,58 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
             ctx.restore();
           }
         }
-      } else {
-        ctx.fillText(`id: ${node.id}`, x + 14, y + 34);
+      } else if (node.kind === 'ink') {
+        const contentRect = this.textContentRect(node.rect);
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(contentRect.x, contentRect.y, contentRect.w, contentRect.h);
+        ctx.clip();
+
+        ctx.fillStyle = 'rgba(0,0,0,0.22)';
+        ctx.fillRect(contentRect.x, contentRect.y, contentRect.w, contentRect.h);
+
+        const raster = this.ensureInkNodeRaster(node, contentRect);
+        if (raster) {
+          try {
+            ctx.drawImage(raster.canvas, contentRect.x, contentRect.y, contentRect.w, contentRect.h);
+          } catch {
+            // ignore; fall back to vectors
+          }
+        }
+
+        if (!raster && node.strokes.length > 0) {
+          for (const s of node.strokes) this.drawInkStroke(ctx, s, { offsetX: contentRect.x, offsetY: contentRect.y });
+        }
+
+        const g = this.activeGesture;
+        if (g && g.kind === 'ink-node' && g.nodeId === node.id) {
+          this.drawInkStroke(ctx, g.stroke, { offsetX: contentRect.x, offsetY: contentRect.y });
+        }
+
+        if (node.strokes.length === 0) {
+          ctx.fillStyle = 'rgba(255,255,255,0.50)';
+          ctx.font = `${14 / (this.camera.zoom || 1)}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
+          ctx.textBaseline = 'top';
+          ctx.fillText('Draw with a pen, or switch to Draw tool.', contentRect.x + 14, contentRect.y + 14);
+        }
+
+        ctx.restore();
       }
 
       if (isSelected && node.kind === 'text' && node.id !== this.editingNodeId) this.drawResizeHandles(node.rect);
     }
+  }
+
+  private drawWorldInk(): void {
+    const ctx = this.ctx;
+    const g = this.activeGesture;
+    const hasInProgress = g?.kind === 'ink-world';
+    if (this.worldInkStrokes.length === 0 && !hasInProgress) return;
+
+    ctx.save();
+    for (const s of this.worldInkStrokes) this.drawInkStroke(ctx, s);
+    if (hasInProgress && g) this.drawInkStroke(ctx, g.stroke);
+    ctx.restore();
   }
 
   private drawResizeHandles(rect: Rect): void {
@@ -1588,7 +1963,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
     ctx.textBaseline = 'bottom';
     ctx.fillText(
-      `pan: drag background • move: drag node • resize: drag corners • edit: double-click / Enter • zoom: pinch / ctrl+wheel`,
+      `tool: ${this.tool} • ink: pen / Draw tool • pan: drag background • move: drag node • resize: corners • edit: double-click/Enter • zoom: pinch/ctrl+wheel`,
       10,
       this.cssH - 10,
     );
@@ -1602,6 +1977,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.applyWorldTransform();
     this.drawGrid();
     this.drawDemoNodes();
+    this.drawWorldInk();
 
     this.updateTextRastersForViewport();
     this.updatePdfPageRendersForViewport();

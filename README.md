@@ -15,10 +15,12 @@ npm run dev
 - Drag to pan
 - Pinch (touch) to zoom
 - Trackpad pinch (Chrome/Edge): `ctrl` + wheel
+- Tool: `Select` / `Draw` (pen always draws)
 - Move node: drag a node
 - Resize node: drag a corner handle
 - Edit node: double-click / `Enter` (commit with click-outside / Done, cancel with `Esc`)
 - Import PDF: click `Import PDF` (creates a new PDF node)
+- Ink: draw on the canvas (world ink) or inside an ink node; `New Ink Node` creates another; `Clear Ink` clears world ink
 
 ## Verify Markdown/LaTeX (current text node)
 
