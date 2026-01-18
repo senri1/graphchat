@@ -15,10 +15,13 @@ npm run dev
 - Drag to pan
 - Pinch (touch) to zoom
 - Trackpad pinch (Chrome/Edge): `ctrl` + wheel
+- Move node: drag a node
+- Resize node: drag a corner handle
+- Edit node: double-click / `Enter` (commit with click-outside / Done, cancel with `Esc`)
 
 ## Verify Markdown/LaTeX (current text node)
 
-- On load, an editor panel opens for the sample text node.
+- Double-click the sample text node (or press `Enter`) to edit.
 - Type Markdown plus math delimiters:
   - Inline: `\(e^{i\pi}+1=0\)`
   - Display: `\[\int_0^1 x^2 dx = \frac{1}{3}\]`

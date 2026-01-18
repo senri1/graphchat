@@ -102,7 +102,7 @@ export class WorldEngine {
   onUiState?: (state: WorldEngineUiState) => void;
 
   private selectedNodeId: string | null = 'n1';
-  private editingNodeId: string | null = 'n1';
+  private editingNodeId: string | null = null;
   private activeGesture: ActiveNodeGesture | null = null;
   private suppressTapPointerIds = new Set<number>();
 
@@ -110,6 +110,10 @@ export class WorldEngine {
   private readonly resizeHandleHitPx = 22;
   private readonly minNodeW = 160;
   private readonly minNodeH = 110;
+
+  private lastTapAt = 0;
+  private lastTapPos: Vec2 | null = null;
+  private lastTapNodeId: string | null = null;
 
   private readonly textRasterQueueByNodeId = new Map<string, TextRasterJob>();
   private textRasterRunning = false;
@@ -352,7 +356,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     }
     if (this.nodes.length === before) return;
     this.selectedNodeId = 'n1';
-    this.editingNodeId = 'n1';
+    this.editingNodeId = null;
     this.requestRender();
     this.emitUiState();
   }
@@ -514,6 +518,68 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       editingNodeId: this.editingNodeId,
       editingText,
     };
+  }
+
+  getNodeTitle(nodeId: string): string | null {
+    const node = this.nodes.find((n) => n.id === nodeId);
+    return node?.title ?? null;
+  }
+
+  getNodeScreenRect(nodeId: string): Rect | null {
+    const node = this.nodes.find((n) => n.id === nodeId);
+    if (!node) return null;
+    const tl = this.camera.worldToScreen({ x: node.rect.x, y: node.rect.y });
+    const br = this.camera.worldToScreen({ x: node.rect.x + node.rect.w, y: node.rect.y + node.rect.h });
+    return { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y };
+  }
+
+  beginEditingSelectedNode(): void {
+    if (this.editingNodeId) return;
+    const nodeId = this.selectedNodeId;
+    if (!nodeId) return;
+    this.beginEditingNode(nodeId);
+  }
+
+  beginEditingNode(nodeId: string): void {
+    const node = this.nodes.find((n) => n.id === nodeId);
+    if (!node || node.kind !== 'text') return;
+    const changed = this.editingNodeId !== nodeId || this.selectedNodeId !== nodeId;
+    this.selectedNodeId = nodeId;
+    this.editingNodeId = nodeId;
+    this.bringNodeToFront(nodeId);
+    this.requestRender();
+    if (changed) this.emitUiState();
+  }
+
+  commitEditing(next: string): void {
+    const nodeId = this.editingNodeId;
+    if (!nodeId) return;
+
+    const node = this.nodes.find((n) => n.id === nodeId);
+    if (!node || node.kind !== 'text') {
+      this.editingNodeId = null;
+      this.requestRender();
+      this.emitUiState();
+      return;
+    }
+
+    const text = typeof next === 'string' ? next : String(next ?? '');
+    if (node.content !== text) {
+      node.content = text;
+      node.contentHash = fingerprintText(text);
+      this.textRasterGeneration += 1;
+    }
+
+    this.editingNodeId = null;
+    this.requestRender();
+    this.emitUiState();
+  }
+
+  cancelEditing(): void {
+    if (!this.editingNodeId) return;
+    this.editingNodeId = null;
+    this.requestRender();
+    this.emitUiState();
   }
 
   setEditingText(next: string): void {
@@ -818,14 +884,30 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       this.suppressTapPointerIds.delete(info.pointerId);
       return;
     }
+    if (this.editingNodeId) return;
     const world = this.camera.screenToWorld(p);
     const hit = this.findTopmostNodeAtWorld(world);
 
+    const now = performance.now();
+    const isDoubleTap =
+      hit &&
+      this.lastTapNodeId === hit.id &&
+      now - this.lastTapAt < 350 &&
+      this.lastTapPos != null &&
+      (p.x - this.lastTapPos.x) * (p.x - this.lastTapPos.x) + (p.y - this.lastTapPos.y) * (p.y - this.lastTapPos.y) <
+        18 * 18;
+    this.lastTapAt = now;
+    this.lastTapPos = p;
+    this.lastTapNodeId = hit?.id ?? null;
+
+    if (isDoubleTap && hit.kind === 'text') {
+      this.beginEditingNode(hit.id);
+      return;
+    }
+
     const nextSelected = hit ? hit.id : null;
-    const nextEditing = hit && hit.kind === 'text' ? hit.id : null;
-    const changed = nextSelected !== this.selectedNodeId || nextEditing !== this.editingNodeId;
+    const changed = nextSelected !== this.selectedNodeId;
     this.selectedNodeId = nextSelected;
-    this.editingNodeId = nextEditing;
     if (hit) this.bringNodeToFront(hit.id);
     if (changed) {
       this.requestRender();
@@ -908,6 +990,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   private drawDemoNodes(): void {
     const ctx = this.ctx;
     for (const node of this.nodes) {
+      if (node.id === this.editingNodeId) continue;
       const { x, y, w, h } = node.rect;
       const r = 18;
 
@@ -967,7 +1050,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         ctx.fillText(`id: ${node.id}`, x + 14, y + 34);
       }
 
-      if (isSelected) {
+      if (isSelected && node.id !== this.editingNodeId) {
         this.drawResizeHandles(node.rect);
       }
     }
@@ -1009,7 +1092,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
     ctx.textBaseline = 'bottom';
     ctx.fillText(
-      `pan: drag background • move: drag node • resize: drag corners • zoom: pinch / ctrl+wheel`,
+      `pan: drag background • move: drag node • resize: drag corners • edit: double-click / Enter • zoom: pinch / ctrl+wheel`,
       10,
       this.cssH - 10,
     );

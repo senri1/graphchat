@@ -1,4 +1,4 @@
-import React, { useLayoutEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { WorldEngine, type WorldEngineDebug } from './engine/WorldEngine';
 import TextNodeEditor from './components/TextNodeEditor';
 
@@ -8,6 +8,7 @@ export default function App() {
   const engineRef = useRef<WorldEngine | null>(null);
   const [debug, setDebug] = useState<WorldEngineDebug | null>(null);
   const [ui, setUi] = useState(() => ({ selectedNodeId: null as string | null, editingNodeId: null as string | null, editingText: '' }));
+  const [viewport, setViewport] = useState(() => ({ w: 1, h: 1 }));
 
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -23,6 +24,7 @@ export default function App() {
 
     const resize = () => {
       const rect = container.getBoundingClientRect();
+      setViewport({ w: rect.width, h: rect.height });
       engine.resize(rect.width, rect.height);
     };
 
@@ -37,14 +39,52 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      if (ui.editingNodeId) return;
+      if (!engineRef.current) return;
+
+      const active = document.activeElement as HTMLElement | null;
+      const canvas = canvasRef.current;
+      const isTypingTarget =
+        !!active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable);
+      if (isTypingTarget) return;
+      if (active && active !== document.body && active !== document.documentElement && active !== canvas) return;
+
+      if (e.key === 'Enter') {
+        engineRef.current.beginEditingSelectedNode();
+        e.preventDefault();
+        return;
+      }
+
+      if (e.key === 'Escape') {
+        engineRef.current.clearSelection();
+        e.preventDefault();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [ui.editingNodeId]);
+
+  const editorAnchor = ui.editingNodeId ? engineRef.current?.getNodeScreenRect(ui.editingNodeId) ?? null : null;
+  const editorTitle = ui.editingNodeId ? engineRef.current?.getNodeTitle(ui.editingNodeId) ?? null : null;
+  const editorZoom = debug?.zoom ?? engineRef.current?.camera.zoom ?? 1;
+
   return (
     <div className="app" ref={containerRef}>
       <canvas className="stage" ref={canvasRef} />
       {ui.editingNodeId ? (
         <TextNodeEditor
-          value={ui.editingText}
-          onChange={(next) => engineRef.current?.setEditingText(next)}
-          onClose={() => engineRef.current?.clearSelection()}
+          nodeId={ui.editingNodeId}
+          title={editorTitle}
+          initialValue={ui.editingText}
+          anchorRect={editorAnchor}
+          viewport={viewport}
+          zoom={editorZoom}
+          onCommit={(next) => engineRef.current?.commitEditing(next)}
+          onCancel={() => engineRef.current?.cancelEditing()}
         />
       ) : null}
       <div
