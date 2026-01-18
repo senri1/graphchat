@@ -502,7 +502,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (!ctx) throw new Error('Missing 2D canvas context');
     this.ctx = ctx;
 
-    const inputEl = this.canvas.parentElement ?? this.canvas;
+    const inputEl = this.canvas;
     this.input = new InputController(inputEl, this.camera, {
       onChange: () => this.requestRender(),
       onInteractingChange: (v) => {
