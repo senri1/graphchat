@@ -18,6 +18,7 @@ npm run dev
 - Move node: drag a node
 - Resize node: drag a corner handle
 - Edit node: double-click / `Enter` (commit with click-outside / Done, cancel with `Esc`)
+- Import PDF: click `Import PDF` (creates a new PDF node)
 
 ## Verify Markdown/LaTeX (current text node)
 
@@ -37,3 +38,4 @@ npm run dev
 - `graphchatv1/src/engine/Camera.ts`: world↔screen transforms
 - `graphchatv1/src/engine/InputController.ts`: Pointer Events + wheel → camera updates
 - `graphchatv1/src/engine/raster/textRaster.ts`: Markdown/KaTeX → SVG `<foreignObject>` → `ImageBitmap`
+- `graphchatv1/src/engine/pdf/pdfjs.ts`: pdf.js loader + worker setup

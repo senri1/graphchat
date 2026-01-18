@@ -5,6 +5,7 @@ import TextNodeEditor from './components/TextNodeEditor';
 export default function App() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const pdfInputRef = useRef<HTMLInputElement | null>(null);
   const engineRef = useRef<WorldEngine | null>(null);
   const [debug, setDebug] = useState<WorldEngineDebug | null>(null);
   const [ui, setUi] = useState(() => ({ selectedNodeId: null as string | null, editingNodeId: null as string | null, editingText: '' }));
@@ -94,6 +95,21 @@ export default function App() {
         onPointerUp={(e) => e.stopPropagation()}
         onWheel={(e) => e.stopPropagation()}
       >
+        <input
+          ref={pdfInputRef}
+          className="controls__fileInput"
+          type="file"
+          accept="application/pdf"
+          onChange={(e) => {
+            const file = e.currentTarget.files?.[0];
+            e.currentTarget.value = '';
+            if (!file) return;
+            void engineRef.current?.importPdfFromFile(file);
+          }}
+        />
+        <button className="controls__btn" type="button" onClick={() => pdfInputRef.current?.click()}>
+          Import PDF
+        </button>
         <button className="controls__btn" type="button" onClick={() => engineRef.current?.spawnLatexStressTest(50)}>
           +50 nodes
         </button>

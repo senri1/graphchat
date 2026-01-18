@@ -3,6 +3,8 @@ import { Camera } from './Camera';
 import { InputController } from './InputController';
 import { rectsIntersect, type Rect, type Vec2 } from './types';
 import { rasterizeMarkdownMathToImage } from './raster/textRaster';
+import type { PDFDocumentProxy } from 'pdfjs-dist';
+import { loadPdfDocument } from './pdf/pdfjs';
 
 export type WorldEngineDebug = {
   cssW: number;
@@ -40,12 +42,21 @@ type TextNode = DemoNodeBase & {
   contentHash: string;
 };
 
-type PlaceholderNode = DemoNodeBase & {
-  kind: 'pdf' | 'ink';
+type PdfNode = DemoNodeBase & {
+  kind: 'pdf';
+  rect: Rect;
+  fileName: string | null;
+  pageCount: number;
+  status: 'empty' | 'loading' | 'ready' | 'error';
+  error: string | null;
+};
+
+type InkNode = DemoNodeBase & {
+  kind: 'ink';
   rect: Rect;
 };
 
-type WorldNode = TextNode | PlaceholderNode;
+type WorldNode = TextNode | PdfNode | InkNode;
 
 type TextRasterJob = {
   nodeId: string;
@@ -55,6 +66,31 @@ type TextRasterJob = {
   width: number;
   height: number;
   source: string;
+};
+
+type PdfPageMeta = {
+  pageNumber: number;
+  viewportW: number;
+  viewportH: number;
+  aspect: number;
+};
+
+type PdfNodeState = {
+  token: number;
+  doc: PDFDocumentProxy;
+  pageCount: number;
+  metas: Array<PdfPageMeta | null>;
+  defaultAspect: number;
+};
+
+type PdfPageRenderJob = {
+  nodeId: string;
+  token: number;
+  pageNumber: number;
+  key: string;
+  pageWorldW: number;
+  pageWorldH: number;
+  renderDpi: number;
 };
 
 export type WorldEngineUiState = {
@@ -136,6 +172,30 @@ export class WorldEngine {
   private readonly bestTextRasterKeyBySig = new Map<string, { key: string; rasterScale: number }>();
   private readonly textRasterCacheMaxEntries = 2500;
   private readonly textRasterCacheMaxBytes = 256 * 1024 * 1024;
+
+  private pdfTokenSeq = 1;
+  private readonly pdfStateByNodeId = new Map<string, PdfNodeState>();
+  private readonly pdfPageRenderQueue = new Map<string, PdfPageRenderJob>();
+  private pdfPageRenderRunning = false;
+  private readonly pdfRenderDpi = 2;
+
+  private readonly pdfPageCache = new Map<
+    string,
+    {
+      key: string;
+      nodeId: string;
+      token: number;
+      pageNumber: number;
+      image: CanvasImageSource;
+      pixelW: number;
+      pixelH: number;
+      bytesEstimate: number;
+      readyAt: number;
+    }
+  >();
+  private pdfPageCacheBytes = 0;
+  private readonly pdfPageCacheMaxEntries = 220;
+  private readonly pdfPageCacheMaxBytes = 192 * 1024 * 1024;
 
   private readonly nodes: WorldNode[] = [
     {
@@ -260,8 +320,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     {
       kind: 'pdf',
       id: 'n2',
-      rect: { x: 540, y: 140, w: 360, h: 220 },
-      title: 'PDF node (page bitmaps)',
+      rect: { x: 540, y: 140, w: 680, h: 220 },
+      title: 'PDF node',
+      fileName: null,
+      pageCount: 0,
+      status: 'empty',
+      error: null,
     },
     {
       kind: 'ink',
@@ -284,7 +348,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       onInteractingChange: (v) => {
         this.interacting = v;
         this.requestRender();
-        if (!v) this.kickTextRasterQueue();
+        if (!v) {
+          this.kickTextRasterQueue();
+          this.kickPdfPageRenderQueue();
+        }
         this.emitDebug({ force: true });
       },
       onPointerDown: (p, info) => this.handlePointerDown(p, info),
@@ -352,6 +419,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     for (let i = this.nodes.length - 1; i >= 0; i--) {
       const node = this.nodes[i]!;
       if (keepIds.has(node.id)) continue;
+      if (node.kind === 'pdf') this.disposePdfNode(node.id);
       this.nodes.splice(i, 1);
     }
     if (this.nodes.length === before) return;
@@ -361,11 +429,91 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.emitUiState();
   }
 
+  async importPdfFromFile(file: File): Promise<void> {
+    const f = file;
+    if (!f) return;
+
+    const id = `p${Date.now().toString(36)}-${(this.nodeSeq++).toString(36)}`;
+    const center = this.camera.screenToWorld({ x: this.cssW * 0.5, y: this.cssH * 0.5 });
+    const nodeW = 680;
+    const nodeH = 220;
+    const node: PdfNode = {
+      kind: 'pdf',
+      id,
+      rect: { x: center.x - nodeW * 0.5, y: center.y - 120, w: nodeW, h: nodeH },
+      title: f.name || 'PDF',
+      fileName: f.name || null,
+      pageCount: 0,
+      status: 'loading',
+      error: null,
+    };
+
+    this.nodes.push(node);
+    const selectionChanged = this.selectedNodeId !== id || this.editingNodeId !== null;
+    this.selectedNodeId = id;
+    this.editingNodeId = null;
+    this.bringNodeToFront(id);
+    this.requestRender();
+    if (selectionChanged) this.emitUiState();
+
+    const token = this.pdfTokenSeq++;
+    try {
+      const buf = await f.arrayBuffer();
+      const doc = await loadPdfDocument(buf);
+
+      const state: PdfNodeState = {
+        token,
+        doc,
+        pageCount: doc.numPages,
+        metas: new Array(doc.numPages).fill(null),
+        defaultAspect: 1.414,
+      };
+      this.pdfStateByNodeId.set(id, state);
+
+      node.pageCount = doc.numPages;
+      node.status = 'ready';
+      node.error = null;
+      node.title = `${node.fileName ?? 'PDF'} (${doc.numPages}p)`;
+
+      this.requestRender();
+      void this.prefetchPdfMetas(id, token);
+    } catch (err: any) {
+      node.status = 'error';
+      node.error = err ? String(err?.message ?? err) : 'Failed to load PDF';
+      this.requestRender();
+    }
+  }
+
   private closeImage(image: CanvasImageSource | null | undefined): void {
     try {
       (image as any)?.close?.();
     } catch {
       // ignore
+    }
+  }
+
+  private disposePdfNode(nodeId: string): void {
+    const state = this.pdfStateByNodeId.get(nodeId);
+    if (state) {
+      try {
+        void state.doc.destroy();
+      } catch {
+        // ignore
+      }
+      this.pdfStateByNodeId.delete(nodeId);
+    }
+
+    for (const key of this.pdfPageRenderQueue.keys()) {
+      if (key.startsWith(`${nodeId}|`)) this.pdfPageRenderQueue.delete(key);
+    }
+
+    if (this.pdfPageCache.size > 0) {
+      for (const [key, entry] of this.pdfPageCache.entries()) {
+        if (entry.nodeId !== nodeId) continue;
+        this.pdfPageCacheBytes -= entry.bytesEstimate || 0;
+        this.closeImage(entry.image);
+        this.pdfPageCache.delete(key);
+      }
     }
   }
 
@@ -385,6 +533,26 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     }
   }
 
+  private evictOldPdfPages(): void {
+    while (this.pdfPageCache.size > this.pdfPageCacheMaxEntries || this.pdfPageCacheBytes > this.pdfPageCacheMaxBytes) {
+      const oldestKey = this.pdfPageCache.keys().next().value as string | undefined;
+      if (!oldestKey) return;
+      const entry = this.pdfPageCache.get(oldestKey);
+      if (entry) {
+        this.pdfPageCacheBytes -= entry.bytesEstimate || 0;
+        this.closeImage(entry.image);
+      }
+      this.pdfPageCache.delete(oldestKey);
+    }
+  }
+
+  private touchPdfPage(key: string): void {
+    const entry = this.pdfPageCache.get(key);
+    if (!entry) return;
+    this.pdfPageCache.delete(key);
+    this.pdfPageCache.set(key, entry);
+  }
+
   private touchTextRaster(key: string): void {
     const entry = this.textRasterCache.get(key);
     if (!entry) return;
@@ -400,11 +568,25 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.textRasterQueueByNodeId.set(job.nodeId, job);
   }
 
+  private enqueuePdfPageRender(job: PdfPageRenderJob): void {
+    if (!job.key) return;
+    if (this.pdfPageCache.has(job.key)) return;
+    if (this.pdfPageRenderQueue.has(job.key)) return;
+    this.pdfPageRenderQueue.set(job.key, job);
+  }
+
   private kickTextRasterQueue(): void {
     if (this.textRasterRunning) return;
     if (this.interacting) return;
     if (this.textRasterQueueByNodeId.size === 0) return;
     void this.runTextRasterQueue();
+  }
+
+  private kickPdfPageRenderQueue(): void {
+    if (this.pdfPageRenderRunning) return;
+    if (this.interacting) return;
+    if (this.pdfPageRenderQueue.size === 0) return;
+    void this.runPdfPageRenderQueue();
   }
 
   private async runTextRasterQueue(): Promise<void> {
@@ -471,6 +653,153 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     }
   }
 
+  private async runPdfPageRenderQueue(): Promise<void> {
+    if (this.pdfPageRenderRunning) return;
+    this.pdfPageRenderRunning = true;
+
+    try {
+      while (this.pdfPageRenderQueue.size > 0) {
+        if (this.interacting) return;
+
+        const next = this.pdfPageRenderQueue.entries().next();
+        if (next.done) return;
+        const [key, job] = next.value;
+        this.pdfPageRenderQueue.delete(key);
+        if (this.pdfPageCache.has(key)) continue;
+
+        try {
+          await this.renderPdfPage(job);
+          this.evictOldPdfPages();
+          this.requestRender();
+        } catch {
+          // ignore; fall back to placeholder
+        }
+
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      }
+    } finally {
+      this.pdfPageRenderRunning = false;
+      if (!this.interacting && this.pdfPageRenderQueue.size > 0) {
+        this.kickPdfPageRenderQueue();
+      }
+    }
+  }
+
+  private async ensurePdfPageMeta(nodeId: string, token: number, pageNumber: number): Promise<PdfPageMeta | null> {
+    const state = this.pdfStateByNodeId.get(nodeId);
+    if (!state || state.token !== token) return null;
+    if (pageNumber < 1 || pageNumber > state.pageCount) return null;
+    const idx = pageNumber - 1;
+    const existing = state.metas[idx];
+    if (existing) return existing;
+
+    try {
+      const page = await state.doc.getPage(pageNumber);
+      const viewport = page.getViewport({ scale: 1 });
+      const viewportW = viewport.width;
+      const viewportH = viewport.height;
+      const aspect = viewportW > 0 ? viewportH / viewportW : state.defaultAspect;
+      const meta: PdfPageMeta = {
+        pageNumber,
+        viewportW,
+        viewportH,
+        aspect: Number.isFinite(aspect) && aspect > 0 ? aspect : state.defaultAspect,
+      };
+
+      const latest = this.pdfStateByNodeId.get(nodeId);
+      if (!latest || latest.token !== token) return null;
+      latest.metas[idx] = meta;
+      if (pageNumber === 1) latest.defaultAspect = meta.aspect;
+      this.requestRender();
+      return meta;
+    } catch {
+      return null;
+    }
+  }
+
+  private async prefetchPdfMetas(nodeId: string, token: number): Promise<void> {
+    const state = this.pdfStateByNodeId.get(nodeId);
+    if (!state || state.token !== token) return;
+
+    for (let pageNumber = 1; pageNumber <= state.pageCount; pageNumber += 1) {
+      const latest = this.pdfStateByNodeId.get(nodeId);
+      if (!latest || latest.token !== token) return;
+
+      await this.ensurePdfPageMeta(nodeId, token, pageNumber);
+      if (pageNumber % 4 === 0) {
+        this.requestRender();
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      }
+    }
+
+    this.requestRender();
+  }
+
+  private getPdfPageFromCache(key: string): CanvasImageSource | null {
+    const entry = this.pdfPageCache.get(key);
+    if (!entry) return null;
+    this.touchPdfPage(key);
+    return entry.image;
+  }
+
+  private async renderPdfPage(job: PdfPageRenderJob): Promise<void> {
+    const state = this.pdfStateByNodeId.get(job.nodeId);
+    if (!state || state.token !== job.token) return;
+    if (this.pdfPageCache.has(job.key)) return;
+
+    const meta =
+      state.metas[job.pageNumber - 1] ?? (await this.ensurePdfPageMeta(job.nodeId, job.token, job.pageNumber));
+    if (!meta) return;
+
+    const page = await state.doc.getPage(job.pageNumber);
+    const renderScale = (job.pageWorldW * job.renderDpi) / Math.max(1, meta.viewportW);
+    const viewport = page.getViewport({ scale: renderScale });
+
+    const pixelW = Math.max(1, Math.floor(viewport.width));
+    const pixelH = Math.max(1, Math.floor(viewport.height));
+    const bytesEstimate = pixelW * pixelH * 4;
+
+    const pageCanvas = document.createElement('canvas');
+    pageCanvas.width = pixelW;
+    pageCanvas.height = pixelH;
+    const pageCtx = pageCanvas.getContext('2d', { alpha: false });
+    if (!pageCtx) return;
+
+    await page.render({ canvasContext: pageCtx as any, viewport }).promise;
+
+    let image: CanvasImageSource = pageCanvas;
+    if (typeof createImageBitmap === 'function') {
+      try {
+        image = await createImageBitmap(pageCanvas);
+      } catch {
+        image = pageCanvas;
+      }
+    }
+
+    const latest = this.pdfStateByNodeId.get(job.nodeId);
+    if (!latest || latest.token !== job.token) {
+      this.closeImage(image);
+      return;
+    }
+    if (this.pdfPageCache.has(job.key)) {
+      this.closeImage(image);
+      return;
+    }
+
+    this.pdfPageCache.set(job.key, {
+      key: job.key,
+      nodeId: job.nodeId,
+      token: job.token,
+      pageNumber: job.pageNumber,
+      image,
+      pixelW,
+      pixelH,
+      bytesEstimate,
+      readyAt: performance.now(),
+    });
+    this.pdfPageCacheBytes += bytesEstimate;
+  }
+
   start(): void {
     this.input.start();
     this.requestRender();
@@ -479,6 +808,18 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
   dispose(): void {
     this.input.dispose();
+    for (const state of this.pdfStateByNodeId.values()) {
+      try {
+        void state.doc.destroy();
+      } catch {
+        // ignore
+      }
+    }
+    this.pdfStateByNodeId.clear();
+    this.pdfPageRenderQueue.clear();
+    for (const entry of this.pdfPageCache.values()) this.closeImage(entry.image);
+    this.pdfPageCache.clear();
+    this.pdfPageCacheBytes = 0;
     if (this.raf != null) {
       try {
         cancelAnimationFrame(this.raf);
@@ -620,6 +961,25 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return { x, y, w, h };
   }
 
+  private updatePdfNodeDerivedHeight(node: PdfNode, state: PdfNodeState): void {
+    const PAD = 14;
+    const HEADER_H = 50;
+    const pageGap = 16;
+    const pageW = Math.max(1, node.rect.w - PAD * 2);
+
+    let contentH = 0;
+    for (let pageNumber = 1; pageNumber <= state.pageCount; pageNumber += 1) {
+      const meta = state.metas[pageNumber - 1];
+      const aspect = meta?.aspect ?? state.defaultAspect;
+      const pageH = Math.max(1, pageW * (Number.isFinite(aspect) && aspect > 0 ? aspect : state.defaultAspect));
+      contentH += pageH + pageGap;
+    }
+    if (state.pageCount > 0) contentH -= pageGap;
+
+    const desired = Math.max(220, HEADER_H + PAD + contentH);
+    if (Math.abs(desired - node.rect.h) > 0.5) node.rect.h = desired;
+  }
+
   private chooseTextRasterScale(): number {
     const ideal = (this.camera.zoom || 1) * (this.dpr || 1);
     const cap = this.interacting ? 1 : 2;
@@ -686,6 +1046,62 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.kickTextRasterQueue();
   }
 
+  private updatePdfPageRendersForViewport(): void {
+    const view = this.worldViewportRect({ overscan: 360 });
+    const desiredKeys = new Set<string>();
+
+    for (const node of this.nodes) {
+      if (node.kind !== 'pdf') continue;
+      if (node.status !== 'ready') continue;
+
+      const state = this.pdfStateByNodeId.get(node.id);
+      if (!state) continue;
+
+      // Full import: node height is derived from (pageCount + page sizes).
+      this.updatePdfNodeDerivedHeight(node, state);
+
+      const contentRect = this.textContentRect(node.rect);
+      const pageW = Math.max(1, contentRect.w);
+      const pageGap = 16;
+      let y = contentRect.y;
+
+      for (let pageNumber = 1; pageNumber <= state.pageCount; pageNumber += 1) {
+        const meta = state.metas[pageNumber - 1];
+        const aspect = meta?.aspect ?? state.defaultAspect;
+        const pageH = Math.max(1, pageW * (Number.isFinite(aspect) && aspect > 0 ? aspect : state.defaultAspect));
+        const pageRect: Rect = { x: contentRect.x, y, w: pageW, h: pageH };
+        y += pageH + pageGap;
+
+        if (!rectsIntersect(pageRect, view)) continue;
+
+        void this.ensurePdfPageMeta(node.id, state.token, pageNumber);
+
+        const key = `${node.id}|t${state.token}|p${pageNumber}|w${Math.round(pageW)}|d${this.pdfRenderDpi}`;
+        desiredKeys.add(key);
+
+        if (!this.pdfPageCache.has(key)) {
+          this.enqueuePdfPageRender({
+            nodeId: node.id,
+            token: state.token,
+            pageNumber,
+            key,
+            pageWorldW: pageW,
+            pageWorldH: pageH,
+            renderDpi: this.pdfRenderDpi,
+          });
+        }
+      }
+    }
+
+    if (this.pdfPageRenderQueue.size > 0) {
+      for (const key of this.pdfPageRenderQueue.keys()) {
+        if (!desiredKeys.has(key)) this.pdfPageRenderQueue.delete(key);
+      }
+    }
+
+    this.kickPdfPageRenderQueue();
+  }
+
   private worldViewportRect(opts?: { overscan?: number }): Rect {
     const over = Math.max(0, Math.round(opts?.overscan ?? 0));
     const a = this.camera.screenToWorld({ x: -over, y: -over });
@@ -748,7 +1164,21 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.selectedNodeId = nextSelected;
     this.bringNodeToFront(hit.id);
 
-    const corner = this.hitResizeHandle(world, hit.rect);
+    if (hit.kind === 'pdf') {
+      // Match pdftest-style interaction: dragging inside page content pans the world;
+      // dragging on the node chrome/border moves the node.
+      const contentRect = this.textContentRect(hit.rect);
+      const inContent =
+        world.x >= contentRect.x &&
+        world.x <= contentRect.x + contentRect.w &&
+        world.y >= contentRect.y &&
+        world.y <= contentRect.y + contentRect.h;
+      this.requestRender();
+      if (selectionChanged) this.emitUiState();
+      if (inContent) return false;
+    }
+
+    const corner = hit.kind === 'text' ? this.hitResizeHandle(world, hit.rect) : null;
     const startRect: Rect = { ...hit.rect };
     if (corner) {
       this.activeGesture = {
@@ -989,8 +1419,13 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
   private drawDemoNodes(): void {
     const ctx = this.ctx;
+    const view = this.worldViewportRect({ overscan: 360 });
     for (const node of this.nodes) {
       if (node.id === this.editingNodeId) continue;
+      if (node.kind === 'pdf' && node.status === 'ready') {
+        const state = this.pdfStateByNodeId.get(node.id);
+        if (state) this.updatePdfNodeDerivedHeight(node, state);
+      }
       const { x, y, w, h } = node.rect;
       const r = 18;
 
@@ -1046,13 +1481,74 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           ctx.fillStyle = 'rgba(255,255,255,0.45)';
           ctx.fillText('Rendering…', contentRect.x, contentRect.y);
         }
+      } else if (node.kind === 'pdf') {
+        const contentRect = this.textContentRect(node.rect);
+        if (node.status === 'empty') {
+          ctx.fillStyle = 'rgba(255,255,255,0.55)';
+          ctx.fillText('Import a PDF to begin.', contentRect.x, contentRect.y + 4);
+        } else if (node.status === 'loading') {
+          ctx.fillStyle = 'rgba(255,255,255,0.55)';
+          ctx.fillText('Loading PDF…', contentRect.x, contentRect.y + 4);
+        } else if (node.status === 'error') {
+          ctx.fillStyle = 'rgba(255,80,80,0.85)';
+          ctx.fillText('Failed to load PDF', contentRect.x, contentRect.y + 4);
+          if (node.error) {
+            ctx.fillStyle = 'rgba(255,255,255,0.55)';
+            ctx.fillText(String(node.error).slice(0, 140), contentRect.x, contentRect.y + 24);
+          }
+        } else if (node.status === 'ready') {
+          const state = this.pdfStateByNodeId.get(node.id);
+          if (!state) {
+            ctx.fillStyle = 'rgba(255,255,255,0.55)';
+            ctx.fillText('PDF missing state', contentRect.x, contentRect.y + 4);
+          } else {
+            const pageW = Math.max(1, contentRect.w);
+            const pageGap = 16;
+            let pageY = contentRect.y;
+
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(contentRect.x, contentRect.y, contentRect.w, contentRect.h);
+            ctx.clip();
+
+            for (let pageNumber = 1; pageNumber <= state.pageCount; pageNumber += 1) {
+              const meta = state.metas[pageNumber - 1];
+              const aspect = meta?.aspect ?? state.defaultAspect;
+              const pageH = Math.max(1, pageW * (Number.isFinite(aspect) && aspect > 0 ? aspect : state.defaultAspect));
+              const pageRect: Rect = { x: contentRect.x, y: pageY, w: pageW, h: pageH };
+              pageY += pageH + pageGap;
+
+              if (!rectsIntersect(pageRect, view)) continue;
+
+              ctx.fillStyle = 'rgba(255,255,255,0.94)';
+              ctx.fillRect(pageRect.x, pageRect.y, pageRect.w, pageRect.h);
+              ctx.strokeStyle = 'rgba(0,0,0,0.12)';
+              ctx.lineWidth = 1 / (this.camera.zoom || 1);
+              ctx.strokeRect(pageRect.x, pageRect.y, pageRect.w, pageRect.h);
+
+              const key = `${node.id}|t${state.token}|p${pageNumber}|w${Math.round(pageW)}|d${this.pdfRenderDpi}`;
+              const img = this.getPdfPageFromCache(key);
+              if (img) {
+                try {
+                  ctx.drawImage(img, pageRect.x, pageRect.y, pageRect.w, pageRect.h);
+                } catch {
+                  // ignore; leave background
+                }
+              } else {
+                ctx.fillStyle = 'rgba(0,0,0,0.55)';
+                ctx.font = `${14 / (this.camera.zoom || 1)}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
+                ctx.fillText(`Rendering page ${pageNumber}…`, pageRect.x + 14, pageRect.y + 18);
+              }
+            }
+
+            ctx.restore();
+          }
+        }
       } else {
         ctx.fillText(`id: ${node.id}`, x + 14, y + 34);
       }
 
-      if (isSelected && node.id !== this.editingNodeId) {
-        this.drawResizeHandles(node.rect);
-      }
+      if (isSelected && node.kind === 'text' && node.id !== this.editingNodeId) this.drawResizeHandles(node.rect);
     }
   }
 
@@ -1108,6 +1604,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.drawDemoNodes();
 
     this.updateTextRastersForViewport();
+    this.updatePdfPageRendersForViewport();
     this.drawScreenHud();
     this.emitDebug();
   }
