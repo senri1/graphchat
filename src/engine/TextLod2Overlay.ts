@@ -1,4 +1,5 @@
 import type { Rect } from './types';
+import { normalizeMathDelimitersFromCopyTex } from '../markdown/mathDelimiters';
 
 export type TextLod2Mode = 'resize' | 'select';
 
@@ -39,6 +40,53 @@ async function writeClipboardText(text: string): Promise<boolean> {
   }
 }
 
+function extractTextFromRange(baseRange: Range): string {
+  try {
+    const range = baseRange.cloneRange();
+    const closestKatex = (node: Node | null): Element | null => {
+      if (!node) return null;
+      const el =
+        node.nodeType === Node.ELEMENT_NODE ? (node as Element) : ((node as any).parentElement as Element | null);
+      return el ? el.closest('.katex') : null;
+    };
+    const startKatex = closestKatex(range.startContainer);
+    if (startKatex) range.setStartBefore(startKatex);
+    const endKatex = closestKatex(range.endContainer);
+    if (endKatex) range.setEndAfter(endKatex);
+
+    const frag = range.cloneContents();
+    const katexEls = Array.from(frag.querySelectorAll('.katex'));
+    for (const k of katexEls) {
+      const ann = k.querySelector('annotation[encoding="application/x-tex"]') as HTMLElement | null;
+      const tex = (ann?.textContent ?? '').trim();
+      if (!tex) continue;
+      const isDisplay = Boolean(k.closest('.katex-display'));
+      const open = isDisplay ? '$$' : '$';
+      const close = isDisplay ? '$$' : '$';
+      k.replaceWith(document.createTextNode(`${open}${tex}${close}`));
+    }
+
+    // Use `innerText` to preserve reasonable newlines for block elements / <br>.
+    const tmp = document.createElement('div');
+    tmp.style.position = 'fixed';
+    tmp.style.left = '-99999px';
+    tmp.style.top = '0';
+    tmp.style.whiteSpace = 'pre-wrap';
+    tmp.style.pointerEvents = 'none';
+    tmp.appendChild(frag);
+    document.body.appendChild(tmp);
+    const raw = tmp.innerText;
+    tmp.remove();
+    return normalizeMathDelimitersFromCopyTex(raw).trim();
+  } catch {
+    try {
+      return baseRange.toString().trim();
+    } catch {
+      return '';
+    }
+  }
+}
+
 export class TextLod2Overlay {
   private readonly host: HTMLElement;
   private readonly root: HTMLDivElement;
@@ -56,6 +104,9 @@ export class TextLod2Overlay {
   private contentHash: string | null = null;
   private lastZoom = 1;
   private menuText: string | null = null;
+  private interactive = false;
+
+  private nativePointerId: number | null = null;
 
   onRequestCloseSelection?: () => void;
 
@@ -71,6 +122,88 @@ export class TextLod2Overlay {
     if (e.key === 'Escape') {
       e.preventDefault();
       this.closeMenu();
+    }
+  };
+
+  private readonly onRootPointerDown = (e: PointerEvent) => {
+    if (!this.interactive) return;
+    if ((e.pointerType || 'mouse') !== 'mouse') return;
+    if (e.button !== 0) return;
+    // Prevent world interactions (camera pan / node drag) while allowing native DOM selection.
+    e.stopPropagation();
+    this.nativePointerId = e.pointerId;
+    this.clearHighlights();
+    this.closeMenu({ suppressCallback: true });
+
+    try {
+      document.addEventListener('pointerup', this.onNativePointerUpCapture, true);
+      document.addEventListener('pointercancel', this.onNativePointerCancelCapture, true);
+    } catch {
+      // ignore
+    }
+  };
+
+  private finishNativeSelection = () => {
+    // Defer selection read until after the browser updates it for this pointer-up.
+    requestAnimationFrame(() => {
+      const sel = window.getSelection?.() ?? null;
+      if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+
+      const anchor = sel.anchorNode;
+      const focus = sel.focusNode;
+      if (!anchor || !focus) return;
+      if (!this.content.contains(anchor) || !this.content.contains(focus)) return;
+
+      const range = (() => {
+        try {
+          return sel.getRangeAt(0).cloneRange();
+        } catch {
+          return null;
+        }
+      })();
+      if (!range) return;
+
+      const text = extractTextFromRange(range);
+      if (!text) return;
+
+      const rect = (() => {
+        try {
+          const rects = Array.from(range.getClientRects());
+          return (rects[rects.length - 1] ?? range.getBoundingClientRect()) || null;
+        } catch {
+          return null;
+        }
+      })();
+      if (!rect) return;
+
+      this.openMenu({ anchorRect: rect, text });
+    });
+  };
+
+  private readonly onNativePointerUpCapture = (e: PointerEvent) => {
+    if (!this.interactive) return;
+    if ((e.pointerType || 'mouse') !== 'mouse') return;
+    if (this.nativePointerId == null || this.nativePointerId !== e.pointerId) return;
+    this.nativePointerId = null;
+
+    try {
+      document.removeEventListener('pointerup', this.onNativePointerUpCapture, true);
+      document.removeEventListener('pointercancel', this.onNativePointerCancelCapture, true);
+    } catch {
+      // ignore
+    }
+
+    this.finishNativeSelection();
+  };
+
+  private readonly onNativePointerCancelCapture = (e: PointerEvent) => {
+    if (this.nativePointerId == null || this.nativePointerId !== e.pointerId) return;
+    this.nativePointerId = null;
+    try {
+      document.removeEventListener('pointerup', this.onNativePointerUpCapture, true);
+      document.removeEventListener('pointercancel', this.onNativePointerCancelCapture, true);
+    } catch {
+      // ignore
     }
   };
 
@@ -133,6 +266,8 @@ export class TextLod2Overlay {
     root.appendChild(scaled);
     this.host.appendChild(root);
 
+    root.addEventListener('pointerdown', this.onRootPointerDown);
+
     const menu = document.createElement('div');
     menu.className = 'gc-selectionMenu';
     menu.style.position = 'fixed';
@@ -169,6 +304,13 @@ export class TextLod2Overlay {
     menu.appendChild(copyBtn);
     menu.appendChild(closeBtn);
     this.host.appendChild(menu);
+
+    const stopMenuPointer = (e: Event) => e.stopPropagation();
+    menu.addEventListener('pointerdown', stopMenuPointer);
+    menu.addEventListener('pointermove', stopMenuPointer);
+    menu.addEventListener('pointerup', stopMenuPointer);
+    menu.addEventListener('pointercancel', stopMenuPointer);
+    menu.addEventListener('wheel', stopMenuPointer, { passive: true } as any);
 
     document.addEventListener('pointerdown', this.onDocPointerDownCapture, true);
     window.addEventListener('keydown', this.onKeyDown);
@@ -230,6 +372,7 @@ export class TextLod2Overlay {
   show(opts: {
     nodeId: string;
     mode: TextLod2Mode;
+    interactive?: boolean;
     screenRect: Rect;
     worldW: number;
     worldH: number;
@@ -239,11 +382,13 @@ export class TextLod2Overlay {
   }): void {
     this.visibleNodeId = opts.nodeId;
     this.mode = opts.mode;
+    this.interactive = Boolean(opts.interactive);
 
     const z = Math.max(0.001, Number.isFinite(opts.zoom) ? opts.zoom : 1);
     this.lastZoom = z;
 
     this.root.style.display = 'block';
+    this.root.style.pointerEvents = this.interactive ? 'auto' : 'none';
     this.root.style.left = `${Math.round(opts.screenRect.x)}px`;
     this.root.style.top = `${Math.round(opts.screenRect.y)}px`;
     this.root.style.width = `${Math.max(1, Math.round(opts.screenRect.w))}px`;
@@ -260,6 +405,16 @@ export class TextLod2Overlay {
       this.content.innerHTML = opts.html;
     }
 
+    if (this.interactive) {
+      this.content.style.userSelect = 'text';
+      (this.content.style as any).webkitUserSelect = 'text';
+      this.content.style.cursor = 'text';
+    } else {
+      this.content.style.userSelect = 'none';
+      (this.content.style as any).webkitUserSelect = 'none';
+      this.content.style.cursor = 'default';
+    }
+
     if (opts.mode === 'resize') {
       this.clearHighlights();
       this.closeMenu({ suppressCallback: true });
@@ -270,6 +425,14 @@ export class TextLod2Overlay {
     this.visibleNodeId = null;
     this.mode = null;
     this.contentHash = null;
+    this.interactive = false;
+    this.nativePointerId = null;
+    try {
+      document.removeEventListener('pointerup', this.onNativePointerUpCapture, true);
+      document.removeEventListener('pointercancel', this.onNativePointerCancelCapture, true);
+    } catch {
+      // ignore
+    }
     this.clearHighlights();
     this.closeMenu({ suppressCallback: true });
     this.root.style.display = 'none';
@@ -376,4 +539,3 @@ export class TextLod2Overlay {
     return this.lastZoom;
   }
 }
-

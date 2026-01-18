@@ -273,6 +273,8 @@ export class WorldEngine {
   private textSelectLastClient: { x: number; y: number } | null = null;
   private textSelectRaf: number | null = null;
 
+  private hoverTextNodeId: string | null = null;
+
   private readonly resizeHandleDrawPx = 12;
   private readonly resizeHandleHitPx = 22;
   private readonly minNodeW = 160;
@@ -479,7 +481,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (!ctx) throw new Error('Missing 2D canvas context');
     this.ctx = ctx;
 
-    this.input = new InputController(this.canvas, this.camera, {
+    const inputEl = this.canvas.parentElement ?? this.canvas;
+    this.input = new InputController(inputEl, this.camera, {
       onChange: () => this.requestRender(),
       onInteractingChange: (v) => {
         this.interacting = v;
@@ -982,9 +985,19 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.input.start();
     this.requestRender();
     this.emitUiState();
+
+    // Hover detection for mouse/trackpad text selection:
+    // show a LOD2 DOM overlay over the text content rect so native selection works.
+    this.canvas.addEventListener('pointermove', this.onHoverPointerMove, { passive: true });
   }
 
   dispose(): void {
+    try {
+      this.canvas.removeEventListener('pointermove', this.onHoverPointerMove as any);
+    } catch {
+      // ignore
+    }
+
     this.input.dispose();
     this.clearTextSelection({ suppressOverlayCallback: true });
     this.textResizeHold = null;
@@ -1012,6 +1025,41 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       this.raf = null;
     }
   }
+
+  private onHoverPointerMove = (ev: PointerEvent) => {
+    // Only for mouse/trackpad (hover without buttons pressed).
+    if (this.editingNodeId) return;
+    if (this.activeGesture) return;
+    if (this.tool !== 'select') return;
+
+    const t = ev.pointerType || 'mouse';
+    if (t !== 'mouse') return;
+    if ((ev.buttons ?? 0) !== 0) return;
+
+    const rect = this.canvas.getBoundingClientRect();
+    const p: Vec2 = { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return;
+    if (p.x < 0 || p.y < 0 || p.x > rect.width || p.y > rect.height) return;
+
+    const world = this.camera.screenToWorld(p);
+    const hit = this.findTopmostNodeAtWorld(world);
+    let nextHover: string | null = null;
+
+    if (hit && hit.kind === 'text') {
+      const contentRect = this.textContentRect(hit.rect);
+      const inContent =
+        world.x >= contentRect.x &&
+        world.x <= contentRect.x + contentRect.w &&
+        world.y >= contentRect.y &&
+        world.y <= contentRect.y + contentRect.h;
+      if (inContent) nextHover = hit.id;
+    }
+
+    if (nextHover !== this.hoverTextNodeId) {
+      this.hoverTextNodeId = nextHover;
+      this.requestRender();
+    }
+  };
 
   resize(cssW: number, cssH: number, dpr?: number): void {
     const w = Math.max(1, Math.round(cssW));
@@ -1184,6 +1232,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       overlay.clearHighlights();
       overlay.closeMenu({ suppressCallback: opts?.suppressOverlayCallback });
     }
+
+    try {
+      window.getSelection?.()?.removeAllRanges();
+    } catch {
+      // ignore
+    }
   }
 
   private computeTextLod2Target(): { nodeId: string; mode: TextLod2Mode } | null {
@@ -1193,6 +1247,14 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (g?.kind === 'resize') return { nodeId: g.nodeId, mode: 'resize' };
 
     if (this.textSelectNodeId) return { nodeId: this.textSelectNodeId, mode: 'select' };
+
+    const overlay = this.textLod2;
+    if (overlay?.isMenuOpen()) {
+      const nodeId = overlay.getNodeId();
+      if (nodeId) return { nodeId, mode: 'select' };
+    }
+
+    if (this.hoverTextNodeId) return { nodeId: this.hoverTextNodeId, mode: 'select' };
 
     const hold = this.textResizeHold;
     if (hold) {
@@ -1229,9 +1291,11 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const z = Math.max(0.001, this.camera.zoom || 1);
     const screenRect: Rect = { x: tl.x, y: tl.y, w: contentRect.w * z, h: contentRect.h * z };
     const html = renderMarkdownMath(node.content ?? '');
+    const interactive = target.mode === 'select' && this.textSelectNodeId !== node.id;
     lod2.show({
       nodeId: node.id,
       mode: target.mode,
+      interactive,
       screenRect,
       worldW: contentRect.w,
       worldH: contentRect.h,

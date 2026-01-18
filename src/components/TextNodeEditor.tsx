@@ -137,7 +137,15 @@ export default function TextNodeEditor(props: Props) {
   }, [chrome, z]);
 
   return (
-    <div ref={rootRef} className="editor" style={style}>
+    <div
+      ref={rootRef}
+      className="editor"
+      style={style}
+      onPointerDown={(e) => e.stopPropagation()}
+      onPointerMove={(e) => e.stopPropagation()}
+      onPointerUp={(e) => e.stopPropagation()}
+      onWheel={(e) => e.stopPropagation()}
+    >
       <div className="editor__topbar" style={topbarStyle}>
         <div className="editor__title">{title ?? 'Edit node'}</div>
         <div className="editor__actions">
