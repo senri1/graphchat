@@ -300,34 +300,30 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     const center = this.camera.screenToWorld({ x: this.cssW * 0.5, y: this.cssH * 0.5 });
     const cols = Math.max(1, Math.min(30, Math.ceil(Math.sqrt(n))));
-    const spacingX = 460;
-    const spacingY = 320;
-    const startX = center.x - (cols - 1) * 0.5 * spacingX;
-    const startY = center.y - Math.ceil(n / cols) * 0.5 * spacingY;
+    const rows = Math.max(1, Math.ceil(n / cols));
 
-    const heavy = (i: number) =>
-      `# Test node ${i + 1}\n\n` +
-      `Inline: \\(e^{i\\pi}+1=0\\), \\(\\sum_{k=1}^n k = \\frac{n(n+1)}{2}\\)\n\n` +
-      `\\[\n` +
-      `\\nabla \\cdot \\mathbf{E} = \\frac{\\rho}{\\varepsilon_0},\\qquad\n` +
-      `\\nabla \\times \\mathbf{E} = -\\frac{\\partial \\mathbf{B}}{\\partial t}\n` +
-      `\\]\n\n` +
-      `\\[\n` +
-      `\\int_0^1 x^2\\,dx = \\frac{1}{3},\\qquad\n` +
-      `\\prod_{j=1}^{m} (1 + x_j)\\n` +
-      `\\]\n\n` +
-      `- emoji: :rocket:\n` +
-      `- code: \`const x = 1;\`\n`;
+    // Node dimensions for the stress test grid.
+    // If you change these, spacing updates automatically to prevent overlap.
+    const nodeW = 1000;
+    const nodeH = 1000;
+    const gapX = 40;
+    const gapY = 40;
+    const spacingX = nodeW + gapX;
+    const spacingY = nodeH + gapY;
+    const startX = center.x - (cols - 1) * 0.5 * spacingX;
+    const startY = center.y - (rows - 1) * 0.5 * spacingY;
+
+    const seeded = this.nodes.find((node): node is TextNode => node.kind === 'text' && node.id === 'n1');
+    const content = seeded?.content ?? '';
 
     for (let i = 0; i < n; i++) {
       const id = `t${Date.now().toString(36)}-${(this.nodeSeq++).toString(36)}`;
       const col = i % cols;
       const row = Math.floor(i / cols);
-      const content = heavy(i);
       const node: TextNode = {
         kind: 'text',
         id,
-        rect: { x: startX + col * spacingX, y: startY + row * spacingY, w: 1000, h: 2000 },
+        rect: { x: startX + col * spacingX, y: startY + row * spacingY, w: nodeW, h: nodeH },
         title: 'Text node (Markdown + LaTeX)',
         content,
         contentHash: fingerprintText(content),
