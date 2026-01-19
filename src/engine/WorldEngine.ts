@@ -109,6 +109,7 @@ function extractTextFromRange(baseRange: Range): string {
 type DemoNodeBase = {
   id: string;
   title: string;
+  parentId: string | null;
 };
 
 type TextNode = DemoNodeBase & {
@@ -146,14 +147,14 @@ type TextRasterJob = {
   source: string;
 };
 
-type PdfPageMeta = {
+export type PdfPageMeta = {
   pageNumber: number;
   viewportW: number;
   viewportH: number;
   aspect: number;
 };
 
-type PdfNodeState = {
+export type PdfNodeState = {
   token: number;
   doc: PDFDocumentProxy;
   pageCount: number;
@@ -178,13 +179,55 @@ export type WorldEngineUiState = {
   tool: Tool;
 };
 
+export type WorldEngineCameraState = { x: number; y: number; zoom: number };
+
+export type WorldNodeSnapshot =
+  | {
+      kind: 'text';
+      id: string;
+      title: string;
+      parentId: string | null;
+      rect: Rect;
+      content: string;
+    }
+  | {
+      kind: 'pdf';
+      id: string;
+      title: string;
+      parentId: string | null;
+      rect: Rect;
+      fileName: string | null;
+      pageCount: number;
+      status: 'empty' | 'loading' | 'ready' | 'error';
+      error: string | null;
+    }
+  | {
+      kind: 'ink';
+      id: string;
+      title: string;
+      parentId: string | null;
+      rect: Rect;
+      strokes: InkStroke[];
+    };
+
+export type WorldEngineChatState = {
+  camera: WorldEngineCameraState;
+  nodes: WorldNodeSnapshot[];
+  worldInkStrokes: InkStroke[];
+  pdfStates: Array<{ nodeId: string; state: PdfNodeState }>;
+};
+
+export function createEmptyChatState(): WorldEngineChatState {
+  return { camera: { x: 0, y: 0, zoom: 1 }, nodes: [], worldInkStrokes: [], pdfStates: [] };
+}
+
 type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
 
 type Tool = 'select' | 'draw';
 
-type InkPoint = { x: number; y: number };
+export type InkPoint = { x: number; y: number };
 
-type InkStroke = {
+export type InkStroke = {
   points: InkPoint[];
   width: number;
   color: string;
@@ -265,7 +308,7 @@ export class WorldEngine {
 
   onUiState?: (state: WorldEngineUiState) => void;
 
-  private selectedNodeId: string | null = 'n1';
+  private selectedNodeId: string | null = null;
   private editingNodeId: string | null = null;
   private tool: Tool = 'select';
   private activeGesture: ActiveGesture | null = null;
@@ -358,6 +401,7 @@ export class WorldEngine {
     {
       kind: 'text',
       id: 'n1',
+      parentId: null,
       rect: { x: 80, y: 80, w: 420, h: 260 },
       title: 'Text node (Markdown + LaTeX)',
       content: String.raw`Yes—here is the “one diagram” version, with the currying/product–exponential isomorphism made explicit.
@@ -477,6 +521,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     {
       kind: 'pdf',
       id: 'n2',
+      parentId: null,
       rect: { x: 540, y: 140, w: 680, h: 220 },
       title: 'PDF node',
       fileName: null,
@@ -487,6 +532,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     {
       kind: 'ink',
       id: 'n3',
+      parentId: null,
       rect: { x: 240, y: 390, w: 360, h: 240 },
       title: 'Ink node (vector → bitmap)',
       strokes: [],
@@ -528,6 +574,153 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     }
   }
 
+  exportChatState(): WorldEngineChatState {
+    const nodes: WorldNodeSnapshot[] = this.nodes.map((n) => {
+      if (n.kind === 'text') {
+        return { kind: 'text', id: n.id, title: n.title, parentId: n.parentId, rect: { ...n.rect }, content: n.content };
+      }
+      if (n.kind === 'pdf') {
+        return {
+          kind: 'pdf',
+          id: n.id,
+          title: n.title,
+          parentId: n.parentId,
+          rect: { ...n.rect },
+          fileName: n.fileName,
+          pageCount: n.pageCount,
+          status: n.status,
+          error: n.error,
+        };
+      }
+      return {
+        kind: 'ink',
+        id: n.id,
+        title: n.title,
+        parentId: n.parentId,
+        rect: { ...n.rect },
+        strokes: n.strokes.map((s) => ({
+          width: s.width,
+          color: s.color,
+          points: s.points.map((p) => ({ x: p.x, y: p.y })),
+        })),
+      };
+    });
+
+    const worldInkStrokes = this.worldInkStrokes.map((s) => ({
+      width: s.width,
+      color: s.color,
+      points: s.points.map((p) => ({ x: p.x, y: p.y })),
+    }));
+
+    const pdfNodeIds = new Set<string>();
+    for (const n of nodes) if (n.kind === 'pdf') pdfNodeIds.add(n.id);
+    const pdfStates = Array.from(this.pdfStateByNodeId.entries())
+      .filter(([nodeId]) => pdfNodeIds.has(nodeId))
+      .map(([nodeId, state]) => ({ nodeId, state }));
+
+    return {
+      camera: { x: this.camera.x, y: this.camera.y, zoom: this.camera.zoom },
+      nodes,
+      worldInkStrokes,
+      pdfStates,
+    };
+  }
+
+  loadChatState(next: WorldEngineChatState): void {
+    // Tear down any active interactions/overlays first to avoid dangling DOM selection.
+    this.editingNodeId = null;
+    this.selectedNodeId = null;
+    this.activeGesture = null;
+    this.textResizeHold = null;
+    this.hoverTextNodeId = null;
+    this.hoverPdfPage = null;
+    this.textLod2Target = null;
+    this.pdfLod2Target = null;
+
+    this.clearTextSelection({ suppressOverlayCallback: true });
+    this.clearPdfTextSelection({ suppressOverlayCallback: true });
+    try {
+      this.textLod2?.hide();
+      this.pdfTextLod2?.hide();
+    } catch {
+      // ignore
+    }
+
+    // Cancel queued work from the previous chat.
+    this.textRasterGeneration += 1;
+    this.textRasterQueueByNodeId.clear();
+    this.pdfPageRenderQueue.clear();
+
+    // Replace runtime PDF state map (docs/metas) for the new chat.
+    this.pdfStateByNodeId.clear();
+    for (const entry of next.pdfStates) {
+      if (!entry?.nodeId || !entry.state) continue;
+      this.pdfStateByNodeId.set(entry.nodeId, entry.state);
+    }
+
+    // Replace node list.
+    this.nodes.length = 0;
+    for (const n of next.nodes) {
+      const parentId = ((n as any)?.parentId as string | null | undefined) ?? null;
+      if (n.kind === 'text') {
+        const content = typeof n.content === 'string' ? n.content : String(n.content ?? '');
+        this.nodes.push({
+          kind: 'text',
+          id: n.id,
+          parentId,
+          rect: { ...n.rect },
+          title: n.title,
+          content,
+          contentHash: fingerprintText(content),
+        });
+        continue;
+      }
+      if (n.kind === 'pdf') {
+        this.nodes.push({
+          kind: 'pdf',
+          id: n.id,
+          parentId,
+          rect: { ...n.rect },
+          title: n.title,
+          fileName: n.fileName ?? null,
+          pageCount: n.pageCount ?? 0,
+          status: n.status,
+          error: n.error ?? null,
+        });
+        continue;
+      }
+      this.nodes.push({
+        kind: 'ink',
+        id: n.id,
+        parentId,
+        rect: { ...n.rect },
+        title: n.title,
+        strokes: (n.strokes ?? []).map((s) => ({
+          width: s.width,
+          color: s.color,
+          points: s.points.map((p) => ({ x: p.x, y: p.y })),
+        })),
+        raster: null,
+      });
+    }
+
+    // Replace world ink strokes (not tied to a node).
+    this.worldInkStrokes = (next.worldInkStrokes ?? []).map((s) => ({
+      width: s.width,
+      color: s.color,
+      points: s.points.map((p) => ({ x: p.x, y: p.y })),
+    }));
+
+    // Replace camera.
+    const cam = next.camera ?? { x: 0, y: 0, zoom: 1 };
+    this.camera.x = Number.isFinite(cam.x) ? cam.x : 0;
+    this.camera.y = Number.isFinite(cam.y) ? cam.y : 0;
+    this.camera.setZoom(Number.isFinite(cam.zoom) ? cam.zoom : 1);
+
+    this.requestRender();
+    this.emitUiState();
+  }
+
   spawnLatexStressTest(count: number): void {
     const n = Math.max(0, Math.min(5000, Math.floor(count)));
     if (n === 0) return;
@@ -547,8 +740,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const startX = center.x - (cols - 1) * 0.5 * spacingX;
     const startY = center.y - (rows - 1) * 0.5 * spacingY;
 
-    const seeded = this.nodes.find((node): node is TextNode => node.kind === 'text' && node.id === 'n1');
-    const content = seeded?.content ?? '';
+    const seeded = this.nodes.find((node): node is TextNode => node.kind === 'text' && node.id === this.selectedNodeId);
+    const content =
+      seeded?.content ??
+      '# Demo\n\nSome *markdown* + emoji :sparkles:\n\nInline math $E=mc^2$ and display:\n\n$$\\int_0^1 x^2\\,dx=\\frac{1}{3}$$\n';
 
     for (let i = 0; i < n; i++) {
       const id = `t${Date.now().toString(36)}-${(this.nodeSeq++).toString(36)}`;
@@ -557,6 +752,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       const node: TextNode = {
         kind: 'text',
         id,
+        parentId: null,
         rect: { x: startX + col * spacingX, y: startY + row * spacingY, w: nodeW, h: nodeH },
         title: 'Text node (Markdown + LaTeX)',
         content,
@@ -575,23 +771,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   }
 
   clearStressNodes(): void {
-    const keepIds = new Set(['n1', 'n2', 'n3']);
-    const before = this.nodes.length;
-    for (let i = this.nodes.length - 1; i >= 0; i--) {
-      const node = this.nodes[i]!;
-      if (keepIds.has(node.id)) continue;
+    this.clearSelection();
+    for (const node of this.nodes) {
       if (node.kind === 'pdf') this.disposePdfNode(node.id);
-      this.nodes.splice(i, 1);
     }
+    this.nodes.length = 0;
     this.worldInkStrokes = [];
-    const baseInk = this.nodes.find((n): n is InkNode => n.kind === 'ink' && n.id === 'n3');
-    if (baseInk) {
-      baseInk.strokes = [];
-      baseInk.raster = null;
-    }
-    this.selectedNodeId = 'n1';
-    this.editingNodeId = null;
-    this.tool = 'select';
     this.requestRender();
     this.emitUiState();
   }
@@ -612,6 +797,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const node: InkNode = {
       kind: 'ink',
       id,
+      parentId: null,
       rect: { x: center.x - nodeW * 0.5, y: center.y - nodeH * 0.5, w: nodeW, h: nodeH },
       title: 'Ink node',
       strokes: [],
@@ -624,6 +810,68 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.bringNodeToFront(id);
     this.requestRender();
     if (changed) this.emitUiState();
+  }
+
+  spawnChatTurn(args: { userText: string; parentNodeId: string | null }): { userNodeId: string; assistantNodeId: string } {
+    const userText = String(args.userText ?? '');
+    const parentNodeId = args.parentNodeId ?? null;
+
+    const parent = parentNodeId ? this.nodes.find((n) => n.id === parentNodeId) ?? null : null;
+    const resolvedParentId = parent ? parent.id : null;
+
+    const now = Date.now().toString(36);
+    const userNodeId = `u${now}-${(this.nodeSeq++).toString(36)}`;
+    const assistantNodeId = `a${now}-${(this.nodeSeq++).toString(36)}`;
+
+    const gapY = 26;
+    const nodeW = 640;
+    const userH = 220;
+    const assistantH = 260;
+
+    let x = 0;
+    let userY = 0;
+    if (parent) {
+      x = parent.rect.x;
+      userY = parent.rect.y + parent.rect.h + gapY;
+    } else {
+      const center = this.camera.screenToWorld({ x: this.cssW * 0.5, y: this.cssH * 0.5 });
+      const totalH = userH + gapY + assistantH;
+      x = center.x - nodeW * 0.5;
+      userY = center.y - totalH * 0.5;
+    }
+
+    const userNode: TextNode = {
+      kind: 'text',
+      id: userNodeId,
+      parentId: resolvedParentId,
+      rect: { x, y: userY, w: nodeW, h: userH },
+      title: 'User',
+      content: userText,
+      contentHash: fingerprintText(userText),
+    };
+
+    const assistantNode: TextNode = {
+      kind: 'text',
+      id: assistantNodeId,
+      parentId: userNodeId,
+      rect: { x, y: userY + userH + gapY, w: nodeW, h: assistantH },
+      title: 'Assistant',
+      content: '',
+      contentHash: fingerprintText(''),
+    };
+
+    this.nodes.push(userNode, assistantNode);
+    this.bringNodeToFront(assistantNodeId);
+
+    const changed = this.selectedNodeId !== assistantNodeId || this.editingNodeId !== null;
+    this.selectedNodeId = assistantNodeId;
+    this.editingNodeId = null;
+
+    this.textRasterGeneration += 1;
+    this.requestRender();
+    if (changed) this.emitUiState();
+
+    return { userNodeId, assistantNodeId };
   }
 
   clearWorldInk(): void {
@@ -643,6 +891,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const node: PdfNode = {
       kind: 'pdf',
       id,
+      parentId: null,
       rect: { x: center.x - nodeW * 0.5, y: center.y - 120, w: nodeW, h: nodeH },
       title: f.name || 'PDF',
       fileName: f.name || null,
@@ -1226,6 +1475,51 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       this.requestRender();
       this.emitUiState();
     }
+  }
+
+  deleteSelectedNode(): void {
+    const nodeId = this.selectedNodeId;
+    if (!nodeId) return;
+    this.deleteNode(nodeId);
+  }
+
+  deleteNode(nodeId: string): void {
+    const id = nodeId;
+    if (!id) return;
+
+    const idx = this.nodes.findIndex((n) => n.id === id);
+    if (idx < 0) return;
+
+    const node = this.nodes[idx];
+    const deletedParentId = node.parentId ?? null;
+
+    // Reparent direct children to this node's parent (splice out of thread/tree).
+    for (const n of this.nodes) {
+      if (n.parentId === id) n.parentId = deletedParentId;
+    }
+
+    // Clean up any node-specific resources.
+    if (node.kind === 'pdf') this.disposePdfNode(id);
+    this.textRasterQueueByNodeId.delete(id);
+
+    // Remove from list.
+    this.nodes.splice(idx, 1);
+
+    // Clear any active interactions/overlays pointing at the deleted node.
+    const g = this.activeGesture as any;
+    if (g?.nodeId === id) this.activeGesture = null;
+
+    if (this.selectedNodeId === id) this.selectedNodeId = null;
+    if (this.editingNodeId === id) this.editingNodeId = null;
+    if (this.hoverTextNodeId === id) this.hoverTextNodeId = null;
+    if (this.hoverPdfPage?.nodeId === id) this.hoverPdfPage = null;
+    if (this.textLod2Target?.nodeId === id) this.textLod2Target = null;
+    if (this.pdfLod2Target?.nodeId === id) this.pdfLod2Target = null;
+    if (this.textSelectNodeId === id) this.clearTextSelection({ suppressOverlayCallback: true });
+    if (this.pdfSelectTarget?.nodeId === id) this.clearPdfTextSelection({ suppressOverlayCallback: true });
+
+    this.requestRender();
+    this.emitUiState();
   }
 
   private emitUiState(): void {
@@ -2660,6 +2954,62 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     ctx.stroke();
   }
 
+  private drawParentArrows(): void {
+    const ctx = this.ctx;
+    const z = Math.max(0.01, this.camera.zoom || 1);
+    const view = this.worldViewportRect({ overscan: 420 });
+
+    const byId = new Map<string, WorldNode>();
+    for (const n of this.nodes) byId.set(n.id, n);
+
+    ctx.save();
+    ctx.lineWidth = 2 / z;
+    ctx.strokeStyle = 'rgba(147,197,253,0.35)';
+    ctx.fillStyle = 'rgba(147,197,253,0.35)';
+
+    for (const child of this.nodes) {
+      const pid = child.parentId;
+      if (!pid) continue;
+      const parent = byId.get(pid);
+      if (!parent) continue;
+
+      if (!rectsIntersect(parent.rect, view) && !rectsIntersect(child.rect, view)) continue;
+
+      const startX = parent.rect.x + parent.rect.w * 0.5;
+      const startY = parent.rect.y + parent.rect.h;
+      const endX = child.rect.x + child.rect.w * 0.5;
+      const endY = child.rect.y;
+
+      ctx.beginPath();
+      ctx.moveTo(startX, startY);
+      ctx.lineTo(endX, endY);
+      ctx.stroke();
+
+      const dx = endX - startX;
+      const dy = endY - startY;
+      const len = Math.hypot(dx, dy);
+      if (len < 0.001) continue;
+      const ux = dx / len;
+      const uy = dy / len;
+
+      const headLen = 12 / z;
+      const halfW = 6 / z;
+      const baseX = endX - ux * headLen;
+      const baseY = endY - uy * headLen;
+      const px = -uy;
+      const py = ux;
+
+      ctx.beginPath();
+      ctx.moveTo(endX, endY);
+      ctx.lineTo(baseX + px * halfW, baseY + py * halfW);
+      ctx.lineTo(baseX - px * halfW, baseY - py * halfW);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    ctx.restore();
+  }
+
   private drawDemoNodes(): void {
     const ctx = this.ctx;
     const view = this.worldViewportRect({ overscan: 360 });
@@ -2922,6 +3272,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     this.applyWorldTransform();
     this.drawGrid();
+    this.drawParentArrows();
     this.updateTextRastersForViewport();
     this.updatePdfPageRendersForViewport();
     this.drawDemoNodes();

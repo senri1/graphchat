@@ -21,10 +21,17 @@ body {
 .app {
   position: fixed;
   inset: 0;
-  display: block;
+  display: flex;
   background: radial-gradient(circle at 25px 25px, rgba(255, 255, 255, 0.12) 1px, transparent 1px) 0 0 /
       20px 20px,
     #0b0d12;
+  touch-action: none;
+}
+
+.workspace {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
   touch-action: none;
 }
 
@@ -35,6 +42,165 @@ body {
   height: 100%;
   display: block;
   touch-action: none;
+}
+
+.sidebar {
+  width: 280px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(11, 13, 18, 0.92);
+  backdrop-filter: blur(14px);
+  color: rgba(255, 255, 255, 0.9);
+  touch-action: auto;
+  user-select: none;
+}
+
+.sidebar__header {
+  padding: 12px 12px 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sidebar__title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.88;
+}
+
+.sidebar__headerActions {
+  display: flex;
+  gap: 8px;
+}
+
+.sidebar__btn {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.25);
+  color: rgba(255, 255, 255, 0.9);
+  border-radius: 10px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sidebar__btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.sidebar__tree {
+  flex: 1;
+  overflow: auto;
+  padding: 6px 8px 16px 8px;
+}
+
+.treeRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  border-radius: 10px;
+  padding-right: 8px;
+  color: rgba(255, 255, 255, 0.86);
+}
+
+.treeRow:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.treeRow--active {
+  background: rgba(147, 197, 253, 0.16);
+  outline: 1px solid rgba(147, 197, 253, 0.35);
+}
+
+.treeRow--focused {
+  background: rgba(255, 255, 255, 0.07);
+  outline: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.treeRow__chev {
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.22);
+  color: rgba(255, 255, 255, 0.8);
+  cursor: pointer;
+}
+
+.treeRow__chev:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.treeRow__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(147, 197, 253, 0.85);
+  box-shadow: 0 0 0 3px rgba(147, 197, 253, 0.12);
+}
+
+.treeRow__label {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: inherit;
+  flex: 1;
+  text-align: left;
+  cursor: pointer;
+  padding: 6px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+.treeRow__label:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.treeRow__actions {
+  display: none;
+  align-items: center;
+  gap: 6px;
+}
+
+.treeRow:hover .treeRow__actions {
+  display: flex;
+}
+
+.treeRow__iconBtn {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.2);
+  color: rgba(255, 255, 255, 0.82);
+  border-radius: 10px;
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.treeRow__iconBtn:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.treeRow__iconBtn--danger {
+  color: rgba(255, 120, 120, 0.92);
+  border-color: rgba(255, 120, 120, 0.22);
+}
+
+.treeRow__rename {
+  flex: 1;
+  appearance: none;
+  border: 1px solid rgba(147, 197, 253, 0.4);
+  background: rgba(0, 0, 0, 0.25);
+  color: rgba(255, 255, 255, 0.92);
+  border-radius: 10px;
+  padding: 6px 8px;
+  font-size: 12px;
+  outline: none;
 }
 
 .hud {
@@ -70,6 +236,15 @@ body {
   touch-action: auto;
 }
 
+.controls__title {
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 650;
+  color: rgba(255, 255, 255, 0.9);
+  padding: 0 6px;
+}
+
 .controls__btn {
   appearance: none;
   border: 1px solid rgba(255, 255, 255, 0.16);
@@ -83,6 +258,59 @@ body {
 
 .controls__btn:hover {
   background: rgba(255, 255, 255, 0.08);
+}
+
+.composer {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(10px);
+  pointer-events: auto;
+  touch-action: auto;
+}
+
+.composer__textarea {
+  flex: 1;
+  min-height: 42px;
+  max-height: 180px;
+  resize: none;
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.22);
+  color: rgba(255, 255, 255, 0.92);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.35;
+  outline: none;
+}
+
+.composer__textarea:focus {
+  border-color: rgba(147, 197, 253, 0.55);
+}
+
+.composer__send {
+  appearance: none;
+  border: 1px solid rgba(147, 197, 253, 0.55);
+  background: rgba(147, 197, 253, 0.22);
+  color: rgba(255, 255, 255, 0.92);
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.composer__send:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .controls__btn--active {
