@@ -442,6 +442,7 @@ export class PdfTextLod2Overlay {
     root.style.height = '1px';
     root.style.overflow = 'hidden';
     root.style.pointerEvents = 'none';
+    root.style.zIndex = '10';
     root.style.contain = 'layout paint style';
     this.root = root;
 

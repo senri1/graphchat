@@ -233,8 +233,8 @@ export default function WorkspaceSidebar(props: Props) {
   };
 
   return (
-    <div className="sidebarDock">
-      {collapsed ? null : (
+    <div className={`sidebarDock ${collapsed ? 'sidebarDock--collapsed' : ''}`}>
+      <div className={`sidebarWrap ${collapsed ? 'sidebarWrap--collapsed' : ''}`} aria-hidden={collapsed}>
         <div className="sidebar" {...rowCommonHandlers}>
           <div className="sidebar__header">
             <button
@@ -273,7 +273,7 @@ export default function WorkspaceSidebar(props: Props) {
             {root.children.map((child) => renderItem(child, 0))}
           </div>
         </div>
-      )}
+      </div>
 
       <button
         className="sidebarToggle"

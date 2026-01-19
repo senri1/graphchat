@@ -541,6 +541,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     },
   ];
 
+  private readonly stressTestSeedContent: string =
+    this.nodes.find((node): node is TextNode => node.kind === 'text' && node.id === 'n1')?.content ??
+    '# Demo\n\nSome *markdown* + emoji :sparkles:\n\nInline math $E=mc^2$ and display:\n\n$$\\int_0^1 x^2\\,dx=\\frac{1}{3}$$\n';
+
   private nodeSeq = 1;
 
   constructor(opts: { canvas: HTMLCanvasElement; overlayHost?: HTMLElement | null }) {
@@ -741,10 +745,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const startX = center.x - (cols - 1) * 0.5 * spacingX;
     const startY = center.y - (rows - 1) * 0.5 * spacingY;
 
-    const seeded = this.nodes.find((node): node is TextNode => node.kind === 'text' && node.id === this.selectedNodeId);
-    const content =
-      seeded?.content ??
-      '# Demo\n\nSome *markdown* + emoji :sparkles:\n\nInline math $E=mc^2$ and display:\n\n$$\\int_0^1 x^2\\,dx=\\frac{1}{3}$$\n';
+    const content = this.stressTestSeedContent;
 
     for (let i = 0; i < n; i++) {
       const id = `t${Date.now().toString(36)}-${(this.nodeSeq++).toString(36)}`;
