@@ -5,6 +5,7 @@ type Props = {
   value: string;
   onChange: (next: string) => void;
   onSend: () => void;
+  containerRef?: React.Ref<HTMLDivElement>;
   replyPreview?: string | null;
   onCancelReply?: () => void;
   placeholder?: string;
@@ -13,7 +14,7 @@ type Props = {
 };
 
 export default function ChatComposer(props: Props) {
-  const { value, onChange, onSend, replyPreview, onCancelReply, placeholder, sendDisabled, disabled } = props;
+  const { value, onChange, onSend, containerRef, replyPreview, onCancelReply, placeholder, sendDisabled, disabled } = props;
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const onSendRef = useRef(onSend);
   const [previewEnabled, setPreviewEnabled] = useState(false);
@@ -38,6 +39,7 @@ export default function ChatComposer(props: Props) {
   return (
     <div
       className="composerDock"
+      ref={containerRef}
       onPointerDown={(e) => e.stopPropagation()}
       onPointerMove={(e) => e.stopPropagation()}
       onPointerUp={(e) => e.stopPropagation()}

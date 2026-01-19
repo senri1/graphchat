@@ -45,6 +45,7 @@ export default function WorkspaceSidebar(props: Props) {
 
   const rootId = root.id;
 
+  const [collapsed, setCollapsed] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
 
@@ -93,25 +94,18 @@ export default function WorkspaceSidebar(props: Props) {
     const onDragOverFolder = (e: React.DragEvent) => {
       if (!isFolder) return;
       e.preventDefault();
+      e.stopPropagation();
       e.dataTransfer.dropEffect = 'move';
     };
 
     const onDropFolder = (e: React.DragEvent) => {
       if (!isFolder) return;
       e.preventDefault();
+      e.stopPropagation();
       const payload = parseDragPayload(e.dataTransfer.getData('application/x-graphchat-item'));
       if (!payload) return;
       if (payload.id === item.id) return;
       onMoveItem(payload.id, item.id);
-    };
-
-    const onDropRoot = (e: React.DragEvent) => {
-      if (item.id !== rootId) return;
-      e.preventDefault();
-      const payload = parseDragPayload(e.dataTransfer.getData('application/x-graphchat-item'));
-      if (!payload) return;
-      if (payload.id === item.id) return;
-      onMoveItem(payload.id, rootId);
     };
 
     if (item.kind === 'folder') {
@@ -122,8 +116,8 @@ export default function WorkspaceSidebar(props: Props) {
             style={{ paddingLeft: indent }}
             draggable={item.id !== rootId}
             onDragStart={item.id !== rootId ? onDragStart : undefined}
-            onDragOver={item.id === rootId ? (e) => e.preventDefault() : onDragOverFolder}
-            onDrop={item.id === rootId ? onDropRoot : onDropFolder}
+            onDragOver={onDragOverFolder}
+            onDrop={onDropFolder}
             {...rowCommonHandlers}
           >
             <button
@@ -239,19 +233,58 @@ export default function WorkspaceSidebar(props: Props) {
   };
 
   return (
-    <div className="sidebar" {...rowCommonHandlers}>
-      <div className="sidebar__header">
-        <div className="sidebar__title">Chats</div>
-        <div className="sidebar__headerActions">
-          <button className="sidebar__btn" type="button" onClick={() => onCreateChat(focusedFolderId)}>
-            New chat
-          </button>
-          <button className="sidebar__btn" type="button" onClick={() => onCreateFolder(focusedFolderId)}>
-            New folder
-          </button>
+    <div className="sidebarDock">
+      {collapsed ? null : (
+        <div className="sidebar" {...rowCommonHandlers}>
+          <div className="sidebar__header">
+            <button
+              className="sidebar__title"
+              type="button"
+              onClick={() => onFocusFolder(rootId)}
+              title="Focus root folder"
+            >
+              Chats
+            </button>
+            <div className="sidebar__headerActions">
+              <button className="sidebar__btn" type="button" onClick={() => onCreateChat(focusedFolderId)}>
+                New chat
+              </button>
+              <button className="sidebar__btn" type="button" onClick={() => onCreateFolder(focusedFolderId)}>
+                New folder
+              </button>
+            </div>
+          </div>
+          <div
+            className="sidebar__tree"
+            onDragOver={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              e.dataTransfer.dropEffect = 'move';
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              const payload = parseDragPayload(e.dataTransfer.getData('application/x-graphchat-item'));
+              if (!payload) return;
+              if (payload.id === rootId) return;
+              onMoveItem(payload.id, rootId);
+            }}
+          >
+            {root.children.map((child) => renderItem(child, 0))}
+          </div>
         </div>
-      </div>
-      <div className="sidebar__tree">{renderItem(root, 0)}</div>
+      )}
+
+      <button
+        className="sidebarToggle"
+        type="button"
+        onClick={() => setCollapsed((prev) => !prev)}
+        aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        {...rowCommonHandlers}
+      >
+        {collapsed ? '›' : '‹'}
+      </button>
     </div>
   );
 }

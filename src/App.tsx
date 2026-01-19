@@ -49,6 +49,7 @@ export default function App() {
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const pdfInputRef = useRef<HTMLInputElement | null>(null);
+  const composerDockRef = useRef<HTMLDivElement | null>(null);
   const engineRef = useRef<WorldEngine | null>(null);
   const [debug, setDebug] = useState<WorldEngineDebug | null>(null);
   const [ui, setUi] = useState(() => ({
@@ -95,6 +96,23 @@ export default function App() {
   useEffect(() => {
     activeChatIdRef.current = activeChatId;
   }, [activeChatId]);
+
+  useEffect(() => {
+    const el = composerDockRef.current;
+    if (!el) return;
+    const rootEl = document.documentElement;
+    const update = () => {
+      const height = el.getBoundingClientRect().height;
+      rootEl.style.setProperty('--composer-dock-height', `${Math.ceil(height)}px`);
+    };
+
+    update();
+    const ro = new ResizeObserver(() => update());
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+    };
+  }, []);
 
   useLayoutEffect(() => {
     const container = workspaceRef.current;
@@ -290,6 +308,7 @@ export default function App() {
         ) : null}
 
         <ChatComposer
+          containerRef={composerDockRef}
           value={composerDraft}
           onChange={(next) => {
             setComposerDraft(next);
