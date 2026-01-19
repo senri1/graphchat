@@ -2,12 +2,18 @@ import type { Rect } from '../engine/types';
 
 export type ChatAuthor = 'user' | 'assistant';
 
+export type ChatLlmParams = {
+  verbosity?: 'low' | 'medium' | 'high';
+  webSearchEnabled?: boolean;
+};
+
 export type ChatAttachment =
   | {
       kind: 'image';
       name?: string;
       mimeType?: string;
       data?: string;
+      size?: number;
       detail?: 'low' | 'auto' | 'high';
     }
   | {
@@ -42,6 +48,7 @@ export type ChatNode =
       content: string;
       isGenerating?: boolean;
       modelId?: string | null;
+      llmParams?: ChatLlmParams;
       llmError?: string | null;
       attachments?: ChatAttachment[];
       selectedAttachmentKeys?: string[];
@@ -65,4 +72,3 @@ export type ChatNode =
       rect: Rect;
       strokes: InkStroke[];
     };
-

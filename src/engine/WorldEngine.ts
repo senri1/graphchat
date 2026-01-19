@@ -10,7 +10,7 @@ import { PdfTextLod2Overlay, type HighlightRect as PdfHighlightRect } from './Pd
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import type { PDFPageProxy, PageViewport } from 'pdfjs-dist';
 import { loadPdfDocument } from './pdf/pdfjs';
-import type { ChatAttachment, ChatAuthor, ChatNode, InkPoint, InkStroke } from '../model/chat';
+import type { ChatAttachment, ChatAuthor, ChatLlmParams, ChatNode, InkPoint, InkStroke } from '../model/chat';
 
 export type WorldEngineDebug = {
   cssW: number;
@@ -121,6 +121,7 @@ type TextNode = DemoNodeBase & {
   contentHash: string;
   isGenerating?: boolean;
   modelId?: string | null;
+  llmParams?: ChatLlmParams;
   llmError?: string | null;
   attachments?: ChatAttachment[];
   selectedAttachmentKeys?: string[];
@@ -278,6 +279,7 @@ export class WorldEngine {
 
   onUiState?: (state: WorldEngineUiState) => void;
   onRequestReply?: (nodeId: string) => void;
+  onRequestCancelGeneration?: (nodeId: string) => void;
 
   private selectedNodeId: string | null = null;
   private editingNodeId: string | null = null;
@@ -564,6 +566,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           content: n.content,
           isGenerating: n.isGenerating,
           modelId: n.modelId ?? null,
+          llmParams: n.llmParams,
           llmError: n.llmError ?? null,
           attachments: Array.isArray(n.attachments) ? n.attachments : undefined,
           selectedAttachmentKeys: Array.isArray(n.selectedAttachmentKeys) ? n.selectedAttachmentKeys : undefined,
@@ -677,6 +680,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           contentHash: fingerprintText(content),
           isGenerating: Boolean((n as any)?.isGenerating),
           modelId: typeof (n as any)?.modelId === 'string' ? ((n as any).modelId as string) : null,
+          llmParams:
+            (n as any)?.llmParams && typeof (n as any).llmParams === 'object'
+              ? ((n as any).llmParams as ChatLlmParams)
+              : undefined,
           llmError: typeof (n as any)?.llmError === 'string' ? ((n as any).llmError as string) : null,
           attachments: Array.isArray((n as any)?.attachments) ? ((n as any).attachments as ChatAttachment[]) : undefined,
           selectedAttachmentKeys: Array.isArray((n as any)?.selectedAttachmentKeys)
@@ -820,9 +827,16 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (changed) this.emitUiState();
   }
 
-  spawnChatTurn(args: { userText: string; parentNodeId: string | null }): { userNodeId: string; assistantNodeId: string } {
+  spawnChatTurn(args: {
+    userText: string;
+    parentNodeId: string | null;
+    userAttachments?: ChatAttachment[];
+    selectedAttachmentKeys?: string[];
+  }): { userNodeId: string; assistantNodeId: string } {
     const userText = String(args.userText ?? '');
     const parentNodeId = args.parentNodeId ?? null;
+    const userAttachments = Array.isArray(args.userAttachments) ? args.userAttachments : [];
+    const selectedAttachmentKeys = Array.isArray(args.selectedAttachmentKeys) ? args.selectedAttachmentKeys : [];
 
     const parent = parentNodeId ? this.nodes.find((n) => n.id === parentNodeId) ?? null : null;
     const resolvedParentId = parent ? parent.id : null;
@@ -867,6 +881,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       author: 'user',
       content: userText,
       contentHash: fingerprintText(userText),
+      attachments: userAttachments.length ? userAttachments : undefined,
+      selectedAttachmentKeys: selectedAttachmentKeys.length ? selectedAttachmentKeys : undefined,
     };
 
     const assistantNode: TextNode = {
@@ -1535,7 +1551,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
   setTextNodeLlmState(
     nodeId: string,
-    patch: { isGenerating?: boolean; modelId?: string | null; llmError?: string | null },
+    patch: { isGenerating?: boolean; modelId?: string | null; llmParams?: ChatLlmParams | null; llmError?: string | null },
   ): void {
     const id = nodeId;
     if (!id) return;
@@ -1550,6 +1566,13 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (patch.modelId !== undefined && (node.modelId ?? null) !== (patch.modelId ?? null)) {
       node.modelId = patch.modelId ?? null;
       changed = true;
+    }
+    if (patch.llmParams !== undefined) {
+      const next = patch.llmParams ?? undefined;
+      if (node.llmParams !== next) {
+        node.llmParams = next;
+        changed = true;
+      }
     }
     if (patch.llmError !== undefined && (node.llmError ?? null) !== (patch.llmError ?? null)) {
       node.llmError = patch.llmError ?? null;
@@ -1585,6 +1608,14 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (idx < 0) return;
 
     const node = this.nodes[idx];
+
+    if (node.kind === 'text' && node.isGenerating) {
+      try {
+        this.onRequestCancelGeneration?.(id);
+      } catch {
+        // ignore
+      }
+    }
     const deletedParentId = node.parentId ?? null;
 
     // Reparent direct children to this node's parent (splice out of thread/tree).
@@ -1734,9 +1765,16 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       if (nodeId) return { nodeId, mode: 'select' };
     }
 
+    if (this.hoverTextNodeId) return { nodeId: this.hoverTextNodeId, mode: 'select' };
+
     // While an assistant is streaming, pin the LOD2 overlay to the generating node so
     // the canvas doesn't flicker to the LOD0 placeholder between raster updates.
     const view = this.worldViewportRect({ overscan: 280 });
+    const selected = this.selectedNodeId
+      ? (this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === this.selectedNodeId) ?? null)
+      : null;
+    if (selected?.isGenerating && rectsIntersect(selected.rect, view)) return { nodeId: selected.id, mode: 'select' };
+
     for (let i = this.nodes.length - 1; i >= 0; i -= 1) {
       const n = this.nodes[i];
       if (n.kind !== 'text') continue;
@@ -1744,8 +1782,6 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       if (!rectsIntersect(n.rect, view)) continue;
       return { nodeId: n.id, mode: 'select' };
     }
-
-    if (this.hoverTextNodeId) return { nodeId: this.hoverTextNodeId, mode: 'select' };
 
     const hold = this.textResizeHold;
     if (hold) {
@@ -2652,6 +2688,32 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       if (inContent) return null;
     }
 
+    const replyBtn = this.replyButtonRect(hit.rect);
+    const inReply =
+      world.x >= replyBtn.x &&
+      world.x <= replyBtn.x + replyBtn.w &&
+      world.y >= replyBtn.y &&
+      world.y <= replyBtn.y + replyBtn.h;
+    if (inReply) {
+      this.requestRender();
+      if (selectionChanged) this.emitUiState();
+      return 'node';
+    }
+
+    if (hit.kind === 'text' && hit.isGenerating) {
+      const stopBtn = this.stopButtonRect(hit.rect);
+      const inStop =
+        world.x >= stopBtn.x &&
+        world.x <= stopBtn.x + stopBtn.w &&
+        world.y >= stopBtn.y &&
+        world.y <= stopBtn.y + stopBtn.h;
+      if (inStop) {
+        this.requestRender();
+        if (selectionChanged) this.emitUiState();
+        return 'node';
+      }
+    }
+
     const corner = hit.kind === 'text' ? this.hitResizeHandle(world, hit.rect) : null;
     const startRect: Rect = { ...hit.rect };
     if (corner) {
@@ -2970,6 +3032,22 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const hit = this.findTopmostNodeAtWorld(world);
 
     if (hit) {
+      if (hit.kind === 'text' && hit.isGenerating) {
+        const btn = this.stopButtonRect(hit.rect);
+        const inStop =
+          world.x >= btn.x && world.x <= btn.x + btn.w && world.y >= btn.y && world.y <= btn.y + btn.h;
+        if (inStop) {
+          const changed = this.selectedNodeId !== hit.id || this.editingNodeId !== null;
+          this.selectedNodeId = hit.id;
+          this.editingNodeId = null;
+          this.bringNodeToFront(hit.id);
+          this.requestRender();
+          if (changed) this.emitUiState();
+          this.onRequestCancelGeneration?.(hit.id);
+          return;
+        }
+      }
+
       const btn = this.replyButtonRect(hit.rect);
       const inReply =
         world.x >= btn.x && world.x <= btn.x + btn.w && world.y >= btn.y && world.y <= btn.y + btn.h;
@@ -3094,6 +3172,20 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return { x, y, w, h };
   }
 
+  private stopButtonRect(nodeRect: Rect): Rect {
+    const z = Math.max(0.01, this.camera.zoom || 1);
+    const pad = 14 / z;
+    const w = 56 / z;
+    const h = 22 / z;
+    const gap = 8 / z;
+
+    const reply = this.replyButtonRect(nodeRect);
+    const x = reply.x - gap - w;
+    const y = reply.y;
+    const minX = nodeRect.x + pad;
+    return { x: Math.max(minX, x), y, w, h };
+  }
+
   private drawReplyButton(nodeRect: Rect, opts?: { active?: boolean }): void {
     const ctx = this.ctx;
     const z = Math.max(0.01, this.camera.zoom || 1);
@@ -3123,6 +3215,42 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     ctx.font = `${12 / z}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
     ctx.textBaseline = 'middle';
     const label = 'Reply';
+    const m = ctx.measureText(label);
+    const textX = rect.x + (rect.w - (m.width || 0)) * 0.5;
+    ctx.fillText(label, textX, rect.y + rect.h * 0.5);
+
+    ctx.restore();
+  }
+
+  private drawStopButton(nodeRect: Rect): void {
+    const ctx = this.ctx;
+    const z = Math.max(0.01, this.camera.zoom || 1);
+    const r = 9 / z;
+    const rect = this.stopButtonRect(nodeRect);
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(248,113,113,0.18)';
+    ctx.strokeStyle = 'rgba(248,113,113,0.62)';
+    ctx.lineWidth = 1 / z;
+
+    ctx.beginPath();
+    ctx.moveTo(rect.x + r, rect.y);
+    ctx.lineTo(rect.x + rect.w - r, rect.y);
+    ctx.arcTo(rect.x + rect.w, rect.y, rect.x + rect.w, rect.y + r, r);
+    ctx.lineTo(rect.x + rect.w, rect.y + rect.h - r);
+    ctx.arcTo(rect.x + rect.w, rect.y + rect.h, rect.x + rect.w - r, rect.y + rect.h, r);
+    ctx.lineTo(rect.x + r, rect.y + rect.h);
+    ctx.arcTo(rect.x, rect.y + rect.h, rect.x, rect.y + rect.h - r, r);
+    ctx.lineTo(rect.x, rect.y + r);
+    ctx.arcTo(rect.x, rect.y, rect.x + r, rect.y, r);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = 'rgba(255,255,255,0.86)';
+    ctx.font = `${12 / z}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
+    ctx.textBaseline = 'middle';
+    const label = 'Stop';
     const m = ctx.measureText(label);
     const textX = rect.x + (rect.w - (m.width || 0)) * 0.5;
     ctx.fillText(label, textX, rect.y + rect.h * 0.5);
@@ -3222,6 +3350,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       ctx.textBaseline = 'top';
       ctx.fillText(node.title, x + 14, y + 12);
 
+      if (node.kind === 'text' && node.isGenerating) this.drawStopButton(node.rect);
       this.drawReplyButton(node.rect, { active: isSelected });
 
       ctx.fillStyle = 'rgba(255,255,255,0.55)';

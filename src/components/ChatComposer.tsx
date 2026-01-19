@@ -1,35 +1,58 @@
-import React, { useCallback, useDeferredValue, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import MarkdownMath from './MarkdownMath';
+import type { ModelInfo, TextVerbosity } from '../llm/registry';
+import type { ChatAttachment } from '../model/chat';
 
 type Props = {
   value: string;
   onChange: (next: string) => void;
   onSend: () => void;
-  isGenerating?: boolean;
-  onCancelGeneration?: () => void;
+  modelId: string;
+  modelOptions: ModelInfo[];
+  onChangeModelId: (next: string) => void;
+  verbosity: TextVerbosity;
+  onChangeVerbosity: (next: TextVerbosity) => void;
+  webSearchEnabled: boolean;
+  onChangeWebSearchEnabled: (next: boolean) => void;
   containerRef?: React.Ref<HTMLDivElement>;
   replyPreview?: string | null;
   onCancelReply?: () => void;
   placeholder?: string;
   sendDisabled?: boolean;
   disabled?: boolean;
+  draftAttachments?: ChatAttachment[];
+  onAddAttachmentFiles?: (files: FileList) => void;
+  onRemoveDraftAttachment?: (index: number) => void;
+  contextAttachments?: Array<{ key: string; attachment: ChatAttachment }>;
+  selectedContextAttachmentKeys?: string[];
+  onToggleContextAttachmentKey?: (key: string, included: boolean) => void;
 };
 
+function formatBytes(bytes?: number): string {
+  const n = typeof bytes === 'number' && Number.isFinite(bytes) ? bytes : 0;
+  if (n <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const idx = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+  const value = n / Math.pow(1024, idx);
+  const digits = idx === 0 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(digits)} ${units[idx]}`;
+}
+
+function labelForAttachment(att: ChatAttachment): string {
+  const base =
+    att.kind === 'image' || att.kind === 'pdf'
+      ? att.name?.trim() || (att.kind === 'pdf' ? 'PDF' : 'Image')
+      : att.kind === 'ink'
+        ? 'Ink'
+        : 'Attachment';
+  const size = att.kind === 'image' || att.kind === 'pdf' ? formatBytes(att.size) : null;
+  return size && size !== '0 B' ? `${base} • ${size}` : base;
+}
+
 export default function ChatComposer(props: Props) {
-  const {
-    value,
-    onChange,
-    onSend,
-    isGenerating,
-    onCancelGeneration,
-    containerRef,
-    replyPreview,
-    onCancelReply,
-    placeholder,
-    sendDisabled,
-    disabled,
-  } = props;
+  const { value, onChange, onSend, modelId, modelOptions, onChangeModelId, verbosity, onChangeVerbosity, webSearchEnabled, onChangeWebSearchEnabled, containerRef, replyPreview, onCancelReply, placeholder, sendDisabled, disabled, draftAttachments, onAddAttachmentFiles, onRemoveDraftAttachment, contextAttachments, selectedContextAttachmentKeys, onToggleContextAttachmentKey } = props;
   const taRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
   const onSendRef = useRef(onSend);
   const [previewEnabled, setPreviewEnabled] = useState(false);
   const deferredValue = useDeferredValue(value);
@@ -50,10 +73,15 @@ export default function ChatComposer(props: Props) {
     onSendRef.current();
   }, [disabled, sendDisabled]);
 
-  const cancel = useCallback(() => {
+  const openAttachments = useCallback(() => {
     if (disabled) return;
-    onCancelGeneration?.();
-  }, [disabled, onCancelGeneration]);
+    fileRef.current?.click();
+  }, [disabled]);
+
+  const selectedContextSet = useMemo(
+    () => new Set(Array.isArray(selectedContextAttachmentKeys) ? selectedContextAttachmentKeys : []),
+    [selectedContextAttachmentKeys],
+  );
 
   return (
     <div
@@ -74,6 +102,24 @@ export default function ChatComposer(props: Props) {
               ✕
             </button>
           ) : null}
+        </div>
+      ) : null}
+      {replyPreview && Array.isArray(contextAttachments) && contextAttachments.length > 0 ? (
+        <div className="composerSurface composer__contextAttachments">
+          <div className="composer__contextTitle">Context attachments</div>
+          <div className="composer__contextList">
+            {contextAttachments.map((item) => (
+              <label className="composer__contextItem" key={item.key}>
+                <input
+                  type="checkbox"
+                  checked={selectedContextSet.has(item.key)}
+                  disabled={disabled}
+                  onChange={(e) => onToggleContextAttachmentKey?.(item.key, Boolean((e.currentTarget as HTMLInputElement).checked))}
+                />
+                <span className="composer__contextLabel">{labelForAttachment(item.attachment)}</span>
+              </label>
+            ))}
+          </div>
         </div>
       ) : null}
       <div className="composerSurface composer">
@@ -107,26 +153,100 @@ export default function ChatComposer(props: Props) {
           ) : null}
         </div>
 
-        <div className="composer__footer">
-          <label className="composer__toggle">
-            <span>Preview</span>
-            <input
-              type="checkbox"
-              checked={previewEnabled}
-              onChange={(e) => setPreviewEnabled((e.currentTarget as HTMLInputElement).checked)}
-            />
-          </label>
-          <div className="composer__actions">
-            {isGenerating && onCancelGeneration ? (
-              <button className="composer__cancel" type="button" onClick={cancel} disabled={disabled}>
-                Cancel
-              </button>
-            ) : (
-              <button className="composer__send" type="button" onClick={send} disabled={Boolean(disabled || sendDisabled)}>
-                Send
-              </button>
-            )}
+        {Array.isArray(draftAttachments) && draftAttachments.length > 0 ? (
+          <div className="composer__attachments">
+            {draftAttachments.map((att, idx) => (
+              <div className="composer__attachmentChip" key={`${att.kind}-${idx}`}>
+                <span className={`composer__attachmentKind composer__attachmentKind--${att.kind}`}>{att.kind}</span>
+                <span className="composer__attachmentLabel">{labelForAttachment(att)}</span>
+                {onRemoveDraftAttachment ? (
+                  <button
+                    className="composer__attachmentRemove"
+                    type="button"
+                    onClick={() => onRemoveDraftAttachment(idx)}
+                    disabled={disabled}
+                    aria-label="Remove attachment"
+                  >
+                    ✕
+                  </button>
+                ) : null}
+              </div>
+            ))}
           </div>
+        ) : null}
+
+        <div className="composer__footer">
+          <div className="composer__footerLeft">
+            <input
+              ref={fileRef}
+              className="composer__fileInput"
+              type="file"
+              accept="image/*,application/pdf"
+              multiple
+              disabled={disabled}
+              onChange={(e) => {
+                const files = e.currentTarget.files;
+                e.currentTarget.value = '';
+                if (!files || files.length === 0) return;
+                onAddAttachmentFiles?.(files);
+              }}
+            />
+            <button className="composer__attach" type="button" onClick={openAttachments} disabled={disabled}>
+              Attach
+            </button>
+
+            <label className="composer__toggle">
+              <span>Preview</span>
+              <input
+                type="checkbox"
+                checked={previewEnabled}
+                onChange={(e) => setPreviewEnabled((e.currentTarget as HTMLInputElement).checked)}
+              />
+            </label>
+
+            <label className="composer__setting">
+              <span className="composer__settingLabel">Model</span>
+              <select
+                className="composer__select"
+                value={modelId}
+                onChange={(e) => onChangeModelId(e.currentTarget.value)}
+                disabled={disabled}
+              >
+                {modelOptions.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.shortLabel ?? m.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="composer__setting">
+              <span className="composer__settingLabel">Verbosity</span>
+              <select
+                className="composer__select"
+                value={verbosity}
+                onChange={(e) => onChangeVerbosity(e.currentTarget.value as TextVerbosity)}
+                disabled={disabled}
+              >
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+              </select>
+            </label>
+
+            <label className="composer__toggle">
+              <span>Web</span>
+              <input
+                type="checkbox"
+                checked={webSearchEnabled}
+                onChange={(e) => onChangeWebSearchEnabled(Boolean((e.currentTarget as HTMLInputElement).checked))}
+                disabled={disabled}
+              />
+            </label>
+          </div>
+          <button className="composer__send" type="button" onClick={send} disabled={Boolean(disabled || sendDisabled)}>
+            Send
+          </button>
         </div>
       </div>
     </div>

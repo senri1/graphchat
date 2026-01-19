@@ -17,7 +17,10 @@ import {
   toggleFolder,
 } from './workspace/tree';
 import { getOpenAIApiKey, streamOpenAIResponse } from './services/openaiService';
-import type { ChatNode } from './model/chat';
+import type { ChatAttachment, ChatNode } from './model/chat';
+import { buildOpenAIResponseRequest, type OpenAIChatSettings } from './llm/openai';
+import { DEFAULT_MODEL_ID, listModels, type TextVerbosity } from './llm/registry';
+import { readFileAsDataUrl, splitDataUrl } from './utils/files';
 
 type ChatTurnMeta = {
   id: string;
@@ -31,16 +34,20 @@ type ReplySelection = { nodeId: string; preview: string };
 
 type ChatRuntimeMeta = {
   draft: string;
+  draftAttachments: ChatAttachment[];
   replyTo: ReplySelection | null;
+  selectedAttachmentKeys: string[];
   headNodeId: string | null;
   turns: ChatTurnMeta[];
+  llm: OpenAIChatSettings;
 };
 
-type ChatGenerationJob = {
+type GenerationJob = {
   chatId: string;
   userNodeId: string;
   assistantNodeId: string;
   modelId: string;
+  llmParams: NonNullable<Extract<ChatNode, { kind: 'text' }>['llmParams']>;
   startedAt: number;
   abortController: AbortController;
   fullText: string;
@@ -49,8 +56,6 @@ type ChatGenerationJob = {
   flushTimer: number | null;
   closed: boolean;
 };
-
-const DEFAULT_OPENAI_MODEL_ID = 'gpt-4o-mini';
 
 function genId(prefix: string): string {
   const p = prefix.replace(/[^a-z0-9_-]/gi, '').slice(0, 8) || 'id';
@@ -63,32 +68,61 @@ function genId(prefix: string): string {
   return `${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function buildOpenAIInputFromChatNodes(nodes: ChatNode[], leafUserNodeId: string): any[] {
+async function fileToChatAttachment(file: File): Promise<ChatAttachment | null> {
+  const name = (file.name ?? '').trim() || undefined;
+  const lowerName = (name ?? '').toLowerCase();
+  const type = (file.type ?? '').toLowerCase();
+  const size = Number.isFinite(file.size) ? file.size : undefined;
+
+  const isPdf = type === 'application/pdf' || lowerName.endsWith('.pdf');
+  const isImage =
+    type.startsWith('image/') ||
+    lowerName.endsWith('.png') ||
+    lowerName.endsWith('.jpg') ||
+    lowerName.endsWith('.jpeg') ||
+    lowerName.endsWith('.gif') ||
+    lowerName.endsWith('.webp');
+
+  if (!isPdf && !isImage) return null;
+
+  const dataUrl = await readFileAsDataUrl(file);
+  const parts = splitDataUrl(dataUrl);
+  if (!parts?.base64) return null;
+
+  if (isPdf) {
+    return { kind: 'pdf', name, mimeType: 'application/pdf', data: parts.base64, size };
+  }
+
+  const mimeType = type.startsWith('image/') ? type : parts.mimeType || 'image/png';
+  return { kind: 'image', name, mimeType, data: parts.base64, size, detail: 'auto' };
+}
+
+type ContextAttachmentItem = {
+  key: string;
+  nodeId: string;
+  attachment: ChatAttachment;
+};
+
+function collectContextAttachments(nodes: ChatNode[], startNodeId: string): ContextAttachmentItem[] {
   const byId = new Map<string, ChatNode>();
   for (const n of nodes) byId.set(n.id, n);
 
-  const chain: ChatNode[] = [];
-  let cur: ChatNode | null = byId.get(leafUserNodeId) ?? null;
+  const out: ContextAttachmentItem[] = [];
+  let cur: ChatNode | null = byId.get(startNodeId) ?? null;
   while (cur) {
-    chain.push(cur);
+    if (cur.kind === 'text' && cur.author === 'user' && Array.isArray(cur.attachments)) {
+      for (let i = 0; i < cur.attachments.length; i += 1) {
+        const att = cur.attachments[i];
+        if (!att) continue;
+        out.push({ key: `${cur.id}:${i}`, nodeId: cur.id, attachment: att });
+      }
+    }
     const parentId = (cur as any)?.parentId as string | null | undefined;
     if (!parentId) break;
     cur = byId.get(parentId) ?? null;
   }
-  chain.reverse();
 
-  const input: any[] = [];
-  for (const n of chain) {
-    if (n.kind !== 'text') continue;
-    const text = typeof n.content === 'string' ? n.content : String((n as any)?.content ?? '');
-    if (!text.trim()) continue;
-    if (n.author === 'user') {
-      input.push({ role: 'user', content: [{ type: 'input_text', text }] });
-    } else {
-      input.push({ role: 'assistant', content: [{ type: 'output_text', text }] });
-    }
-  }
-  return input;
+  return out;
 }
 
 export default function App() {
@@ -97,7 +131,7 @@ export default function App() {
   const pdfInputRef = useRef<HTMLInputElement | null>(null);
   const composerDockRef = useRef<HTMLDivElement | null>(null);
   const engineRef = useRef<WorldEngine | null>(null);
-  const generationJobsRef = useRef<Map<string, ChatGenerationJob>>(new Map());
+  const generationJobsByAssistantIdRef = useRef<Map<string, GenerationJob>>(new Map());
   const [debug, setDebug] = useState<WorldEngineDebug | null>(null);
   const [ui, setUi] = useState(() => ({
     selectedNodeId: null as string | null,
@@ -107,8 +141,14 @@ export default function App() {
   }));
   const [viewport, setViewport] = useState(() => ({ w: 1, h: 1 }));
   const [composerDraft, setComposerDraft] = useState('');
+  const [composerDraftAttachments, setComposerDraftAttachments] = useState<ChatAttachment[]>(() => []);
   const [replySelection, setReplySelection] = useState<ReplySelection | null>(null);
-  const [, setGenerationUiVersion] = useState(0);
+  const [replyContextAttachments, setReplyContextAttachments] = useState<ContextAttachmentItem[]>(() => []);
+  const [replySelectedAttachmentKeys, setReplySelectedAttachmentKeys] = useState<string[]>(() => []);
+  const modelOptions = useMemo(() => listModels(), []);
+  const [composerModelId, setComposerModelId] = useState<string>(() => DEFAULT_MODEL_ID);
+  const [composerVerbosity, setComposerVerbosity] = useState<TextVerbosity>(() => 'medium');
+  const [composerWebSearch, setComposerWebSearch] = useState<boolean>(() => false);
 
   const initial = useMemo(() => {
     const chatId = genId('chat');
@@ -122,7 +162,15 @@ export default function App() {
     const chatStates = new Map<string, WorldEngineChatState>();
     chatStates.set(chatId, createEmptyChatState());
     const chatMeta = new Map<string, ChatRuntimeMeta>();
-    chatMeta.set(chatId, { draft: '', replyTo: null, headNodeId: null, turns: [] });
+    chatMeta.set(chatId, {
+      draft: '',
+      draftAttachments: [],
+      replyTo: null,
+      selectedAttachmentKeys: [],
+      headNodeId: null,
+      turns: [],
+      llm: { modelId: DEFAULT_MODEL_ID, verbosity: 'medium', webSearchEnabled: false },
+    });
     return { root, chatId, chatStates, chatMeta };
   }, []);
 
@@ -136,7 +184,15 @@ export default function App() {
   const ensureChatMeta = (chatId: string): ChatRuntimeMeta => {
     const existing = chatMetaRef.current.get(chatId);
     if (existing) return existing;
-    const meta: ChatRuntimeMeta = { draft: '', replyTo: null, headNodeId: null, turns: [] };
+    const meta: ChatRuntimeMeta = {
+      draft: '',
+      draftAttachments: [],
+      replyTo: null,
+      selectedAttachmentKeys: [],
+      headNodeId: null,
+      turns: [],
+      llm: { modelId: DEFAULT_MODEL_ID, verbosity: 'medium', webSearchEnabled: false },
+    };
     chatMetaRef.current.set(chatId, meta);
     return meta;
   };
@@ -144,8 +200,6 @@ export default function App() {
   useEffect(() => {
     activeChatIdRef.current = activeChatId;
   }, [activeChatId]);
-
-  const activeJob = generationJobsRef.current.get(activeChatId) ?? null;
 
   const updateStoredTextNode = (chatId: string, nodeId: string, patch: Partial<Extract<ChatNode, { kind: 'text' }>>) => {
     const state = chatStatesRef.current.get(chatId);
@@ -155,7 +209,7 @@ export default function App() {
     Object.assign(node, patch);
   };
 
-  const flushJobToStateAndEngine = (job: ChatGenerationJob) => {
+  const flushJobToStateAndEngine = (job: GenerationJob) => {
     if (job.closed) return;
     const next = job.fullText;
     if (next === job.lastFlushedText) return;
@@ -176,7 +230,7 @@ export default function App() {
     }
   };
 
-  const scheduleJobFlush = (job: ChatGenerationJob) => {
+  const scheduleJobFlush = (job: GenerationJob) => {
     if (job.closed) return;
     if (job.flushTimer != null) return;
     const minIntervalMs = 50;
@@ -188,8 +242,11 @@ export default function App() {
     }, delay);
   };
 
-  const finishJob = (chatId: string, result: { finalText: string; error: string | null; cancelled?: boolean }) => {
-    const job = generationJobsRef.current.get(chatId);
+  const finishJob = (
+    assistantNodeId: string,
+    result: { finalText: string; error: string | null; cancelled?: boolean },
+  ) => {
+    const job = generationJobsByAssistantIdRef.current.get(assistantNodeId);
     if (!job) return;
     job.closed = true;
     if (job.flushTimer != null) {
@@ -204,38 +261,42 @@ export default function App() {
     const rawText = result.finalText ?? job.fullText;
     const finalText =
       rawText.trim() || !result.error ? rawText : result.cancelled ? 'Canceled.' : `Error: ${result.error}`;
-    updateStoredTextNode(chatId, job.assistantNodeId, {
+    updateStoredTextNode(job.chatId, job.assistantNodeId, {
       content: finalText,
       isGenerating: false,
       modelId: job.modelId,
       llmError: result.error,
     });
 
-    if (activeChatIdRef.current === chatId) {
+    if (activeChatIdRef.current === job.chatId) {
       const engine = engineRef.current;
       engine?.setTextNodeContent(job.assistantNodeId, finalText, { streaming: false });
       engine?.setTextNodeLlmState(job.assistantNodeId, { isGenerating: false, modelId: job.modelId, llmError: result.error });
     }
 
-    generationJobsRef.current.delete(chatId);
-    setGenerationUiVersion((v) => v + 1);
+    generationJobsByAssistantIdRef.current.delete(assistantNodeId);
   };
 
-  const cancelJob = (chatId: string) => {
-    const job = generationJobsRef.current.get(chatId);
+  const cancelJob = (assistantNodeId: string) => {
+    const job = generationJobsByAssistantIdRef.current.get(assistantNodeId);
     if (!job) return;
     try {
       job.abortController.abort();
     } catch {
       // ignore
     }
-    finishJob(chatId, { finalText: job.fullText, error: 'Canceled', cancelled: true });
+    finishJob(assistantNodeId, { finalText: job.fullText, error: 'Canceled', cancelled: true });
   };
 
-  const startOpenAIGeneration = (args: { chatId: string; userNodeId: string; assistantNodeId: string }) => {
+  const startOpenAIGeneration = (args: {
+    chatId: string;
+    userNodeId: string;
+    assistantNodeId: string;
+    settings: OpenAIChatSettings;
+  }) => {
     const chatId = args.chatId;
     if (!chatId) return;
-    if (generationJobsRef.current.has(chatId)) return;
+    if (generationJobsByAssistantIdRef.current.has(args.assistantNodeId)) return;
 
     const apiKey = getOpenAIApiKey();
     if (!apiKey) {
@@ -245,27 +306,28 @@ export default function App() {
         engineRef.current?.setTextNodeContent(args.assistantNodeId, msg, { streaming: false });
         engineRef.current?.setTextNodeLlmState(args.assistantNodeId, {
           isGenerating: false,
-          modelId: DEFAULT_OPENAI_MODEL_ID,
+          modelId: args.settings.modelId,
           llmError: msg,
         });
       }
-      setGenerationUiVersion((v) => v + 1);
       return;
     }
 
     const state = chatStatesRef.current.get(chatId);
-    const input = buildOpenAIInputFromChatNodes(state?.nodes ?? [], args.userNodeId);
-    const request = {
-      model: DEFAULT_OPENAI_MODEL_ID,
-      input,
-      store: false,
-    } as Record<string, unknown>;
+    const settings = args.settings;
+    const request = buildOpenAIResponseRequest({
+      nodes: state?.nodes ?? [],
+      leafUserNodeId: args.userNodeId,
+      settings,
+    });
+    const llmParams = { verbosity: settings.verbosity, webSearchEnabled: settings.webSearchEnabled };
 
-    const job: ChatGenerationJob = {
+    const job: GenerationJob = {
       chatId,
       userNodeId: args.userNodeId,
       assistantNodeId: args.assistantNodeId,
-      modelId: DEFAULT_OPENAI_MODEL_ID,
+      modelId: settings.modelId,
+      llmParams,
       startedAt: Date.now(),
       abortController: new AbortController(),
       fullText: '',
@@ -275,12 +337,21 @@ export default function App() {
       closed: false,
     };
 
-    generationJobsRef.current.set(chatId, job);
-    updateStoredTextNode(chatId, job.assistantNodeId, { isGenerating: true, modelId: job.modelId, llmError: null });
+    generationJobsByAssistantIdRef.current.set(job.assistantNodeId, job);
+    updateStoredTextNode(chatId, job.assistantNodeId, {
+      isGenerating: true,
+      modelId: job.modelId,
+      llmParams: job.llmParams,
+      llmError: null,
+    });
     if (activeChatIdRef.current === chatId) {
-      engineRef.current?.setTextNodeLlmState(job.assistantNodeId, { isGenerating: true, modelId: job.modelId, llmError: null });
+      engineRef.current?.setTextNodeLlmState(job.assistantNodeId, {
+        isGenerating: true,
+        modelId: job.modelId,
+        llmParams: job.llmParams,
+        llmError: null,
+      });
     }
-    setGenerationUiVersion((v) => v + 1);
 
     void (async () => {
       const res = await streamOpenAIResponse({
@@ -296,12 +367,12 @@ export default function App() {
         },
       });
 
-      if (!generationJobsRef.current.has(chatId)) return;
+      if (!generationJobsByAssistantIdRef.current.has(job.assistantNodeId)) return;
       if (res.ok) {
-        finishJob(chatId, { finalText: res.text, error: null });
+        finishJob(job.assistantNodeId, { finalText: res.text, error: null });
       } else {
         const error = res.cancelled ? 'Canceled' : res.error;
-        finishJob(chatId, { finalText: res.text ?? job.fullText, error, cancelled: res.cancelled });
+        finishJob(job.assistantNodeId, { finalText: res.text ?? job.fullText, error, cancelled: res.cancelled });
       }
     })();
   };
@@ -336,9 +407,16 @@ export default function App() {
       const meta = ensureChatMeta(chatId);
       const preview = engine.getNodeReplyPreview(nodeId);
       const next: ReplySelection = { nodeId, preview };
+      const snapshot = engine.exportChatState();
+      const ctx = collectContextAttachments(snapshot.nodes, nodeId);
+      const keys = ctx.map((it) => it.key);
       meta.replyTo = next;
+      meta.selectedAttachmentKeys = keys;
       setReplySelection(next);
+      setReplyContextAttachments(ctx);
+      setReplySelectedAttachmentKeys(keys);
     };
+    engine.onRequestCancelGeneration = (nodeId) => cancelJob(nodeId);
     engine.start();
     engineRef.current = engine;
     setUi(engine.getUiState());
@@ -413,7 +491,14 @@ export default function App() {
       const existingMeta = chatMetaRef.current.get(prevChatId);
       if (existingMeta) {
         existingMeta.draft = composerDraft;
+        existingMeta.draftAttachments = composerDraftAttachments;
         existingMeta.replyTo = replySelection;
+        existingMeta.selectedAttachmentKeys = replySelectedAttachmentKeys;
+        existingMeta.llm = {
+          modelId: composerModelId,
+          verbosity: composerVerbosity,
+          webSearchEnabled: composerWebSearch,
+        };
       }
     }
 
@@ -430,7 +515,18 @@ export default function App() {
 
     const meta = ensureChatMeta(nextChatId);
     setComposerDraft(meta.draft);
+    setComposerDraftAttachments(Array.isArray(meta.draftAttachments) ? meta.draftAttachments : []);
     setReplySelection(meta.replyTo);
+    setReplySelectedAttachmentKeys(Array.isArray(meta.selectedAttachmentKeys) ? meta.selectedAttachmentKeys : []);
+    if (meta.replyTo?.nodeId) {
+      const nextState = chatStatesRef.current.get(nextChatId) ?? createEmptyChatState();
+      setReplyContextAttachments(collectContextAttachments(nextState.nodes, meta.replyTo.nodeId));
+    } else {
+      setReplyContextAttachments([]);
+    }
+    setComposerModelId(meta.llm.modelId || DEFAULT_MODEL_ID);
+    setComposerVerbosity((meta.llm.verbosity as TextVerbosity) || 'medium');
+    setComposerWebSearch(Boolean(meta.llm.webSearchEnabled));
     setActiveChatId(nextChatId);
   };
 
@@ -439,7 +535,15 @@ export default function App() {
     const item: WorkspaceChat = { kind: 'chat', id, name: 'New chat' };
     setTreeRoot((prev) => insertItem(prev, parentFolderId || prev.id, item));
     chatStatesRef.current.set(id, createEmptyChatState());
-    chatMetaRef.current.set(id, { draft: '', replyTo: null, headNodeId: null, turns: [] });
+    chatMetaRef.current.set(id, {
+      draft: '',
+      draftAttachments: [],
+      replyTo: null,
+      selectedAttachmentKeys: [],
+      headNodeId: null,
+      turns: [],
+      llm: { modelId: DEFAULT_MODEL_ID, verbosity: 'medium', webSearchEnabled: false },
+    });
     switchChat(id);
   };
 
@@ -461,6 +565,15 @@ export default function App() {
 
     const { root: nextRoot, removed } = deleteItem(treeRoot, itemId);
     const removedChatIds = removed ? collectChatIds(removed) : [];
+
+    if (removedChatIds.length > 0) {
+      const removedSet = new Set(removedChatIds);
+      for (const [assistantNodeId, job] of generationJobsByAssistantIdRef.current.entries()) {
+        if (!removedSet.has(job.chatId)) continue;
+        cancelJob(assistantNodeId);
+      }
+    }
+
     for (const chatId of removedChatIds) {
       chatStatesRef.current.delete(chatId);
       chatMetaRef.current.delete(chatId);
@@ -475,7 +588,15 @@ export default function App() {
         const rootWithChat = insertItem(nextRoot, nextRoot.id, item);
         setTreeRoot(rootWithChat);
         chatStatesRef.current.set(id, createEmptyChatState());
-        chatMetaRef.current.set(id, { draft: '', replyTo: null, headNodeId: null, turns: [] });
+        chatMetaRef.current.set(id, {
+          draft: '',
+          draftAttachments: [],
+          replyTo: null,
+          selectedAttachmentKeys: [],
+          headNodeId: null,
+          turns: [],
+          llm: { modelId: DEFAULT_MODEL_ID, verbosity: 'medium', webSearchEnabled: false },
+        });
         switchChat(id, { saveCurrent: false });
         return;
       }
@@ -523,25 +644,84 @@ export default function App() {
             setComposerDraft(next);
             ensureChatMeta(activeChatId).draft = next;
           }}
+          draftAttachments={composerDraftAttachments}
+          onAddAttachmentFiles={(files) => {
+            const chatId = activeChatIdRef.current;
+            const list = Array.from(files ?? []);
+            void (async () => {
+              for (const f of list) {
+                try {
+                  const att = await fileToChatAttachment(f);
+                  if (!att) continue;
+                  const meta = ensureChatMeta(chatId);
+                  meta.draftAttachments.push(att);
+                  if (activeChatIdRef.current === chatId) {
+                    setComposerDraftAttachments((prev) => [...prev, att]);
+                  }
+                } catch {
+                  // ignore
+                }
+              }
+            })();
+          }}
+          onRemoveDraftAttachment={(index) => {
+            const idx = Math.max(0, Math.floor(index));
+            const meta = ensureChatMeta(activeChatId);
+            meta.draftAttachments = meta.draftAttachments.filter((_att, i) => i !== idx);
+            setComposerDraftAttachments(meta.draftAttachments);
+          }}
+          contextAttachments={replyContextAttachments}
+          selectedContextAttachmentKeys={replySelectedAttachmentKeys}
+          onToggleContextAttachmentKey={(key, included) => {
+            const meta = ensureChatMeta(activeChatId);
+            const set = new Set(meta.selectedAttachmentKeys);
+            if (included) set.add(key);
+            else set.delete(key);
+            const next = Array.from(set);
+            meta.selectedAttachmentKeys = next;
+            setReplySelectedAttachmentKeys(next);
+          }}
+          modelId={composerModelId}
+          modelOptions={modelOptions}
+          onChangeModelId={(next) => {
+            const value = next || DEFAULT_MODEL_ID;
+            setComposerModelId(value);
+            ensureChatMeta(activeChatId).llm.modelId = value;
+          }}
+          verbosity={composerVerbosity}
+          onChangeVerbosity={(next) => {
+            setComposerVerbosity(next);
+            ensureChatMeta(activeChatId).llm.verbosity = next;
+          }}
+          webSearchEnabled={composerWebSearch}
+          onChangeWebSearchEnabled={(next) => {
+            setComposerWebSearch(next);
+            ensureChatMeta(activeChatId).llm.webSearchEnabled = next;
+          }}
           replyPreview={replySelection?.preview ?? null}
           onCancelReply={() => {
             const meta = ensureChatMeta(activeChatId);
             meta.replyTo = null;
+            meta.selectedAttachmentKeys = [];
             setReplySelection(null);
+            setReplyContextAttachments([]);
+            setReplySelectedAttachmentKeys([]);
           }}
-          isGenerating={Boolean(activeJob)}
-          onCancelGeneration={() => cancelJob(activeChatId)}
-          sendDisabled={!composerDraft.trim() || Boolean(activeJob)}
+          sendDisabled={!composerDraft.trim() && composerDraftAttachments.length === 0}
           onSend={() => {
             const engine = engineRef.current;
             if (!engine) return;
             const raw = composerDraft;
-            if (!raw.trim()) return;
-            if (generationJobsRef.current.has(activeChatId)) return;
+            if (!raw.trim() && composerDraftAttachments.length === 0) return;
 
             const meta = ensureChatMeta(activeChatId);
             const desiredParentId = replySelection?.nodeId && engine.hasNode(replySelection.nodeId) ? replySelection.nodeId : null;
-            const res = engine.spawnChatTurn({ userText: raw, parentNodeId: desiredParentId });
+            const res = engine.spawnChatTurn({
+              userText: raw,
+              parentNodeId: desiredParentId,
+              userAttachments: composerDraftAttachments.length ? composerDraftAttachments : undefined,
+              selectedAttachmentKeys: replySelectedAttachmentKeys.length ? replySelectedAttachmentKeys : undefined,
+            });
 
             meta.turns.push({
               id: genId('turn'),
@@ -553,12 +733,27 @@ export default function App() {
             meta.headNodeId = res.assistantNodeId;
             meta.replyTo = null;
             meta.draft = '';
+            meta.draftAttachments = [];
+            meta.selectedAttachmentKeys = [];
             setReplySelection(null);
+            setReplyContextAttachments([]);
+            setReplySelectedAttachmentKeys([]);
             setComposerDraft('');
+            setComposerDraftAttachments([]);
 
             const snapshot = engine.exportChatState();
             chatStatesRef.current.set(activeChatId, snapshot);
-            startOpenAIGeneration({ chatId: activeChatId, userNodeId: res.userNodeId, assistantNodeId: res.assistantNodeId });
+            const settings: OpenAIChatSettings = {
+              modelId: composerModelId,
+              verbosity: composerVerbosity,
+              webSearchEnabled: composerWebSearch,
+            };
+            startOpenAIGeneration({
+              chatId: activeChatId,
+              userNodeId: res.userNodeId,
+              assistantNodeId: res.assistantNodeId,
+              settings,
+            });
           }}
         />
         <div

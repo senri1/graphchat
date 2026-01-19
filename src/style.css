@@ -411,6 +411,46 @@ body {
   background: rgba(255, 255, 255, 0.06);
 }
 
+.composer__contextAttachments {
+  padding: 10px 12px;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.composer__contextTitle {
+  font-size: 12px;
+  opacity: 0.9;
+  margin-bottom: 8px;
+}
+
+.composer__contextList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.composer__contextItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 12px;
+  user-select: none;
+}
+
+.composer__contextItem input {
+  accent-color: rgba(147, 197, 253, 0.85);
+}
+
+.composer__contextLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .composer__panel {
   display: grid;
   grid-template-columns: 1fr;
@@ -471,6 +511,100 @@ body {
   border-top: 1px solid rgba(255, 255, 255, 0.12);
 }
 
+.composer__footerLeft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.composer__fileInput {
+  display: none;
+}
+
+.composer__attach {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(0, 0, 0, 0.25);
+  color: rgba(255, 255, 255, 0.92);
+  border-radius: 10px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.composer__attach:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.composer__attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px 0;
+}
+
+.composer__attachmentChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.18);
+  color: rgba(255, 255, 255, 0.9);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.composer__attachmentKind {
+  flex: 0 0 auto;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.composer__attachmentKind--pdf {
+  background: rgba(147, 197, 253, 0.18);
+  border: 1px solid rgba(147, 197, 253, 0.32);
+}
+
+.composer__attachmentKind--image {
+  background: rgba(134, 239, 172, 0.14);
+  border: 1px solid rgba(134, 239, 172, 0.28);
+}
+
+.composer__attachmentKind--ink {
+  background: rgba(251, 191, 36, 0.14);
+  border: 1px solid rgba(251, 191, 36, 0.25);
+}
+
+.composer__attachmentLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer__attachmentRemove {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.22);
+  color: rgba(255, 255, 255, 0.82);
+  border-radius: 999px;
+  padding: 2px 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.composer__attachmentRemove:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
 .composer__toggle {
   display: inline-flex;
   align-items: center;
@@ -484,10 +618,32 @@ body {
   accent-color: rgba(147, 197, 253, 0.85);
 }
 
-.composer__actions {
+.composer__setting {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.86);
+  user-select: none;
+}
+
+.composer__settingLabel {
+  opacity: 0.9;
+}
+
+.composer__select {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(0, 0, 0, 0.25);
+  color: rgba(255, 255, 255, 0.92);
+  border-radius: 10px;
+  padding: 6px 10px;
+  font-size: 12px;
+  outline: none;
+}
+
+.composer__select:disabled {
+  opacity: 0.65;
 }
 
 .composer__send {
@@ -502,22 +658,6 @@ body {
 }
 
 .composer__send:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-.composer__cancel {
-  appearance: none;
-  border: 1px solid rgba(248, 113, 113, 0.6);
-  background: rgba(248, 113, 113, 0.18);
-  color: rgba(255, 255, 255, 0.92);
-  border-radius: 12px;
-  padding: 10px 14px;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.composer__cancel:disabled {
   opacity: 0.55;
   cursor: default;
 }
