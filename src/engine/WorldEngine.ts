@@ -168,7 +168,7 @@ type PdfPageRenderJob = {
   key: string;
   pageWorldW: number;
   pageWorldH: number;
-  renderDpi: number;
+  rasterScale: number;
 };
 
 export type WorldEngineUiState = {
@@ -331,7 +331,7 @@ export class WorldEngine {
   private readonly pdfStateByNodeId = new Map<string, PdfNodeState>();
   private readonly pdfPageRenderQueue = new Map<string, PdfPageRenderJob>();
   private pdfPageRenderRunning = false;
-  private readonly pdfRenderDpi = 2;
+  private pdfDesiredRasterScale = 1;
 
   private readonly pdfPageCache = new Map<
     string,
@@ -350,6 +350,7 @@ export class WorldEngine {
   private pdfPageCacheBytes = 0;
   private readonly pdfPageCacheMaxEntries = 220;
   private readonly pdfPageCacheMaxBytes = 192 * 1024 * 1024;
+  private readonly pdfRasterScaleSteps = [0.25, 0.5, 1, 2] as const;
 
   private worldInkStrokes: InkStroke[] = [];
 
@@ -937,10 +938,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.requestRender();
   }
 
-  private getPdfPageFromCache(key: string): CanvasImageSource | null {
+  private getPdfPageFromCache(key: string, opts?: { touch?: boolean }): CanvasImageSource | null {
     const entry = this.pdfPageCache.get(key);
     if (!entry) return null;
-    this.touchPdfPage(key);
+    if (opts?.touch ?? true) this.touchPdfPage(key);
     return entry.image;
   }
 
@@ -954,8 +955,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (!meta) return;
 
     const page = await state.doc.getPage(job.pageNumber);
-    const renderScale = (job.pageWorldW * job.renderDpi) / Math.max(1, meta.viewportW);
-    const viewport = page.getViewport({ scale: renderScale });
+    const pdfScale = (job.pageWorldW * job.rasterScale) / Math.max(1, meta.viewportW);
+    const viewport = page.getViewport({ scale: pdfScale });
 
     const pixelW = Math.max(1, Math.floor(viewport.width));
     const pixelH = Math.max(1, Math.floor(viewport.height));
@@ -1852,6 +1853,26 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return 2;
   }
 
+  private choosePdfRasterScale(visibleWorldArea: number): number {
+    const ideal = (this.camera.zoom || 1) * (this.dpr || 1);
+    const cap = this.interacting ? 1 : 2;
+
+    // Budget aims to keep *visible* pages stable in cache without thrash.
+    // Leave slack for previously-viewed pages and overhead.
+    const budgetBytes = Math.max(24 * 1024 * 1024, this.pdfPageCacheMaxBytes * 0.75);
+    const area = Math.max(1, visibleWorldArea);
+    const budgetScale = Math.sqrt(budgetBytes / (area * 4));
+
+    const target = Math.max(0.25, Math.min(cap, ideal, budgetScale));
+    const steps = this.pdfRasterScaleSteps;
+    let chosen: number = steps[0];
+    for (const s of steps) {
+      if (s > cap) break;
+      if (s <= target) chosen = s;
+    }
+    return chosen;
+  }
+
   private getBestTextRaster(sig: string): { key: string; image: CanvasImageSource } | null {
     const best = this.bestTextRasterKeyBySig.get(sig);
     if (!best) return null;
@@ -1911,7 +1932,14 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
   private updatePdfPageRendersForViewport(): void {
     const view = this.worldViewportRect({ overscan: 360 });
-    const desiredKeys = new Set<string>();
+    const visible: Array<{
+      nodeId: string;
+      token: number;
+      pageNumber: number;
+      pageWorldW: number;
+      pageWorldH: number;
+    }> = [];
+    let visibleArea = 0;
 
     for (const node of this.nodes) {
       if (node.kind !== 'pdf') continue;
@@ -1938,21 +1966,29 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         if (!rectsIntersect(pageRect, view)) continue;
 
         void this.ensurePdfPageMeta(node.id, state.token, pageNumber);
+        visible.push({ nodeId: node.id, token: state.token, pageNumber, pageWorldW: pageW, pageWorldH: pageH });
+        visibleArea += pageW * pageH;
+      }
+    }
 
-        const key = `${node.id}|t${state.token}|p${pageNumber}|w${Math.round(pageW)}|d${this.pdfRenderDpi}`;
-        desiredKeys.add(key);
+    const desiredScale = this.choosePdfRasterScale(visibleArea);
+    this.pdfDesiredRasterScale = desiredScale;
 
-        if (!this.pdfPageCache.has(key)) {
-          this.enqueuePdfPageRender({
-            nodeId: node.id,
-            token: state.token,
-            pageNumber,
-            key,
-            pageWorldW: pageW,
-            pageWorldH: pageH,
-            renderDpi: this.pdfRenderDpi,
-          });
-        }
+    const desiredKeys = new Set<string>();
+    for (const v of visible) {
+      const key = `${v.nodeId}|t${v.token}|p${v.pageNumber}|w${Math.round(v.pageWorldW)}|s${desiredScale}`;
+      desiredKeys.add(key);
+
+      if (!this.pdfPageCache.has(key)) {
+        this.enqueuePdfPageRender({
+          nodeId: v.nodeId,
+          token: v.token,
+          pageNumber: v.pageNumber,
+          key,
+          pageWorldW: v.pageWorldW,
+          pageWorldH: v.pageWorldH,
+          rasterScale: desiredScale,
+        });
       }
     }
 
@@ -2737,8 +2773,31 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
               ctx.lineWidth = 1 / (this.camera.zoom || 1);
               ctx.strokeRect(pageRect.x, pageRect.y, pageRect.w, pageRect.h);
 
-              const key = `${node.id}|t${state.token}|p${pageNumber}|w${Math.round(pageW)}|d${this.pdfRenderDpi}`;
-              const img = this.getPdfPageFromCache(key);
+              const sig = `${node.id}|t${state.token}|p${pageNumber}|w${Math.round(pageW)}`;
+              const desiredScale = this.pdfDesiredRasterScale;
+              const steps = this.pdfRasterScaleSteps;
+              const makeKey = (scale: number) => `${sig}|s${scale}`;
+
+              let img: CanvasImageSource | null = this.getPdfPageFromCache(makeKey(desiredScale));
+              if (!img) {
+                // Prefer the best cached scale <= desired, so memory usage converges to the budgeted scale.
+                for (let i = steps.length - 1; i >= 0; i -= 1) {
+                  const s = steps[i];
+                  if (s >= desiredScale) continue;
+                  img = this.getPdfPageFromCache(makeKey(s));
+                  if (img) break;
+                }
+              }
+              if (!img) {
+                // As a temporary placeholder, allow drawing a higher-res cached page without touching LRU.
+                for (let i = 0; i < steps.length; i += 1) {
+                  const s = steps[i];
+                  if (s <= desiredScale) continue;
+                  img = this.getPdfPageFromCache(makeKey(s), { touch: false });
+                  if (img) break;
+                }
+              }
+
               if (img) {
                 try {
                   ctx.drawImage(img, pageRect.x, pageRect.y, pageRect.w, pageRect.h);
@@ -2863,11 +2922,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     this.applyWorldTransform();
     this.drawGrid();
-    this.drawDemoNodes();
-    this.drawWorldInk();
-
     this.updateTextRastersForViewport();
     this.updatePdfPageRendersForViewport();
+    this.drawDemoNodes();
+    this.drawWorldInk();
     this.renderTextLod2Target(nextTextLod2Target);
     this.renderPdfTextLod2Target(nextPdfLod2Target);
     this.drawScreenHud();
