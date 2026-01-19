@@ -307,6 +307,7 @@ export class WorldEngine {
   onDebug?: (state: WorldEngineDebug) => void;
 
   onUiState?: (state: WorldEngineUiState) => void;
+  onRequestReply?: (nodeId: string) => void;
 
   private selectedNodeId: string | null = null;
   private editingNodeId: string | null = null;
@@ -827,6 +828,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const nodeW = 640;
     const userH = 220;
     const assistantH = 260;
+    const totalH = userH + gapY + assistantH;
 
     let x = 0;
     let userY = 0;
@@ -835,9 +837,18 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       userY = parent.rect.y + parent.rect.h + gapY;
     } else {
       const center = this.camera.screenToWorld({ x: this.cssW * 0.5, y: this.cssH * 0.5 });
-      const totalH = userH + gapY + assistantH;
       x = center.x - nodeW * 0.5;
       userY = center.y - totalH * 0.5;
+    }
+
+    // Avoid spawning directly on top of existing nodes in the current view.
+    // This keeps "new tree" sends usable without layout work yet.
+    const candidate: Rect = { x, y: userY, w: nodeW, h: totalH };
+    for (let i = 0; i < 60; i += 1) {
+      const overlap = this.nodes.find((n) => rectsIntersect(n.rect, candidate)) ?? null;
+      if (!overlap) break;
+      userY = overlap.rect.y + overlap.rect.h + gapY;
+      candidate.y = userY;
     }
 
     const userNode: TextNode = {
@@ -1392,6 +1403,32 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   getNodeTitle(nodeId: string): string | null {
     const node = this.nodes.find((n) => n.id === nodeId);
     return node?.title ?? null;
+  }
+
+  hasNode(nodeId: string): boolean {
+    if (!nodeId) return false;
+    return this.nodes.some((n) => n.id === nodeId);
+  }
+
+  getNodeReplyPreview(nodeId: string): string {
+    const node = this.nodes.find((n) => n.id === nodeId);
+    if (!node) return '...';
+    if (node.kind !== 'text') return '...';
+
+    const raw = String(node.content ?? '');
+    const line =
+      raw
+        .split('\n')
+        .map((s) => s.trim())
+        .find((s) => s) ?? '';
+    const collapsed = line.replace(/\s+/g, ' ').trim();
+    if (!collapsed) return '...';
+
+    const m = collapsed.match(/^(.+?[.!?])(\s|$)/);
+    const firstSentence = (m?.[1] ?? collapsed).trim();
+    const max = 90;
+    if (firstSentence.length <= max) return firstSentence;
+    return `${firstSentence.slice(0, max - 1).trimEnd()}…`;
   }
 
   getNodeScreenRect(nodeId: string): Rect | null {
@@ -2855,6 +2892,22 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const world = this.camera.screenToWorld(p);
     const hit = this.findTopmostNodeAtWorld(world);
 
+    if (hit) {
+      const btn = this.replyButtonRect(hit.rect);
+      const inReply =
+        world.x >= btn.x && world.x <= btn.x + btn.w && world.y >= btn.y && world.y <= btn.y + btn.h;
+      if (inReply) {
+        const changed = this.selectedNodeId !== hit.id || this.editingNodeId !== null;
+        this.selectedNodeId = hit.id;
+        this.editingNodeId = null;
+        this.bringNodeToFront(hit.id);
+        this.requestRender();
+        if (changed) this.emitUiState();
+        this.onRequestReply?.(hit.id);
+        return;
+      }
+    }
+
     const now = performance.now();
     const isDoubleTap =
       hit &&
@@ -2954,6 +3007,52 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     ctx.stroke();
   }
 
+  private replyButtonRect(nodeRect: Rect): Rect {
+    const z = Math.max(0.01, this.camera.zoom || 1);
+    const pad = 14 / z;
+    const w = 58 / z;
+    const h = 22 / z;
+    const x = nodeRect.x + nodeRect.w - pad - w;
+    const y = nodeRect.y + 12 / z;
+    return { x, y, w, h };
+  }
+
+  private drawReplyButton(nodeRect: Rect, opts?: { active?: boolean }): void {
+    const ctx = this.ctx;
+    const z = Math.max(0.01, this.camera.zoom || 1);
+    const r = 9 / z;
+    const rect = this.replyButtonRect(nodeRect);
+
+    ctx.save();
+    ctx.fillStyle = opts?.active ? 'rgba(147,197,253,0.28)' : 'rgba(255,255,255,0.06)';
+    ctx.strokeStyle = opts?.active ? 'rgba(147,197,253,0.55)' : 'rgba(255,255,255,0.14)';
+    ctx.lineWidth = 1 / z;
+
+    ctx.beginPath();
+    ctx.moveTo(rect.x + r, rect.y);
+    ctx.lineTo(rect.x + rect.w - r, rect.y);
+    ctx.arcTo(rect.x + rect.w, rect.y, rect.x + rect.w, rect.y + r, r);
+    ctx.lineTo(rect.x + rect.w, rect.y + rect.h - r);
+    ctx.arcTo(rect.x + rect.w, rect.y + rect.h, rect.x + rect.w - r, rect.y + rect.h, r);
+    ctx.lineTo(rect.x + r, rect.y + rect.h);
+    ctx.arcTo(rect.x, rect.y + rect.h, rect.x, rect.y + rect.h - r, r);
+    ctx.lineTo(rect.x, rect.y + r);
+    ctx.arcTo(rect.x, rect.y, rect.x + r, rect.y, r);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = 'rgba(255,255,255,0.86)';
+    ctx.font = `${12 / z}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
+    ctx.textBaseline = 'middle';
+    const label = 'Reply';
+    const m = ctx.measureText(label);
+    const textX = rect.x + (rect.w - (m.width || 0)) * 0.5;
+    ctx.fillText(label, textX, rect.y + rect.h * 0.5);
+
+    ctx.restore();
+  }
+
   private drawParentArrows(): void {
     const ctx = this.ctx;
     const z = Math.max(0.01, this.camera.zoom || 1);
@@ -3045,6 +3144,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       ctx.font = `${14 / (this.camera.zoom || 1)}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
       ctx.textBaseline = 'top';
       ctx.fillText(node.title, x + 14, y + 12);
+
+      this.drawReplyButton(node.rect, { active: isSelected });
 
       ctx.fillStyle = 'rgba(255,255,255,0.55)';
       ctx.font = `${12 / (this.camera.zoom || 1)}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;

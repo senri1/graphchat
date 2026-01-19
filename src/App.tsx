@@ -25,8 +25,11 @@ type ChatTurnMeta = {
   attachmentNodeIds: string[];
 };
 
+type ReplySelection = { nodeId: string; preview: string };
+
 type ChatRuntimeMeta = {
   draft: string;
+  replyTo: ReplySelection | null;
   headNodeId: string | null;
   turns: ChatTurnMeta[];
 };
@@ -56,6 +59,7 @@ export default function App() {
   }));
   const [viewport, setViewport] = useState(() => ({ w: 1, h: 1 }));
   const [composerDraft, setComposerDraft] = useState('');
+  const [replySelection, setReplySelection] = useState<ReplySelection | null>(null);
 
   const initial = useMemo(() => {
     const chatId = genId('chat');
@@ -69,7 +73,7 @@ export default function App() {
     const chatStates = new Map<string, WorldEngineChatState>();
     chatStates.set(chatId, createEmptyChatState());
     const chatMeta = new Map<string, ChatRuntimeMeta>();
-    chatMeta.set(chatId, { draft: '', headNodeId: null, turns: [] });
+    chatMeta.set(chatId, { draft: '', replyTo: null, headNodeId: null, turns: [] });
     return { root, chatId, chatStates, chatMeta };
   }, []);
 
@@ -78,14 +82,19 @@ export default function App() {
   const [focusedFolderId, setFocusedFolderId] = useState<string>(() => initial.root.id);
   const chatStatesRef = useRef<Map<string, WorldEngineChatState>>(initial.chatStates);
   const chatMetaRef = useRef<Map<string, ChatRuntimeMeta>>(initial.chatMeta);
+  const activeChatIdRef = useRef<string>(activeChatId);
 
   const ensureChatMeta = (chatId: string): ChatRuntimeMeta => {
     const existing = chatMetaRef.current.get(chatId);
     if (existing) return existing;
-    const meta: ChatRuntimeMeta = { draft: '', headNodeId: null, turns: [] };
+    const meta: ChatRuntimeMeta = { draft: '', replyTo: null, headNodeId: null, turns: [] };
     chatMetaRef.current.set(chatId, meta);
     return meta;
   };
+
+  useEffect(() => {
+    activeChatIdRef.current = activeChatId;
+  }, [activeChatId]);
 
   useLayoutEffect(() => {
     const container = workspaceRef.current;
@@ -95,6 +104,14 @@ export default function App() {
     const engine = new WorldEngine({ canvas });
     engine.onDebug = setDebug;
     engine.onUiState = setUi;
+    engine.onRequestReply = (nodeId) => {
+      const chatId = activeChatIdRef.current;
+      const meta = ensureChatMeta(chatId);
+      const preview = engine.getNodeReplyPreview(nodeId);
+      const next: ReplySelection = { nodeId, preview };
+      meta.replyTo = next;
+      setReplySelection(next);
+    };
     engine.start();
     engineRef.current = engine;
     setUi(engine.getUiState());
@@ -167,7 +184,10 @@ export default function App() {
 
     if (prevChatId) {
       const existingMeta = chatMetaRef.current.get(prevChatId);
-      if (existingMeta) existingMeta.draft = composerDraft;
+      if (existingMeta) {
+        existingMeta.draft = composerDraft;
+        existingMeta.replyTo = replySelection;
+      }
     }
 
     if (engine) {
@@ -181,7 +201,9 @@ export default function App() {
       setUi(engine.getUiState());
     }
 
-    setComposerDraft(ensureChatMeta(nextChatId).draft);
+    const meta = ensureChatMeta(nextChatId);
+    setComposerDraft(meta.draft);
+    setReplySelection(meta.replyTo);
     setActiveChatId(nextChatId);
   };
 
@@ -190,7 +212,7 @@ export default function App() {
     const item: WorkspaceChat = { kind: 'chat', id, name: 'New chat' };
     setTreeRoot((prev) => insertItem(prev, parentFolderId || prev.id, item));
     chatStatesRef.current.set(id, createEmptyChatState());
-    chatMetaRef.current.set(id, { draft: '', headNodeId: null, turns: [] });
+    chatMetaRef.current.set(id, { draft: '', replyTo: null, headNodeId: null, turns: [] });
     switchChat(id);
   };
 
@@ -226,7 +248,7 @@ export default function App() {
         const rootWithChat = insertItem(nextRoot, nextRoot.id, item);
         setTreeRoot(rootWithChat);
         chatStatesRef.current.set(id, createEmptyChatState());
-        chatMetaRef.current.set(id, { draft: '', headNodeId: null, turns: [] });
+        chatMetaRef.current.set(id, { draft: '', replyTo: null, headNodeId: null, turns: [] });
         switchChat(id, { saveCurrent: false });
         return;
       }
@@ -273,6 +295,12 @@ export default function App() {
             setComposerDraft(next);
             ensureChatMeta(activeChatId).draft = next;
           }}
+          replyPreview={replySelection?.preview ?? null}
+          onCancelReply={() => {
+            const meta = ensureChatMeta(activeChatId);
+            meta.replyTo = null;
+            setReplySelection(null);
+          }}
           sendDisabled={!composerDraft.trim()}
           onSend={() => {
             const engine = engineRef.current;
@@ -281,7 +309,8 @@ export default function App() {
             if (!raw.trim()) return;
 
             const meta = ensureChatMeta(activeChatId);
-            const res = engine.spawnChatTurn({ userText: raw, parentNodeId: meta.headNodeId });
+            const desiredParentId = replySelection?.nodeId && engine.hasNode(replySelection.nodeId) ? replySelection.nodeId : null;
+            const res = engine.spawnChatTurn({ userText: raw, parentNodeId: desiredParentId });
 
             meta.turns.push({
               id: genId('turn'),
@@ -291,7 +320,9 @@ export default function App() {
               attachmentNodeIds: [],
             });
             meta.headNodeId = res.assistantNodeId;
+            meta.replyTo = null;
             meta.draft = '';
+            setReplySelection(null);
             setComposerDraft('');
           }}
         />

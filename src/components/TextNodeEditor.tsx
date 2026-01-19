@@ -69,13 +69,15 @@ export default function TextNodeEditor(props: Props) {
   const z = Math.max(0.001, Number.isFinite(zoom) ? zoom : 1);
   const chrome = useMemo(() => {
     if (!anchorRect) return null;
+    const totalContentWorldW = Math.max(1, anchorRect.w / z - 28);
+    const paneWorldW = Math.max(1, totalContentWorldW * 0.5 - 6);
     return {
       headerH: 50 * z,
       cornerR: 18 * z,
       padX: 14 * z,
       padTop: 12 * z,
       gap: 10 * z,
-      contentWorldW: Math.max(1, anchorRect.w / z - 28),
+      contentWorldW: paneWorldW,
       contentWorldH: Math.max(1, anchorRect.h / z - 64),
     };
   }, [anchorRect, z]);
