@@ -1,6 +1,7 @@
 import systemInstructions from './SystemInstructions.md?raw';
 import type { ChatNode } from '../model/chat';
 import { DEFAULT_MODEL_ID, getModelInfo, type TextVerbosity } from './registry';
+import { blobToDataUrl, getAttachment as getStoredAttachment } from '../storage/attachments';
 
 export type OpenAIChatSettings = {
   modelId: string;
@@ -8,7 +9,48 @@ export type OpenAIChatSettings = {
   webSearchEnabled?: boolean;
 };
 
-function buildOpenAIInputFromChatNodes(nodes: ChatNode[], leafUserNodeId: string): any[] {
+async function attachmentToOpenAIContent(att: any): Promise<any | null> {
+  if (!att) return null;
+
+  const materializeDataUrl = async (fallbackMimeType: string): Promise<string | null> => {
+    if (typeof att.data === 'string' && att.data) {
+      const mimeType = typeof att.mimeType === 'string' && att.mimeType ? att.mimeType : fallbackMimeType;
+      return `data:${mimeType};base64,${att.data}`;
+    }
+    const storageKey = typeof att.storageKey === 'string' ? (att.storageKey as string) : '';
+    if (!storageKey) return null;
+    try {
+      const rec = await getStoredAttachment(storageKey);
+      if (!rec?.blob) return null;
+      const mimeType =
+        (typeof rec.mimeType === 'string' && rec.mimeType) ||
+        (typeof att.mimeType === 'string' && att.mimeType) ||
+        fallbackMimeType;
+      return await blobToDataUrl(rec.blob, mimeType);
+    } catch {
+      return null;
+    }
+  };
+
+  if (att.kind === 'image') {
+    const dataUrl = await materializeDataUrl('image/png');
+    if (!dataUrl) return null;
+    const detail = typeof att.detail === 'string' ? att.detail : 'auto';
+    return { type: 'input_image', image_url: dataUrl, detail };
+  }
+
+  if (att.kind === 'pdf' || att.mimeType === 'application/pdf') {
+    const dataUrl = await materializeDataUrl('application/pdf');
+    if (!dataUrl) return null;
+    const fileBlock: any = { type: 'input_file', file_data: dataUrl };
+    if (typeof att.name === 'string' && att.name.trim()) fileBlock.filename = att.name.trim();
+    return fileBlock;
+  }
+
+  return null;
+}
+
+async function buildOpenAIInputFromChatNodes(nodes: ChatNode[], leafUserNodeId: string): Promise<any[]> {
   const byId = new Map<string, ChatNode>();
   for (const n of nodes) byId.set(n.id, n);
 
@@ -46,27 +88,8 @@ function buildOpenAIInputFromChatNodes(nodes: ChatNode[], leafUserNodeId: string
         const key = `${n.id}:${i}`;
         const includeOwn = n.id === leafUserNodeId;
         if (!includeOwn && !leafSelection.has(key)) continue;
-
-        if (att.kind === 'image') {
-          const data = typeof att.data === 'string' ? att.data : '';
-          if (!data) continue;
-          const mimeType = typeof att.mimeType === 'string' ? att.mimeType : 'image/png';
-          const detail = typeof att.detail === 'string' ? att.detail : 'auto';
-          const dataUrl = `data:${mimeType};base64,${data}`;
-          content.push({ type: 'input_image', image_url: dataUrl, detail });
-          continue;
-        }
-
-        if (att.kind === 'pdf' || att.mimeType === 'application/pdf') {
-          const data = typeof att.data === 'string' ? att.data : '';
-          if (!data) continue;
-          const mimeType = typeof att.mimeType === 'string' ? att.mimeType : 'application/pdf';
-          const dataUrl = `data:${mimeType};base64,${data}`;
-          const fileBlock: any = { type: 'input_file', file_data: dataUrl };
-          if (typeof att.name === 'string' && att.name.trim()) fileBlock.filename = att.name.trim();
-          content.push(fileBlock);
-          continue;
-        }
+        const part = await attachmentToOpenAIContent(att);
+        if (part) content.push(part);
       }
 
       if (content.length) input.push({ role: 'user', content });
@@ -81,15 +104,15 @@ function supportsVerbosity(modelApiName: string): boolean {
   return typeof modelApiName === 'string' && modelApiName.startsWith('gpt-5');
 }
 
-export function buildOpenAIResponseRequest(args: {
+export async function buildOpenAIResponseRequest(args: {
   nodes: ChatNode[];
   leafUserNodeId: string;
   settings: OpenAIChatSettings;
-}): Record<string, unknown> {
+}): Promise<Record<string, unknown>> {
   const modelId = args.settings.modelId || DEFAULT_MODEL_ID;
   const info = getModelInfo(modelId);
   const apiModel = info?.apiModel || modelId;
-  const input = buildOpenAIInputFromChatNodes(args.nodes, args.leafUserNodeId);
+  const input = await buildOpenAIInputFromChatNodes(args.nodes, args.leafUserNodeId);
 
   const body: any = {
     model: apiModel,

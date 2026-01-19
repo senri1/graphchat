@@ -13,6 +13,7 @@ export type ChatAttachment =
       name?: string;
       mimeType?: string;
       data?: string;
+      storageKey?: string;
       size?: number;
       detail?: 'low' | 'auto' | 'high';
     }
@@ -21,6 +22,7 @@ export type ChatAttachment =
       name?: string;
       mimeType: 'application/pdf';
       data?: string;
+      storageKey?: string;
       size?: number;
     }
   | {

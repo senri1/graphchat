@@ -21,6 +21,7 @@ import type { ChatAttachment, ChatNode } from './model/chat';
 import { buildOpenAIResponseRequest, type OpenAIChatSettings } from './llm/openai';
 import { DEFAULT_MODEL_ID, listModels, type TextVerbosity } from './llm/registry';
 import { readFileAsDataUrl, splitDataUrl } from './utils/files';
+import { deleteAttachment, putAttachment } from './storage/attachments';
 
 type ChatTurnMeta = {
   id: string;
@@ -85,16 +86,29 @@ async function fileToChatAttachment(file: File): Promise<ChatAttachment | null> 
 
   if (!isPdf && !isImage) return null;
 
-  const dataUrl = await readFileAsDataUrl(file);
-  const parts = splitDataUrl(dataUrl);
-  if (!parts?.base64) return null;
-
   if (isPdf) {
-    return { kind: 'pdf', name, mimeType: 'application/pdf', data: parts.base64, size };
+    const mimeType = 'application/pdf' as const;
+    try {
+      const storageKey = await putAttachment({ blob: file, mimeType, name, size });
+      return { kind: 'pdf', name, mimeType, storageKey, size };
+    } catch {
+      const dataUrl = await readFileAsDataUrl(file);
+      const parts = splitDataUrl(dataUrl);
+      if (!parts?.base64) return null;
+      return { kind: 'pdf', name, mimeType, data: parts.base64, size };
+    }
   }
 
-  const mimeType = type.startsWith('image/') ? type : parts.mimeType || 'image/png';
-  return { kind: 'image', name, mimeType, data: parts.base64, size, detail: 'auto' };
+  const mimeType = type.startsWith('image/') ? type : 'image/png';
+  try {
+    const storageKey = await putAttachment({ blob: file, mimeType, name, size });
+    return { kind: 'image', name, mimeType, storageKey, size, detail: 'auto' };
+  } catch {
+    const dataUrl = await readFileAsDataUrl(file);
+    const parts = splitDataUrl(dataUrl);
+    if (!parts?.base64) return null;
+    return { kind: 'image', name, mimeType: parts.mimeType || mimeType, data: parts.base64, size, detail: 'auto' };
+  }
 }
 
 type ContextAttachmentItem = {
@@ -102,6 +116,21 @@ type ContextAttachmentItem = {
   nodeId: string;
   attachment: ChatAttachment;
 };
+
+function collectAttachmentStorageKeys(nodes: ChatNode[]): string[] {
+  const out = new Set<string>();
+  for (const n of nodes) {
+    if (n.kind !== 'text') continue;
+    const atts = Array.isArray((n as any)?.attachments) ? ((n as any).attachments as ChatAttachment[]) : [];
+    for (const att of atts) {
+      if (!att) continue;
+      const storageKey =
+        att.kind === 'image' || att.kind === 'pdf' ? (typeof att.storageKey === 'string' ? att.storageKey : '') : '';
+      if (storageKey) out.add(storageKey);
+    }
+  }
+  return Array.from(out);
+}
 
 function collectContextAttachments(nodes: ChatNode[], startNodeId: string): ContextAttachmentItem[] {
   const byId = new Map<string, ChatNode>();
@@ -315,11 +344,6 @@ export default function App() {
 
     const state = chatStatesRef.current.get(chatId);
     const settings = args.settings;
-    const request = buildOpenAIResponseRequest({
-      nodes: state?.nodes ?? [],
-      leafUserNodeId: args.userNodeId,
-      settings,
-    });
     const llmParams = { verbosity: settings.verbosity, webSearchEnabled: settings.webSearchEnabled };
 
     const job: GenerationJob = {
@@ -354,6 +378,20 @@ export default function App() {
     }
 
     void (async () => {
+      let request: Record<string, unknown>;
+      try {
+        request = await buildOpenAIResponseRequest({
+          nodes: state?.nodes ?? [],
+          leafUserNodeId: args.userNodeId,
+          settings,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        finishJob(job.assistantNodeId, { finalText: job.fullText, error: msg });
+        return;
+      }
+      if (job.closed || job.abortController.signal.aborted) return;
+
       const res = await streamOpenAIResponse({
         apiKey,
         request,
@@ -575,6 +613,19 @@ export default function App() {
     }
 
     for (const chatId of removedChatIds) {
+      const state = chatStatesRef.current.get(chatId);
+      const keys = state ? collectAttachmentStorageKeys(state.nodes ?? []) : [];
+      if (keys.length) {
+        void (async () => {
+          for (const key of keys) {
+            try {
+              await deleteAttachment(key);
+            } catch {
+              // ignore
+            }
+          }
+        })();
+      }
       chatStatesRef.current.delete(chatId);
       chatMetaRef.current.delete(chatId);
     }
@@ -667,7 +718,11 @@ export default function App() {
           onRemoveDraftAttachment={(index) => {
             const idx = Math.max(0, Math.floor(index));
             const meta = ensureChatMeta(activeChatId);
+            const removed = meta.draftAttachments[idx] ?? null;
             meta.draftAttachments = meta.draftAttachments.filter((_att, i) => i !== idx);
+            const storageKey =
+              removed && (removed.kind === 'image' || removed.kind === 'pdf') ? (removed.storageKey as string | undefined) : undefined;
+            if (storageKey) void deleteAttachment(storageKey);
             setComposerDraftAttachments(meta.draftAttachments);
           }}
           contextAttachments={replyContextAttachments}
