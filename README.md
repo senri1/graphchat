@@ -10,6 +10,14 @@ npm install
 npm run dev
 ```
 
+## OpenAI (local dev)
+
+Create `graphchatv1/.env.local`:
+
+```bash
+VITE_OPENAI_API_KEY=...
+```
+
 ## Controls (current skeleton)
 
 - Drag to pan

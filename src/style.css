@@ -484,6 +484,12 @@ body {
   accent-color: rgba(147, 197, 253, 0.85);
 }
 
+.composer__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .composer__send {
   appearance: none;
   border: 1px solid rgba(147, 197, 253, 0.55);
@@ -496,6 +502,22 @@ body {
 }
 
 .composer__send:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.composer__cancel {
+  appearance: none;
+  border: 1px solid rgba(248, 113, 113, 0.6);
+  background: rgba(248, 113, 113, 0.18);
+  color: rgba(255, 255, 255, 0.92);
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.composer__cancel:disabled {
   opacity: 0.55;
   cursor: default;
 }

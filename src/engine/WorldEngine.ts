@@ -10,6 +10,7 @@ import { PdfTextLod2Overlay, type HighlightRect as PdfHighlightRect } from './Pd
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import type { PDFPageProxy, PageViewport } from 'pdfjs-dist';
 import { loadPdfDocument } from './pdf/pdfjs';
+import type { ChatAttachment, ChatAuthor, ChatNode, InkPoint, InkStroke } from '../model/chat';
 
 export type WorldEngineDebug = {
   cssW: number;
@@ -20,30 +21,6 @@ export type WorldEngineDebug = {
   zoom: number;
   interacting: boolean;
 };
-
-export type ChatAuthor = 'user' | 'assistant';
-
-export type ChatAttachment =
-  | {
-      kind: 'image';
-      name?: string;
-      mimeType?: string;
-      data?: string;
-      detail?: 'low' | 'auto' | 'high';
-    }
-  | {
-      kind: 'pdf';
-      name?: string;
-      mimeType: 'application/pdf';
-      data?: string;
-      size?: number;
-    }
-  | {
-      kind: 'ink';
-      // Placeholder for future persistence wiring.
-      storageKey: string;
-      rev?: number;
-    };
 
 function fnv1a32(input: string): number {
   let h = 0x811c9dc5;
@@ -211,41 +188,6 @@ export type WorldEngineUiState = {
 
 export type WorldEngineCameraState = { x: number; y: number; zoom: number };
 
-export type ChatNode =
-  | {
-      kind: 'text';
-      id: string;
-      title: string;
-      parentId: string | null;
-      rect: Rect;
-      author: ChatAuthor;
-      content: string;
-      isGenerating?: boolean;
-      modelId?: string | null;
-      llmError?: string | null;
-      attachments?: ChatAttachment[];
-      selectedAttachmentKeys?: string[];
-    }
-  | {
-      kind: 'pdf';
-      id: string;
-      title: string;
-      parentId: string | null;
-      rect: Rect;
-      fileName: string | null;
-      pageCount: number;
-      status: 'empty' | 'loading' | 'ready' | 'error';
-      error: string | null;
-    }
-  | {
-      kind: 'ink';
-      id: string;
-      title: string;
-      parentId: string | null;
-      rect: Rect;
-      strokes: InkStroke[];
-    };
-
 export type WorldEngineChatState = {
   camera: WorldEngineCameraState;
   nodes: ChatNode[];
@@ -260,14 +202,6 @@ export function createEmptyChatState(): WorldEngineChatState {
 type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
 
 type Tool = 'select' | 'draw';
-
-export type InkPoint = { x: number; y: number };
-
-export type InkStroke = {
-  points: InkPoint[];
-  width: number;
-  color: string;
-};
 
 type InkRaster = {
   scale: number;
@@ -355,6 +289,7 @@ export class WorldEngine {
   private textLod2: TextLod2Overlay | null = null;
   private textLod2Target: { nodeId: string; mode: TextLod2Mode } | null = null;
   private textResizeHold: { nodeId: string; sig: string; expiresAt: number } | null = null;
+  private textLod2HtmlCache: { nodeId: string; contentHash: string; html: string } | null = null;
 
   private textSelectNodeId: string | null = null;
   private textSelectPointerId: number | null = null;
@@ -687,6 +622,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.selectedNodeId = null;
     this.activeGesture = null;
     this.textResizeHold = null;
+    this.textLod2HtmlCache = null;
     this.hoverTextNodeId = null;
     this.hoverPdfPage = null;
     this.textLod2Target = null;
@@ -1575,6 +1511,54 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.emitUiState();
   }
 
+  setTextNodeContent(nodeId: string, next: string, opts?: { streaming?: boolean }): void {
+    const id = nodeId;
+    if (!id) return;
+    const node = this.nodes.find((n): n is TextNode => n.id === id && n.kind === 'text');
+    if (!node) return;
+
+    const text = typeof next === 'string' ? next : String(next ?? '');
+    if (node.content === text) return;
+    node.content = text;
+    node.contentHash = fingerprintText(text);
+
+    // Avoid churn while streaming; finalize with a re-raster + short LOD2 hold.
+    if (!opts?.streaming) {
+      this.textRasterGeneration += 1;
+      const contentRect = this.textContentRect(node.rect);
+      const sig = `${node.contentHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
+      this.textResizeHold = { nodeId: node.id, sig, expiresAt: performance.now() + 2200 };
+    }
+
+    this.requestRender();
+  }
+
+  setTextNodeLlmState(
+    nodeId: string,
+    patch: { isGenerating?: boolean; modelId?: string | null; llmError?: string | null },
+  ): void {
+    const id = nodeId;
+    if (!id) return;
+    const node = this.nodes.find((n): n is TextNode => n.id === id && n.kind === 'text');
+    if (!node) return;
+
+    let changed = false;
+    if (typeof patch.isGenerating === 'boolean' && Boolean(node.isGenerating) !== patch.isGenerating) {
+      node.isGenerating = patch.isGenerating;
+      changed = true;
+    }
+    if (patch.modelId !== undefined && (node.modelId ?? null) !== (patch.modelId ?? null)) {
+      node.modelId = patch.modelId ?? null;
+      changed = true;
+    }
+    if (patch.llmError !== undefined && (node.llmError ?? null) !== (patch.llmError ?? null)) {
+      node.llmError = patch.llmError ?? null;
+      changed = true;
+    }
+
+    if (changed) this.requestRender();
+  }
+
   clearSelection(): void {
     const changed = this.selectedNodeId != null || this.editingNodeId != null;
     this.selectedNodeId = null;
@@ -1750,6 +1734,17 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       if (nodeId) return { nodeId, mode: 'select' };
     }
 
+    // While an assistant is streaming, pin the LOD2 overlay to the generating node so
+    // the canvas doesn't flicker to the LOD0 placeholder between raster updates.
+    const view = this.worldViewportRect({ overscan: 280 });
+    for (let i = this.nodes.length - 1; i >= 0; i -= 1) {
+      const n = this.nodes[i];
+      if (n.kind !== 'text') continue;
+      if (!n.isGenerating) continue;
+      if (!rectsIntersect(n.rect, view)) continue;
+      return { nodeId: n.id, mode: 'select' };
+    }
+
     if (this.hoverTextNodeId) return { nodeId: this.hoverTextNodeId, mode: 'select' };
 
     const hold = this.textResizeHold;
@@ -1807,8 +1802,16 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const tl = this.camera.worldToScreen({ x: contentRect.x, y: contentRect.y });
     const z = Math.max(0.001, this.camera.zoom || 1);
     const screenRect: Rect = { x: tl.x, y: tl.y, w: contentRect.w * z, h: contentRect.h * z };
-    const html = renderMarkdownMath(node.content ?? '');
-    const interactive = target.mode === 'select' && this.textSelectNodeId !== node.id;
+    const cached = this.textLod2HtmlCache;
+    const html =
+      cached && cached.nodeId === node.id && cached.contentHash === node.contentHash
+        ? cached.html
+        : (() => {
+            const nextHtml = renderMarkdownMath(node.content ?? '');
+            this.textLod2HtmlCache = { nodeId: node.id, contentHash: node.contentHash, html: nextHtml };
+            return nextHtml;
+          })();
+    const interactive = target.mode === 'select' && this.textSelectNodeId !== node.id && !node.isGenerating;
     lod2.show({
       nodeId: node.id,
       mode: target.mode,
@@ -2297,6 +2300,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     for (const n of this.nodes) {
       if (n.kind !== 'text') continue;
       if (n.id === this.editingNodeId) continue;
+      if (n.isGenerating) continue;
       if (!rectsIntersect(n.rect, view)) continue;
 
       const contentRect = this.textContentRect(n.rect);

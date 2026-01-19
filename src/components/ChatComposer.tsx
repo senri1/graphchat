@@ -5,6 +5,8 @@ type Props = {
   value: string;
   onChange: (next: string) => void;
   onSend: () => void;
+  isGenerating?: boolean;
+  onCancelGeneration?: () => void;
   containerRef?: React.Ref<HTMLDivElement>;
   replyPreview?: string | null;
   onCancelReply?: () => void;
@@ -14,7 +16,19 @@ type Props = {
 };
 
 export default function ChatComposer(props: Props) {
-  const { value, onChange, onSend, containerRef, replyPreview, onCancelReply, placeholder, sendDisabled, disabled } = props;
+  const {
+    value,
+    onChange,
+    onSend,
+    isGenerating,
+    onCancelGeneration,
+    containerRef,
+    replyPreview,
+    onCancelReply,
+    placeholder,
+    sendDisabled,
+    disabled,
+  } = props;
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const onSendRef = useRef(onSend);
   const [previewEnabled, setPreviewEnabled] = useState(false);
@@ -35,6 +49,11 @@ export default function ChatComposer(props: Props) {
     if (block) return;
     onSendRef.current();
   }, [disabled, sendDisabled]);
+
+  const cancel = useCallback(() => {
+    if (disabled) return;
+    onCancelGeneration?.();
+  }, [disabled, onCancelGeneration]);
 
   return (
     <div
@@ -97,9 +116,17 @@ export default function ChatComposer(props: Props) {
               onChange={(e) => setPreviewEnabled((e.currentTarget as HTMLInputElement).checked)}
             />
           </label>
-          <button className="composer__send" type="button" onClick={send} disabled={Boolean(disabled || sendDisabled)}>
-            Send
-          </button>
+          <div className="composer__actions">
+            {isGenerating && onCancelGeneration ? (
+              <button className="composer__cancel" type="button" onClick={cancel} disabled={disabled}>
+                Cancel
+              </button>
+            ) : (
+              <button className="composer__send" type="button" onClick={send} disabled={Boolean(disabled || sendDisabled)}>
+                Send
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
