@@ -21,6 +21,30 @@ export type WorldEngineDebug = {
   interacting: boolean;
 };
 
+export type ChatAuthor = 'user' | 'assistant';
+
+export type ChatAttachment =
+  | {
+      kind: 'image';
+      name?: string;
+      mimeType?: string;
+      data?: string;
+      detail?: 'low' | 'auto' | 'high';
+    }
+  | {
+      kind: 'pdf';
+      name?: string;
+      mimeType: 'application/pdf';
+      data?: string;
+      size?: number;
+    }
+  | {
+      kind: 'ink';
+      // Placeholder for future persistence wiring.
+      storageKey: string;
+      rev?: number;
+    };
+
 function fnv1a32(input: string): number {
   let h = 0x811c9dc5;
   for (let i = 0; i < input.length; i++) {
@@ -114,9 +138,15 @@ type DemoNodeBase = {
 
 type TextNode = DemoNodeBase & {
   kind: 'text';
+  author: ChatAuthor;
   rect: Rect;
   content: string;
   contentHash: string;
+  isGenerating?: boolean;
+  modelId?: string | null;
+  llmError?: string | null;
+  attachments?: ChatAttachment[];
+  selectedAttachmentKeys?: string[];
 };
 
 type PdfNode = DemoNodeBase & {
@@ -181,14 +211,20 @@ export type WorldEngineUiState = {
 
 export type WorldEngineCameraState = { x: number; y: number; zoom: number };
 
-export type WorldNodeSnapshot =
+export type ChatNode =
   | {
       kind: 'text';
       id: string;
       title: string;
       parentId: string | null;
       rect: Rect;
+      author: ChatAuthor;
       content: string;
+      isGenerating?: boolean;
+      modelId?: string | null;
+      llmError?: string | null;
+      attachments?: ChatAttachment[];
+      selectedAttachmentKeys?: string[];
     }
   | {
       kind: 'pdf';
@@ -212,7 +248,7 @@ export type WorldNodeSnapshot =
 
 export type WorldEngineChatState = {
   camera: WorldEngineCameraState;
-  nodes: WorldNodeSnapshot[];
+  nodes: ChatNode[];
   worldInkStrokes: InkStroke[];
   pdfStates: Array<{ nodeId: string; state: PdfNodeState }>;
 };
@@ -405,6 +441,7 @@ export class WorldEngine {
       parentId: null,
       rect: { x: 80, y: 80, w: 420, h: 260 },
       title: 'Text node (Markdown + LaTeX)',
+      author: 'assistant',
       content: String.raw`Yes—here is the “one diagram” version, with the currying/product–exponential isomorphism made explicit.
 I’ll write \(T:=\mathrm{Form}^\#_P\) (the \(\to\)-free term algebra) and \(X:=\mathrm{NNF}_P\). Let \(\mathrm{Pol}:=\{+,-\}\).
 
@@ -580,9 +617,22 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   }
 
   exportChatState(): WorldEngineChatState {
-    const nodes: WorldNodeSnapshot[] = this.nodes.map((n) => {
+    const nodes: ChatNode[] = this.nodes.map((n) => {
       if (n.kind === 'text') {
-        return { kind: 'text', id: n.id, title: n.title, parentId: n.parentId, rect: { ...n.rect }, content: n.content };
+        return {
+          kind: 'text',
+          id: n.id,
+          title: n.title,
+          parentId: n.parentId,
+          rect: { ...n.rect },
+          author: n.author,
+          content: n.content,
+          isGenerating: n.isGenerating,
+          modelId: n.modelId ?? null,
+          llmError: n.llmError ?? null,
+          attachments: Array.isArray(n.attachments) ? n.attachments : undefined,
+          selectedAttachmentKeys: Array.isArray(n.selectedAttachmentKeys) ? n.selectedAttachmentKeys : undefined,
+        };
       }
       if (n.kind === 'pdf') {
         return {
@@ -669,14 +719,33 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       const parentId = ((n as any)?.parentId as string | null | undefined) ?? null;
       if (n.kind === 'text') {
         const content = typeof n.content === 'string' ? n.content : String(n.content ?? '');
+        const rawAuthor = (n as any)?.author;
+        const author: ChatAuthor =
+          rawAuthor === 'user' || rawAuthor === 'assistant'
+            ? rawAuthor
+            : (() => {
+                const t = String((n as any)?.title ?? '');
+                const lt = t.toLowerCase();
+                if (lt.includes('user')) return 'user';
+                if (lt.includes('assistant')) return 'assistant';
+                return 'assistant';
+              })();
         this.nodes.push({
           kind: 'text',
           id: n.id,
           parentId,
           rect: { ...n.rect },
           title: n.title,
+          author,
           content,
           contentHash: fingerprintText(content),
+          isGenerating: Boolean((n as any)?.isGenerating),
+          modelId: typeof (n as any)?.modelId === 'string' ? ((n as any).modelId as string) : null,
+          llmError: typeof (n as any)?.llmError === 'string' ? ((n as any).llmError as string) : null,
+          attachments: Array.isArray((n as any)?.attachments) ? ((n as any).attachments as ChatAttachment[]) : undefined,
+          selectedAttachmentKeys: Array.isArray((n as any)?.selectedAttachmentKeys)
+            ? ((n as any).selectedAttachmentKeys as string[])
+            : undefined,
         });
         continue;
       }
@@ -757,6 +826,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         parentId: null,
         rect: { x: startX + col * spacingX, y: startY + row * spacingY, w: nodeW, h: nodeH },
         title: 'Text node (Markdown + LaTeX)',
+        author: 'assistant',
         content,
         contentHash: fingerprintText(content),
       };
@@ -858,6 +928,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       parentId: resolvedParentId,
       rect: { x, y: userY, w: nodeW, h: userH },
       title: 'User',
+      author: 'user',
       content: userText,
       contentHash: fingerprintText(userText),
     };
@@ -868,6 +939,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       parentId: userNodeId,
       rect: { x, y: userY + userH + gapY, w: nodeW, h: assistantH },
       title: 'Assistant',
+      author: 'assistant',
       content: '',
       contentHash: fingerprintText(''),
     };
