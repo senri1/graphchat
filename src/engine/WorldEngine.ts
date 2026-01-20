@@ -274,6 +274,18 @@ export class WorldEngine {
   private cssH = 1;
   private dpr = 1;
 
+  private glassNodesEnabled = false;
+  private readonly glassBlurCssPx = 10;
+  private readonly glassUnderlayAlpha = 0.95;
+
+  private backgroundImage: CanvasImageSource | null = null;
+  private backgroundImageW = 0;
+  private backgroundImageH = 0;
+  private backgroundLoadToken = 0;
+  private backgroundVersion = 0;
+  private backgroundCache: { version: number; pxW: number; pxH: number; sharp: HTMLCanvasElement; blurred: HTMLCanvasElement } | null =
+    null;
+
   private raf: number | null = null;
   private interacting = false;
 
@@ -812,6 +824,92 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.tool = next;
     this.requestRender();
     this.emitUiState();
+  }
+
+  setGlassNodesEnabled(enabled: boolean): void {
+    const next = Boolean(enabled);
+    if (this.glassNodesEnabled === next) return;
+    this.glassNodesEnabled = next;
+    this.requestRender();
+  }
+
+  clearBackground(): void {
+    this.backgroundLoadToken += 1;
+    if (this.backgroundImage) this.closeImage(this.backgroundImage);
+    this.backgroundImage = null;
+    this.backgroundImageW = 0;
+    this.backgroundImageH = 0;
+    this.backgroundCache = null;
+    this.backgroundVersion += 1;
+    this.requestRender();
+  }
+
+  async setBackgroundFromBlob(blob: Blob): Promise<void> {
+    const b = blob;
+    if (!b) {
+      this.clearBackground();
+      return;
+    }
+
+    const token = (this.backgroundLoadToken += 1);
+    const decoded = await this.decodeCanvasImageSourceFromBlob(b);
+    if (token !== this.backgroundLoadToken) {
+      if (decoded?.image) this.closeImage(decoded.image);
+      return;
+    }
+    if (!decoded) {
+      this.clearBackground();
+      return;
+    }
+
+    if (this.backgroundImage) this.closeImage(this.backgroundImage);
+    this.backgroundImage = decoded.image;
+    this.backgroundImageW = decoded.w;
+    this.backgroundImageH = decoded.h;
+    this.backgroundCache = null;
+    this.backgroundVersion += 1;
+    this.requestRender();
+  }
+
+  private async decodeCanvasImageSourceFromBlob(
+    blob: Blob,
+  ): Promise<{ image: CanvasImageSource; w: number; h: number } | null> {
+    const b = blob;
+    if (!b) return null;
+
+    if (typeof createImageBitmap === 'function') {
+      try {
+        const bitmap = await createImageBitmap(b);
+        const w = Number.isFinite(bitmap.width) ? bitmap.width : 0;
+        const h = Number.isFinite(bitmap.height) ? bitmap.height : 0;
+        if (w > 0 && h > 0) return { image: bitmap, w, h };
+        this.closeImage(bitmap);
+      } catch {
+        // fall back to HTMLImageElement
+      }
+    }
+
+    if (typeof document === 'undefined') return null;
+    const url = URL.createObjectURL(b);
+    try {
+      const img = new Image();
+      (img as any).decoding = 'async';
+      img.src = url;
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error('Failed to load background image.'));
+      });
+      const w = Number.isFinite(img.naturalWidth) ? img.naturalWidth : 0;
+      const h = Number.isFinite(img.naturalHeight) ? img.naturalHeight : 0;
+      if (w > 0 && h > 0) return { image: img, w, h };
+      return null;
+    } finally {
+      try {
+        URL.revokeObjectURL(url);
+      } catch {
+        // ignore
+      }
+    }
   }
 
   spawnInkNode(): void {
@@ -1388,6 +1486,14 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     for (const entry of this.pdfPageCache.values()) this.closeImage(entry.image);
     this.pdfPageCache.clear();
     this.pdfPageCacheBytes = 0;
+
+    this.backgroundLoadToken += 1;
+    if (this.backgroundImage) this.closeImage(this.backgroundImage);
+    this.backgroundImage = null;
+    this.backgroundImageW = 0;
+    this.backgroundImageH = 0;
+    this.backgroundCache = null;
+
     if (this.raf != null) {
       try {
         cancelAnimationFrame(this.raf);
@@ -1464,6 +1570,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (this.canvas.height !== pxH) this.canvas.height = pxH;
 
     if (changed) {
+      this.backgroundCache = null;
       this.requestRender();
       this.emitDebug({ force: true });
     }
@@ -3228,6 +3335,140 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
   }
 
+  private rectIntersection(a: Rect, b: Rect): Rect | null {
+    const x0 = Math.max(a.x, b.x);
+    const y0 = Math.max(a.y, b.y);
+    const x1 = Math.min(a.x + a.w, b.x + b.w);
+    const y1 = Math.min(a.y + a.h, b.y + b.h);
+    const w = x1 - x0;
+    const h = y1 - y0;
+    if (w <= 0 || h <= 0) return null;
+    return { x: x0, y: y0, w, h };
+  }
+
+  private pathRoundedRect(ctx: CanvasRenderingContext2D, rect: Rect, radius: number): void {
+    const r = Math.max(0, Math.min(radius, Math.min(rect.w, rect.h) * 0.5));
+    const x = rect.x;
+    const y = rect.y;
+    const w = rect.w;
+    const h = rect.h;
+
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.arcTo(x + w, y, x + w, y + r, r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+    ctx.lineTo(x + r, y + h);
+    ctx.arcTo(x, y + h, x, y + h - r, r);
+    ctx.lineTo(x, y + r);
+    ctx.arcTo(x, y, x + r, y, r);
+    ctx.closePath();
+  }
+
+  private ensureBackgroundCache(): NonNullable<WorldEngine['backgroundCache']> | null {
+    if (!this.backgroundImage) return null;
+    if (typeof document === 'undefined') return null;
+    const w = this.backgroundImageW;
+    const h = this.backgroundImageH;
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+
+    const pxW = Math.max(1, this.canvas.width);
+    const pxH = Math.max(1, this.canvas.height);
+    const cur = this.backgroundCache;
+    if (cur && cur.version === this.backgroundVersion && cur.pxW === pxW && cur.pxH === pxH) return cur;
+
+    const sharp = cur?.sharp ?? document.createElement('canvas');
+    const blurred = cur?.blurred ?? document.createElement('canvas');
+    sharp.width = pxW;
+    sharp.height = pxH;
+    blurred.width = pxW;
+    blurred.height = pxH;
+
+    const sctx = sharp.getContext('2d');
+    const bctx = blurred.getContext('2d');
+    if (!sctx || !bctx) return null;
+
+    sctx.clearRect(0, 0, pxW, pxH);
+    try {
+      const scale = Math.max(pxW / w, pxH / h);
+      const dw = w * scale;
+      const dh = h * scale;
+      const dx = (pxW - dw) * 0.5;
+      const dy = (pxH - dh) * 0.5;
+      sctx.imageSmoothingEnabled = true;
+      sctx.drawImage(this.backgroundImage, dx, dy, dw, dh);
+    } catch {
+      // ignore; leave blank
+    }
+
+    bctx.clearRect(0, 0, pxW, pxH);
+    try {
+      const blurPx = Math.max(0.001, this.glassBlurCssPx * this.dpr);
+      bctx.save();
+      bctx.filter = `blur(${blurPx}px)`;
+      bctx.drawImage(sharp, 0, 0);
+      bctx.restore();
+    } catch {
+      // ignore; leave blank
+    }
+
+    const next = { version: this.backgroundVersion, pxW, pxH, sharp, blurred };
+    this.backgroundCache = next;
+    return next;
+  }
+
+  private drawBackground(): void {
+    const cache = this.ensureBackgroundCache();
+    if (!cache) return;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.globalAlpha = 1;
+    try {
+      ctx.drawImage(cache.sharp, 0, 0, this.cssW, this.cssH);
+    } catch {
+      // ignore
+    }
+    ctx.restore();
+  }
+
+  private drawNodeGlassUnderlays(): void {
+    if (!this.glassNodesEnabled) return;
+    const cache = this.ensureBackgroundCache();
+    if (!cache) return;
+
+    const ctx = this.ctx;
+    const view: Rect = { x: 0, y: 0, w: this.cssW, h: this.cssH };
+    const z = Math.max(0.001, this.camera.zoom || 1);
+
+    for (const node of this.nodes) {
+      if (node.id === this.editingNodeId) continue;
+      if (node.kind !== 'text' && node.kind !== 'ink') continue;
+
+      const tl = this.camera.worldToScreen({ x: node.rect.x, y: node.rect.y });
+      const screenRect: Rect = { x: tl.x, y: tl.y, w: node.rect.w * z, h: node.rect.h * z };
+      const visible = this.rectIntersection(screenRect, view);
+      if (!visible) continue;
+
+      const r = 18 * z;
+      ctx.save();
+      this.pathRoundedRect(ctx, screenRect, r);
+      ctx.clip();
+      ctx.globalAlpha = this.glassUnderlayAlpha;
+
+      const sx = visible.x * this.dpr;
+      const sy = visible.y * this.dpr;
+      const sw = visible.w * this.dpr;
+      const sh = visible.h * this.dpr;
+      try {
+        ctx.drawImage(cache.blurred, sx, sy, sw, sh, visible.x, visible.y, visible.w, visible.h);
+      } catch {
+        // ignore
+      }
+      ctx.restore();
+    }
+  }
+
   private drawGrid(): void {
     const ctx = this.ctx;
     const topLeft = this.camera.screenToWorld({ x: 0, y: 0 });
@@ -3635,7 +3876,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         ctx.rect(contentRect.x, contentRect.y, contentRect.w, contentRect.h);
         ctx.clip();
 
-        ctx.fillStyle = 'rgba(0,0,0,0.22)';
+        ctx.fillStyle = this.glassNodesEnabled ? 'rgba(0,0,0,0.12)' : 'rgba(0,0,0,0.22)';
         ctx.fillRect(contentRect.x, contentRect.y, contentRect.w, contentRect.h);
 
         const raster = this.ensureInkNodeRaster(node, contentRect);
@@ -3733,6 +3974,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const ctx = this.ctx;
     this.applyScreenTransform();
     ctx.clearRect(0, 0, this.cssW, this.cssH);
+    this.drawBackground();
+    this.drawNodeGlassUnderlays();
 
     this.applyWorldTransform();
     this.drawGrid();

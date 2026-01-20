@@ -52,6 +52,8 @@ type ChatRuntimeMeta = {
   headNodeId: string | null;
   turns: ChatTurnMeta[];
   llm: OpenAIChatSettings;
+  backgroundStorageKey: string | null;
+  glassNodesEnabled: boolean;
 };
 
 type GenerationJob = {
@@ -241,6 +243,8 @@ function collectAllReferencedAttachmentKeys(args: {
     }
 
     const meta = args.chatMeta.get(chatId);
+    const bgKey = typeof meta?.backgroundStorageKey === 'string' ? meta.backgroundStorageKey : '';
+    if (bgKey) referenced.add(bgKey);
     const draft = meta?.draftAttachments ?? [];
     for (const att of draft) {
       if (!att) continue;
@@ -257,6 +261,7 @@ export default function App() {
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const pdfInputRef = useRef<HTMLInputElement | null>(null);
+  const backgroundInputRef = useRef<HTMLInputElement | null>(null);
   const composerDockRef = useRef<HTMLDivElement | null>(null);
   const engineRef = useRef<WorldEngine | null>(null);
   const generationJobsByAssistantIdRef = useRef<Map<string, GenerationJob>>(new Map());
@@ -289,6 +294,9 @@ export default function App() {
   const [replySelection, setReplySelection] = useState<ReplySelection | null>(null);
   const [replyContextAttachments, setReplyContextAttachments] = useState<ContextAttachmentItem[]>(() => []);
   const [replySelectedAttachmentKeys, setReplySelectedAttachmentKeys] = useState<string[]>(() => []);
+  const [backgroundStorageKey, setBackgroundStorageKey] = useState<string | null>(() => null);
+  const [glassNodesEnabled, setGlassNodesEnabled] = useState<boolean>(() => false);
+  const backgroundLoadSeqRef = useRef(0);
   const modelOptions = useMemo(() => listModels(), []);
   const [composerModelId, setComposerModelId] = useState<string>(() => DEFAULT_MODEL_ID);
   const [composerVerbosity, setComposerVerbosity] = useState<TextVerbosity>(() => 'medium');
@@ -314,6 +322,8 @@ export default function App() {
       headNodeId: null,
       turns: [],
       llm: { modelId: DEFAULT_MODEL_ID, verbosity: 'medium', webSearchEnabled: false },
+      backgroundStorageKey: null,
+      glassNodesEnabled: false,
     });
     return { root, chatId, chatStates, chatMeta };
   }, []);
@@ -338,6 +348,8 @@ export default function App() {
       headNodeId: null,
       turns: [],
       llm: { modelId: DEFAULT_MODEL_ID, verbosity: 'medium', webSearchEnabled: false },
+      backgroundStorageKey: null,
+      glassNodesEnabled: false,
     };
     chatMetaRef.current.set(chatId, meta);
     return meta;
@@ -452,6 +464,36 @@ export default function App() {
     if (debug.interacting) return;
     schedulePersistSoon();
   }, [debug?.interacting, schedulePersistSoon]);
+
+  const applyVisualSettings = (chatId: string) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+
+    const meta = ensureChatMeta(chatId);
+    engine.setGlassNodesEnabled(Boolean(meta.glassNodesEnabled));
+
+    const key = typeof meta.backgroundStorageKey === 'string' ? meta.backgroundStorageKey : null;
+    const seq = (backgroundLoadSeqRef.current += 1);
+    if (!key) {
+      engine.clearBackground();
+      return;
+    }
+
+    void (async () => {
+      const rec = await getAttachment(key);
+      if (backgroundLoadSeqRef.current !== seq) return;
+      if (!rec?.blob) {
+        const latest = ensureChatMeta(chatId);
+        if (latest.backgroundStorageKey === key) latest.backgroundStorageKey = null;
+        if (activeChatIdRef.current === chatId) setBackgroundStorageKey(null);
+        attachmentsGcDirtyRef.current = true;
+        engine.clearBackground();
+        schedulePersistSoon();
+        return;
+      }
+      await engine.setBackgroundFromBlob(rec.blob);
+    })();
+  };
 
   const hydratePdfNodesForChat = (chatId: string, state: WorldEngineChatState) => {
     const cid = chatId;
@@ -845,6 +887,8 @@ export default function App() {
     setComposerDraftAttachments(Array.isArray(meta.draftAttachments) ? meta.draftAttachments : []);
     setReplySelection(meta.replyTo);
     setReplySelectedAttachmentKeys(Array.isArray(meta.selectedAttachmentKeys) ? meta.selectedAttachmentKeys : []);
+    setBackgroundStorageKey(typeof meta.backgroundStorageKey === 'string' ? meta.backgroundStorageKey : null);
+    setGlassNodesEnabled(Boolean(meta.glassNodesEnabled));
     if (meta.replyTo?.nodeId) {
       const nextState = chatStatesRef.current.get(nextChatId) ?? createEmptyChatState();
       setReplyContextAttachments(collectContextAttachments(nextState.nodes, meta.replyTo.nodeId));
@@ -855,6 +899,7 @@ export default function App() {
     setComposerVerbosity((meta.llm.verbosity as TextVerbosity) || 'medium');
     setComposerWebSearch(Boolean(meta.llm.webSearchEnabled));
     setActiveChatId(nextChatId);
+    applyVisualSettings(nextChatId);
     schedulePersistSoon();
   };
 
@@ -896,6 +941,8 @@ export default function App() {
     setComposerDraftAttachments(Array.isArray(meta.draftAttachments) ? meta.draftAttachments : []);
     setReplySelection(meta.replyTo);
     setReplySelectedAttachmentKeys(Array.isArray(meta.selectedAttachmentKeys) ? meta.selectedAttachmentKeys : []);
+    setBackgroundStorageKey(typeof meta.backgroundStorageKey === 'string' ? meta.backgroundStorageKey : null);
+    setGlassNodesEnabled(Boolean(meta.glassNodesEnabled));
     if (meta.replyTo?.nodeId) {
       const nextState = chatStatesRef.current.get(resolvedActive) ?? createEmptyChatState();
       setReplyContextAttachments(collectContextAttachments(nextState.nodes, meta.replyTo.nodeId));
@@ -906,6 +953,7 @@ export default function App() {
     setComposerVerbosity((meta.llm.verbosity as TextVerbosity) || 'medium');
     setComposerWebSearch(Boolean(meta.llm.webSearchEnabled));
 
+    applyVisualSettings(resolvedActive);
     schedulePersistSoon();
   };
 
@@ -974,6 +1022,8 @@ export default function App() {
               verbosity: typeof llmRaw?.verbosity === 'string' ? llmRaw.verbosity : 'medium',
               webSearchEnabled: Boolean(llmRaw?.webSearchEnabled),
             },
+            backgroundStorageKey: typeof raw?.backgroundStorageKey === 'string' ? raw.backgroundStorageKey : null,
+            glassNodesEnabled: Boolean(raw?.glassNodesEnabled),
           };
           chatMeta.set(chatId, meta);
         } catch {
@@ -1018,6 +1068,8 @@ export default function App() {
       headNodeId: null,
       turns: [],
       llm: { modelId: DEFAULT_MODEL_ID, verbosity: 'medium', webSearchEnabled: false },
+      backgroundStorageKey: null,
+      glassNodesEnabled: false,
     });
     switchChat(id);
   };
@@ -1054,6 +1106,7 @@ export default function App() {
       const state = chatStatesRef.current.get(chatId);
       const nodeKeys = state ? collectAttachmentStorageKeys(state.nodes ?? []) : [];
       const meta = chatMetaRef.current.get(chatId);
+      const bgKey = typeof meta?.backgroundStorageKey === 'string' ? meta.backgroundStorageKey : '';
       const draftKeys =
         meta?.draftAttachments
           ?.map((att) => {
@@ -1062,7 +1115,7 @@ export default function App() {
             return typeof att.storageKey === 'string' ? att.storageKey : '';
           })
           .filter(Boolean) ?? [];
-      const keys = Array.from(new Set([...nodeKeys, ...draftKeys]));
+      const keys = Array.from(new Set([...nodeKeys, ...draftKeys, ...(bgKey ? [bgKey] : [])]));
       if (keys.length) {
         void (async () => {
           for (const key of keys) {
@@ -1098,6 +1151,8 @@ export default function App() {
           headNodeId: null,
           turns: [],
           llm: { modelId: DEFAULT_MODEL_ID, verbosity: 'medium', webSearchEnabled: false },
+          backgroundStorageKey: null,
+          glassNodesEnabled: false,
         });
         switchChat(id, { saveCurrent: false });
         return;
@@ -1330,6 +1385,76 @@ export default function App() {
           />
           <button className="controls__btn" type="button" onClick={() => pdfInputRef.current?.click()}>
             Import PDF
+          </button>
+          <input
+            ref={backgroundInputRef}
+            className="controls__fileInput"
+            type="file"
+            accept="image/*"
+            onChange={(e) => {
+              const file = e.currentTarget.files?.[0];
+              e.currentTarget.value = '';
+              if (!file) return;
+              const chatId = activeChatIdRef.current;
+              void (async () => {
+                try {
+                  let storageKey: string | null = null;
+                  try {
+                    storageKey = await putAttachment({
+                      blob: file,
+                      mimeType: file.type || 'image/png',
+                      name: file.name || undefined,
+                      size: Number.isFinite(file.size) ? file.size : undefined,
+                    });
+                  } catch {
+                    storageKey = null;
+                  }
+
+                  const meta = ensureChatMeta(chatId);
+                  meta.backgroundStorageKey = storageKey;
+                  if (activeChatIdRef.current === chatId) setBackgroundStorageKey(storageKey);
+                  attachmentsGcDirtyRef.current = true;
+
+                  await engineRef.current?.setBackgroundFromBlob(file);
+                } finally {
+                  schedulePersistSoon();
+                }
+              })();
+            }}
+          />
+          <button className="controls__btn" type="button" onClick={() => backgroundInputRef.current?.click()}>
+            Import Background
+          </button>
+          <button
+            className="controls__btn"
+            type="button"
+            disabled={!backgroundStorageKey}
+            onClick={() => {
+              const chatId = activeChatIdRef.current;
+              const meta = ensureChatMeta(chatId);
+              meta.backgroundStorageKey = null;
+              setBackgroundStorageKey(null);
+              attachmentsGcDirtyRef.current = true;
+              engineRef.current?.clearBackground();
+              schedulePersistSoon();
+            }}
+          >
+            Clear Background
+          </button>
+          <button
+            className={`controls__btn ${glassNodesEnabled ? 'controls__btn--active' : ''}`}
+            type="button"
+            onClick={() => {
+              const chatId = activeChatIdRef.current;
+              const meta = ensureChatMeta(chatId);
+              const next = !Boolean(meta.glassNodesEnabled);
+              meta.glassNodesEnabled = next;
+              setGlassNodesEnabled(next);
+              engineRef.current?.setGlassNodesEnabled(next);
+              schedulePersistSoon();
+            }}
+          >
+            Glass Nodes
           </button>
           <button
             className={`controls__btn ${ui.tool === 'select' ? 'controls__btn--active' : ''}`}
