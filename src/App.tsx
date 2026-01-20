@@ -21,7 +21,7 @@ import type { ChatAttachment, ChatNode } from './model/chat';
 import { buildOpenAIResponseRequest, type OpenAIChatSettings } from './llm/openai';
 import { DEFAULT_MODEL_ID, listModels, type TextVerbosity } from './llm/registry';
 import { readFileAsDataUrl, splitDataUrl } from './utils/files';
-import { deleteAttachment, getAttachment, putAttachment } from './storage/attachments';
+import { deleteAttachment, deleteAttachments, getAttachment, listAttachmentKeys, putAttachment } from './storage/attachments';
 import {
   deleteChatMetaRecord,
   deleteChatStateRecord,
@@ -171,6 +171,33 @@ function collectContextAttachments(nodes: ChatNode[], startNodeId: string): Cont
   return out;
 }
 
+function collectAllReferencedAttachmentKeys(args: {
+  chatIds: string[];
+  chatStates: Map<string, WorldEngineChatState>;
+  chatMeta: Map<string, ChatRuntimeMeta>;
+}): Set<string> {
+  const referenced = new Set<string>();
+  const chatIds = args.chatIds ?? [];
+
+  for (const chatId of chatIds) {
+    const state = args.chatStates.get(chatId);
+    if (state) {
+      for (const key of collectAttachmentStorageKeys(state.nodes ?? [])) referenced.add(key);
+    }
+
+    const meta = args.chatMeta.get(chatId);
+    const draft = meta?.draftAttachments ?? [];
+    for (const att of draft) {
+      if (!att) continue;
+      if (att.kind !== 'image' && att.kind !== 'pdf') continue;
+      const key = typeof att.storageKey === 'string' ? att.storageKey : '';
+      if (key) referenced.add(key);
+    }
+  }
+
+  return referenced;
+}
+
 export default function App() {
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -191,6 +218,9 @@ export default function App() {
   } | null>(null);
   const persistTimerRef = useRef<number | null>(null);
   const hydratingPdfChatsRef = useRef<Set<string>>(new Set());
+  const attachmentsGcDirtyRef = useRef(false);
+  const attachmentsGcRunningRef = useRef(false);
+  const attachmentsGcLastRunAtRef = useRef(0);
   const [ui, setUi] = useState(() => ({
     selectedNodeId: null as string | null,
     editingNodeId: null as string | null,
@@ -316,6 +346,30 @@ export default function App() {
               await putChatMetaRecord(chatId, meta);
             } catch {
               // ignore
+            }
+          }
+        }
+
+        if (attachmentsGcDirtyRef.current && !attachmentsGcRunningRef.current) {
+          const now = Date.now();
+          const minIntervalMs = 5000;
+          if (now - attachmentsGcLastRunAtRef.current >= minIntervalMs) {
+            attachmentsGcRunningRef.current = true;
+            try {
+              const referenced = collectAllReferencedAttachmentKeys({
+                chatIds,
+                chatStates: chatStatesRef.current,
+                chatMeta: chatMetaRef.current,
+              });
+              const allKeys = await listAttachmentKeys();
+              const toDelete = allKeys.filter((k) => !referenced.has(k));
+              if (toDelete.length) await deleteAttachments(toDelete);
+              attachmentsGcDirtyRef.current = false;
+              attachmentsGcLastRunAtRef.current = Date.now();
+            } catch {
+              // ignore
+            } finally {
+              attachmentsGcRunningRef.current = false;
             }
           }
         }
@@ -655,6 +709,8 @@ export default function App() {
 
       if (e.key === 'Backspace' || e.key === 'Delete') {
         engineRef.current.deleteSelectedNode();
+        attachmentsGcDirtyRef.current = true;
+        schedulePersistSoon();
         e.preventDefault();
       }
     };
@@ -941,6 +997,7 @@ export default function App() {
       void deleteChatStateRecord(chatId);
       void deleteChatMetaRecord(chatId);
     }
+    attachmentsGcDirtyRef.current = true;
 
     let nextActive = activeChatId;
     if (removedChatIds.includes(activeChatId)) {
@@ -1200,7 +1257,15 @@ export default function App() {
           <button className="controls__btn" type="button" onClick={() => engineRef.current?.spawnLatexStressTest(50)}>
             +50 nodes
           </button>
-          <button className="controls__btn" type="button" onClick={() => engineRef.current?.clearStressNodes()}>
+          <button
+            className="controls__btn"
+            type="button"
+            onClick={() => {
+              engineRef.current?.clearStressNodes();
+              attachmentsGcDirtyRef.current = true;
+              schedulePersistSoon();
+            }}
+          >
             Clear
           </button>
         </div>

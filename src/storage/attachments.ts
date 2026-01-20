@@ -61,6 +61,46 @@ export async function deleteAttachment(key: string): Promise<void> {
   await txDone(tx);
 }
 
+export async function listAttachmentKeys(): Promise<string[]> {
+  const db = await openDb();
+  const tx = db.transaction(STORE, 'readonly');
+  const store = tx.objectStore(STORE);
+  const keys: string[] = [];
+
+  await new Promise<void>((resolve) => {
+    const req = store.openCursor();
+    req.onsuccess = () => {
+      const cur = req.result as IDBCursorWithValue | null;
+      if (!cur) {
+        resolve();
+        return;
+      }
+      const key = typeof cur.key === 'string' ? cur.key : '';
+      if (key) keys.push(key);
+      cur.continue();
+    };
+    req.onerror = () => resolve();
+  });
+
+  try {
+    await txDone(tx);
+  } catch {
+    // ignore
+  }
+
+  return keys;
+}
+
+export async function deleteAttachments(keys: string[]): Promise<void> {
+  const unique = Array.from(new Set((keys ?? []).filter((k) => typeof k === 'string' && k)));
+  if (unique.length === 0) return;
+  const db = await openDb();
+  const tx = db.transaction(STORE, 'readwrite');
+  const store = tx.objectStore(STORE);
+  for (const key of unique) store.delete(key);
+  await txDone(tx);
+}
+
 export async function blobToDataUrl(blob: Blob, mimeType?: string): Promise<string> {
   const mt = (mimeType ?? blob.type ?? '').trim() || 'application/octet-stream';
   const normalized = blob.type === mt ? blob : new Blob([blob], { type: mt });
