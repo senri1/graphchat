@@ -52,6 +52,8 @@ export type ChatNode =
       modelId?: string | null;
       llmParams?: ChatLlmParams;
       llmError?: string | null;
+      apiRequest?: unknown;
+      apiResponse?: unknown;
       attachments?: ChatAttachment[];
       selectedAttachmentKeys?: string[];
     }

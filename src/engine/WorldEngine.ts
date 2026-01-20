@@ -123,6 +123,8 @@ type TextNode = DemoNodeBase & {
   modelId?: string | null;
   llmParams?: ChatLlmParams;
   llmError?: string | null;
+  apiRequest?: unknown;
+  apiResponse?: unknown;
   attachments?: ChatAttachment[];
   selectedAttachmentKeys?: string[];
 };
@@ -280,6 +282,7 @@ export class WorldEngine {
 
   onUiState?: (state: WorldEngineUiState) => void;
   onRequestReply?: (nodeId: string) => void;
+  onRequestRaw?: (nodeId: string) => void;
   onRequestCancelGeneration?: (nodeId: string) => void;
 
   private selectedNodeId: string | null = null;
@@ -569,6 +572,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           modelId: n.modelId ?? null,
           llmParams: n.llmParams,
           llmError: n.llmError ?? null,
+          apiRequest: n.apiRequest,
+          apiResponse: n.apiResponse,
           attachments: Array.isArray(n.attachments) ? n.attachments : undefined,
           selectedAttachmentKeys: Array.isArray(n.selectedAttachmentKeys) ? n.selectedAttachmentKeys : undefined,
         };
@@ -687,6 +692,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
               ? ((n as any).llmParams as ChatLlmParams)
               : undefined,
           llmError: typeof (n as any)?.llmError === 'string' ? ((n as any).llmError as string) : null,
+          apiRequest: (n as any)?.apiRequest,
+          apiResponse: (n as any)?.apiResponse,
           attachments: Array.isArray((n as any)?.attachments) ? ((n as any).attachments as ChatAttachment[]) : undefined,
           selectedAttachmentKeys: Array.isArray((n as any)?.selectedAttachmentKeys)
             ? ((n as any).selectedAttachmentKeys as string[])
@@ -1626,6 +1633,25 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     }
     if (patch.llmError !== undefined && (node.llmError ?? null) !== (patch.llmError ?? null)) {
       node.llmError = patch.llmError ?? null;
+      changed = true;
+    }
+
+    if (changed) this.requestRender();
+  }
+
+  setTextNodeApiPayload(nodeId: string, patch: { apiRequest?: unknown; apiResponse?: unknown }): void {
+    const id = nodeId;
+    if (!id) return;
+    const node = this.nodes.find((n): n is TextNode => n.id === id && n.kind === 'text');
+    if (!node) return;
+
+    let changed = false;
+    if (patch.apiRequest !== undefined && node.apiRequest !== patch.apiRequest) {
+      node.apiRequest = patch.apiRequest;
+      changed = true;
+    }
+    if (patch.apiResponse !== undefined && node.apiResponse !== patch.apiResponse) {
+      node.apiResponse = patch.apiResponse;
       changed = true;
     }
 
@@ -2750,8 +2776,18 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       return 'node';
     }
 
+    if (hit.kind === 'text' && this.shouldShowRawButton(hit)) {
+      const rawBtn = this.rawButtonRect(hit.rect);
+      const inRaw = world.x >= rawBtn.x && world.x <= rawBtn.x + rawBtn.w && world.y >= rawBtn.y && world.y <= rawBtn.y + rawBtn.h;
+      if (inRaw) {
+        this.requestRender();
+        if (selectionChanged) this.emitUiState();
+        return 'node';
+      }
+    }
+
     if (hit.kind === 'text' && hit.isGenerating) {
-      const stopBtn = this.stopButtonRect(hit.rect);
+      const stopBtn = this.stopButtonRect(hit);
       const inStop =
         world.x >= stopBtn.x &&
         world.x <= stopBtn.x + stopBtn.w &&
@@ -3083,7 +3119,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     if (hit) {
       if (hit.kind === 'text' && hit.isGenerating) {
-        const btn = this.stopButtonRect(hit.rect);
+        const btn = this.stopButtonRect(hit);
         const inStop =
           world.x >= btn.x && world.x <= btn.x + btn.w && world.y >= btn.y && world.y <= btn.y + btn.h;
         if (inStop) {
@@ -3094,6 +3130,21 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           this.requestRender();
           if (changed) this.emitUiState();
           this.onRequestCancelGeneration?.(hit.id);
+          return;
+        }
+      }
+
+      if (hit.kind === 'text' && this.shouldShowRawButton(hit)) {
+        const btn = this.rawButtonRect(hit.rect);
+        const inRaw = world.x >= btn.x && world.x <= btn.x + btn.w && world.y >= btn.y && world.y <= btn.y + btn.h;
+        if (inRaw) {
+          const changed = this.selectedNodeId !== hit.id || this.editingNodeId !== null;
+          this.selectedNodeId = hit.id;
+          this.editingNodeId = null;
+          this.bringNodeToFront(hit.id);
+          this.requestRender();
+          if (changed) this.emitUiState();
+          this.onRequestRaw?.(hit.id);
           return;
         }
       }
@@ -3222,10 +3273,14 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return { x, y, w, h };
   }
 
-  private stopButtonRect(nodeRect: Rect): Rect {
+  private shouldShowRawButton(node: TextNode): boolean {
+    return node.author === 'user' ? node.apiRequest !== undefined : node.apiResponse !== undefined;
+  }
+
+  private rawButtonRect(nodeRect: Rect): Rect {
     const z = Math.max(0.01, this.camera.zoom || 1);
     const pad = 14 / z;
-    const w = 56 / z;
+    const w = 52 / z;
     const h = 22 / z;
     const gap = 8 / z;
 
@@ -3234,6 +3289,57 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const y = reply.y;
     const minX = nodeRect.x + pad;
     return { x: Math.max(minX, x), y, w, h };
+  }
+
+  private stopButtonRect(node: TextNode): Rect {
+    const z = Math.max(0.01, this.camera.zoom || 1);
+    const pad = 14 / z;
+    const w = 56 / z;
+    const h = 22 / z;
+    const gap = 8 / z;
+
+    const nodeRect = node.rect;
+    const anchor = this.shouldShowRawButton(node) ? this.rawButtonRect(nodeRect) : this.replyButtonRect(nodeRect);
+    const x = anchor.x - gap - w;
+    const y = anchor.y;
+    const minX = nodeRect.x + pad;
+    return { x: Math.max(minX, x), y, w, h };
+  }
+
+  private drawRawButton(nodeRect: Rect, opts?: { active?: boolean }): void {
+    const ctx = this.ctx;
+    const z = Math.max(0.01, this.camera.zoom || 1);
+    const r = 9 / z;
+    const rect = this.rawButtonRect(nodeRect);
+
+    ctx.save();
+    ctx.fillStyle = opts?.active ? 'rgba(147,197,253,0.22)' : 'rgba(255,255,255,0.06)';
+    ctx.strokeStyle = opts?.active ? 'rgba(147,197,253,0.5)' : 'rgba(255,255,255,0.14)';
+    ctx.lineWidth = 1 / z;
+
+    ctx.beginPath();
+    ctx.moveTo(rect.x + r, rect.y);
+    ctx.lineTo(rect.x + rect.w - r, rect.y);
+    ctx.arcTo(rect.x + rect.w, rect.y, rect.x + rect.w, rect.y + r, r);
+    ctx.lineTo(rect.x + rect.w, rect.y + rect.h - r);
+    ctx.arcTo(rect.x + rect.w, rect.y + rect.h, rect.x + rect.w - r, rect.y + rect.h, r);
+    ctx.lineTo(rect.x + r, rect.y + rect.h);
+    ctx.arcTo(rect.x, rect.y + rect.h, rect.x, rect.y + rect.h - r, r);
+    ctx.lineTo(rect.x, rect.y + r);
+    ctx.arcTo(rect.x, rect.y, rect.x + r, rect.y, r);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = 'rgba(255,255,255,0.86)';
+    ctx.font = `${12 / z}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
+    ctx.textBaseline = 'middle';
+    const label = 'Raw';
+    const m = ctx.measureText(label);
+    const textX = rect.x + (rect.w - (m.width || 0)) * 0.5;
+    ctx.fillText(label, textX, rect.y + rect.h * 0.5);
+
+    ctx.restore();
   }
 
   private drawReplyButton(nodeRect: Rect, opts?: { active?: boolean }): void {
@@ -3272,11 +3378,11 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     ctx.restore();
   }
 
-  private drawStopButton(nodeRect: Rect): void {
+  private drawStopButton(node: TextNode): void {
     const ctx = this.ctx;
     const z = Math.max(0.01, this.camera.zoom || 1);
     const r = 9 / z;
-    const rect = this.stopButtonRect(nodeRect);
+    const rect = this.stopButtonRect(node);
 
     ctx.save();
     ctx.fillStyle = 'rgba(248,113,113,0.18)';
@@ -3400,7 +3506,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       ctx.textBaseline = 'top';
       ctx.fillText(node.title, x + 14, y + 12);
 
-      if (node.kind === 'text' && node.isGenerating) this.drawStopButton(node.rect);
+      if (node.kind === 'text' && node.isGenerating) this.drawStopButton(node);
+      if (node.kind === 'text' && this.shouldShowRawButton(node)) this.drawRawButton(node.rect, { active: isSelected });
       this.drawReplyButton(node.rect, { active: isSelected });
 
       ctx.fillStyle = 'rgba(255,255,255,0.55)';

@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { WorldEngine, type WorldEngineDebug } from './engine/WorldEngine';
 import ChatComposer from './components/ChatComposer';
+import RawPayloadViewer from './components/RawPayloadViewer';
 import TextNodeEditor from './components/TextNodeEditor';
 import WorkspaceSidebar from './components/WorkspaceSidebar';
 import { createEmptyChatState, type WorldEngineChatState } from './engine/WorldEngine';
@@ -68,6 +69,13 @@ type GenerationJob = {
   closed: boolean;
 };
 
+type RawViewerState = {
+  nodeId: string;
+  title: string;
+  kind: 'request' | 'response';
+  payload: unknown;
+};
+
 function genId(prefix: string): string {
   const p = prefix.replace(/[^a-z0-9_-]/gi, '').slice(0, 8) || 'id';
   try {
@@ -77,6 +85,53 @@ function genId(prefix: string): string {
     // ignore
   }
   return `${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function isProbablyDataUrl(value: string): boolean {
+  return /^data:[^,]+,/.test(value);
+}
+
+function truncateDataUrlForDisplay(value: string, maxChars: number): string {
+  const s = String(value ?? '');
+  if (s.length <= maxChars) return s;
+  const comma = s.indexOf(',');
+  if (comma === -1) return `${s.slice(0, maxChars)}… (${s.length} chars)`;
+  const prefix = s.slice(0, comma + 1);
+  const data = s.slice(comma + 1);
+  const keep = Math.max(0, maxChars - prefix.length);
+  return `${prefix}${data.slice(0, keep)}… (${data.length} chars)`;
+}
+
+function cloneRawPayloadForDisplay(payload: unknown, opts?: { maxDepth?: number; maxStringChars?: number; maxDataUrlChars?: number }): unknown {
+  const maxDepth = Math.max(1, Math.floor(opts?.maxDepth ?? 30));
+  const maxStringChars = Math.max(256, Math.floor(opts?.maxStringChars ?? 20000));
+  const maxDataUrlChars = Math.max(64, Math.floor(opts?.maxDataUrlChars ?? 220));
+
+  const seen = new WeakMap<object, unknown>();
+  const visit = (value: unknown, depth: number): unknown => {
+    if (depth > maxDepth) return '[Max depth]';
+    if (typeof value === 'string') {
+      if (isProbablyDataUrl(value)) return truncateDataUrlForDisplay(value, maxDataUrlChars);
+      if (value.length > maxStringChars) return `${value.slice(0, maxStringChars)}… (${value.length} chars)`;
+      return value;
+    }
+    if (value == null || typeof value !== 'object') return value;
+    if (seen.has(value as object)) return seen.get(value as object);
+
+    if (Array.isArray(value)) {
+      const out: unknown[] = [];
+      seen.set(value as object, out);
+      for (const item of value) out.push(visit(item, depth + 1));
+      return out;
+    }
+
+    const out: Record<string, unknown> = {};
+    seen.set(value as object, out);
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = visit(v, depth + 1);
+    return out;
+  };
+
+  return visit(payload, 0);
 }
 
 async function fileToChatAttachment(file: File): Promise<ChatAttachment | null> {
@@ -227,6 +282,7 @@ export default function App() {
     editingText: '',
     tool: 'select' as 'select' | 'draw',
   }));
+  const [rawViewer, setRawViewer] = useState<RawViewerState | null>(null);
   const [viewport, setViewport] = useState(() => ({ w: 1, h: 1 }));
   const [composerDraft, setComposerDraft] = useState('');
   const [composerDraftAttachments, setComposerDraftAttachments] = useState<ChatAttachment[]>(() => []);
@@ -289,6 +345,10 @@ export default function App() {
 
   useEffect(() => {
     activeChatIdRef.current = activeChatId;
+  }, [activeChatId]);
+
+  useEffect(() => {
+    setRawViewer(null);
   }, [activeChatId]);
 
   useEffect(() => {
@@ -473,7 +533,7 @@ export default function App() {
 
   const finishJob = (
     assistantNodeId: string,
-    result: { finalText: string; error: string | null; cancelled?: boolean },
+    result: { finalText: string; error: string | null; cancelled?: boolean; apiResponse?: unknown },
   ) => {
     const job = generationJobsByAssistantIdRef.current.get(assistantNodeId);
     if (!job) return;
@@ -490,17 +550,20 @@ export default function App() {
     const rawText = result.finalText ?? job.fullText;
     const finalText =
       rawText.trim() || !result.error ? rawText : result.cancelled ? 'Canceled.' : `Error: ${result.error}`;
-    updateStoredTextNode(job.chatId, job.assistantNodeId, {
+    const patch: Partial<Extract<ChatNode, { kind: 'text' }>> = {
       content: finalText,
       isGenerating: false,
       modelId: job.modelId,
       llmError: result.error,
-    });
+    };
+    if (result.apiResponse !== undefined) patch.apiResponse = result.apiResponse;
+    updateStoredTextNode(job.chatId, job.assistantNodeId, patch);
 
     if (activeChatIdRef.current === job.chatId) {
       const engine = engineRef.current;
       engine?.setTextNodeContent(job.assistantNodeId, finalText, { streaming: false });
       engine?.setTextNodeLlmState(job.assistantNodeId, { isGenerating: false, modelId: job.modelId, llmError: result.error });
+      if (result.apiResponse !== undefined) engine?.setTextNodeApiPayload(job.assistantNodeId, { apiResponse: result.apiResponse });
     }
 
     generationJobsByAssistantIdRef.current.delete(assistantNodeId);
@@ -593,6 +656,14 @@ export default function App() {
       }
       if (job.closed || job.abortController.signal.aborted) return;
 
+      const sentRequest = { ...(request ?? {}), stream: true };
+      const storedRequest = cloneRawPayloadForDisplay(sentRequest);
+      updateStoredTextNode(chatId, job.userNodeId, { apiRequest: storedRequest });
+      if (activeChatIdRef.current === chatId) {
+        engineRef.current?.setTextNodeApiPayload(job.userNodeId, { apiRequest: storedRequest });
+      }
+      schedulePersistSoon();
+
       const res = await streamOpenAIResponse({
         apiKey,
         request,
@@ -607,11 +678,12 @@ export default function App() {
       });
 
       if (!generationJobsByAssistantIdRef.current.has(job.assistantNodeId)) return;
+      const storedResponse = res.response !== undefined ? cloneRawPayloadForDisplay(res.response) : undefined;
       if (res.ok) {
-        finishJob(job.assistantNodeId, { finalText: res.text, error: null });
+        finishJob(job.assistantNodeId, { finalText: res.text, error: null, apiResponse: storedResponse });
       } else {
         const error = res.cancelled ? 'Canceled' : res.error;
-        finishJob(job.assistantNodeId, { finalText: res.text ?? job.fullText, error, cancelled: res.cancelled });
+        finishJob(job.assistantNodeId, { finalText: res.text ?? job.fullText, error, cancelled: res.cancelled, apiResponse: storedResponse });
       }
     })();
   };
@@ -654,6 +726,15 @@ export default function App() {
       setReplySelection(next);
       setReplyContextAttachments(ctx);
       setReplySelectedAttachmentKeys(keys);
+    };
+    engine.onRequestRaw = (nodeId) => {
+      const snapshot = engine.exportChatState();
+      const node = snapshot.nodes.find((n): n is Extract<ChatNode, { kind: 'text' }> => n.kind === 'text' && n.id === nodeId) ?? null;
+      if (!node) return;
+      const kind: RawViewerState['kind'] = node.author === 'user' ? 'request' : 'response';
+      const payload = kind === 'request' ? node.apiRequest : node.apiResponse;
+      const title = `${kind === 'request' ? 'Raw request' : 'Raw response'} • ${node.title}`;
+      setRawViewer((prev) => (prev?.nodeId === nodeId ? null : { nodeId, title, kind, payload }));
     };
     engine.onRequestCancelGeneration = (nodeId) => cancelJob(nodeId);
     engine.start();
@@ -722,6 +803,7 @@ export default function App() {
   const editorAnchor = ui.editingNodeId ? engineRef.current?.getNodeScreenRect(ui.editingNodeId) ?? null : null;
   const editorTitle = ui.editingNodeId ? engineRef.current?.getNodeTitle(ui.editingNodeId) ?? null : null;
   const editorZoom = debug?.zoom ?? engineRef.current?.camera.zoom ?? 1;
+  const rawAnchor = rawViewer ? engineRef.current?.getNodeScreenRect(rawViewer.nodeId) ?? null : null;
 
   const switchChat = (nextChatId: string, opts?: { saveCurrent?: boolean }) => {
     if (!nextChatId) return;
@@ -1070,6 +1152,18 @@ export default function App() {
               schedulePersistSoon();
             }}
             onCancel={() => engineRef.current?.cancelEditing()}
+          />
+        ) : null}
+        {rawViewer ? (
+          <RawPayloadViewer
+            nodeId={rawViewer.nodeId}
+            title={rawViewer.title}
+            kind={rawViewer.kind}
+            payload={rawViewer.payload}
+            anchorRect={rawAnchor}
+            viewport={viewport}
+            zoom={editorZoom}
+            onClose={() => setRawViewer(null)}
           />
         ) : null}
 

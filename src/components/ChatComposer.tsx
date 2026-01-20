@@ -56,6 +56,24 @@ export default function ChatComposer(props: Props) {
   const onSendRef = useRef(onSend);
   const [previewEnabled, setPreviewEnabled] = useState(false);
   const deferredValue = useDeferredValue(value);
+  const selectedModelLabel = useMemo(() => {
+    const match = modelOptions.find((m) => m.id === modelId);
+    const label = match?.shortLabel ?? match?.label ?? modelId;
+    return String(label).trim();
+  }, [modelId, modelOptions]);
+
+  const selectedVerbosityLabel = useMemo(() => {
+    switch (verbosity) {
+      case 'low':
+        return 'Low';
+      case 'medium':
+        return 'Medium';
+      case 'high':
+        return 'High';
+      default:
+        return String(verbosity);
+    }
+  }, [verbosity]);
 
   useEffect(() => {
     onSendRef.current = onSend;
@@ -206,32 +224,36 @@ export default function ChatComposer(props: Props) {
 
             <label className="composer__setting">
               <span className="composer__settingLabel">Model</span>
-              <select
-                className="composer__select"
-                value={modelId}
-                onChange={(e) => onChangeModelId(e.currentTarget.value)}
-                disabled={disabled}
-              >
-                {modelOptions.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.shortLabel ?? m.label}
-                  </option>
-                ))}
-              </select>
+              <span className="composer__selectWrap" data-value={selectedModelLabel}>
+                <select
+                  className="composer__select"
+                  value={modelId}
+                  onChange={(e) => onChangeModelId(e.currentTarget.value)}
+                  disabled={disabled}
+                >
+                  {modelOptions.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {(m.shortLabel ?? m.label).trim()}
+                    </option>
+                  ))}
+                </select>
+              </span>
             </label>
 
             <label className="composer__setting">
               <span className="composer__settingLabel">Verbosity</span>
-              <select
-                className="composer__select"
-                value={verbosity}
-                onChange={(e) => onChangeVerbosity(e.currentTarget.value as TextVerbosity)}
-                disabled={disabled}
-              >
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
-              </select>
+              <span className="composer__selectWrap" data-value={selectedVerbosityLabel}>
+                <select
+                  className="composer__select"
+                  value={verbosity}
+                  onChange={(e) => onChangeVerbosity(e.currentTarget.value as TextVerbosity)}
+                  disabled={disabled}
+                >
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </span>
             </label>
 
             <label className="composer__toggle">
