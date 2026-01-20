@@ -3555,12 +3555,11 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   }
 
   private replyButtonRect(nodeRect: Rect): Rect {
-    const z = Math.max(0.01, this.camera.zoom || 1);
-    const pad = 14 / z;
-    const w = 58 / z;
-    const h = 22 / z;
+    const pad = 14;
+    const w = 58;
+    const h = 22;
     const x = nodeRect.x + nodeRect.w - pad - w;
-    const y = nodeRect.y + 12 / z;
+    const y = nodeRect.y + 12;
     return { x, y, w, h };
   }
 
@@ -3569,11 +3568,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   }
 
   private rawButtonRect(nodeRect: Rect): Rect {
-    const z = Math.max(0.01, this.camera.zoom || 1);
-    const pad = 14 / z;
-    const w = 52 / z;
-    const h = 22 / z;
-    const gap = 8 / z;
+    const pad = 14;
+    const w = 52;
+    const h = 22;
+    const gap = 8;
 
     const reply = this.replyButtonRect(nodeRect);
     const x = reply.x - gap - w;
@@ -3583,11 +3581,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   }
 
   private stopButtonRect(node: TextNode): Rect {
-    const z = Math.max(0.01, this.camera.zoom || 1);
-    const pad = 14 / z;
-    const w = 56 / z;
-    const h = 22 / z;
-    const gap = 8 / z;
+    const pad = 14;
+    const w = 56;
+    const h = 22;
+    const gap = 8;
 
     const nodeRect = node.rect;
     const anchor = this.shouldShowRawButton(node) ? this.rawButtonRect(nodeRect) : this.replyButtonRect(nodeRect);
@@ -3599,14 +3596,13 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
   private drawRawButton(nodeRect: Rect, opts?: { active?: boolean }): void {
     const ctx = this.ctx;
-    const z = Math.max(0.01, this.camera.zoom || 1);
-    const r = 9 / z;
+    const r = 9;
     const rect = this.rawButtonRect(nodeRect);
 
     ctx.save();
     ctx.fillStyle = opts?.active ? 'rgba(147,197,253,0.22)' : 'rgba(0,0,0,0.22)';
     ctx.strokeStyle = opts?.active ? 'rgba(147,197,253,0.5)' : 'rgba(255,255,255,0.14)';
-    ctx.lineWidth = 1 / z;
+    ctx.lineWidth = 1;
 
     ctx.beginPath();
     ctx.moveTo(rect.x + r, rect.y);
@@ -3623,7 +3619,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     ctx.stroke();
 
     ctx.fillStyle = 'rgba(255,255,255,0.86)';
-    ctx.font = `${12 / z}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
+    ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
     ctx.textBaseline = 'middle';
     const label = 'Raw';
     const m = ctx.measureText(label);
@@ -3635,14 +3631,13 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
   private drawReplyButton(nodeRect: Rect, opts?: { active?: boolean }): void {
     const ctx = this.ctx;
-    const z = Math.max(0.01, this.camera.zoom || 1);
-    const r = 9 / z;
+    const r = 9;
     const rect = this.replyButtonRect(nodeRect);
 
     ctx.save();
     ctx.fillStyle = opts?.active ? 'rgba(147,197,253,0.28)' : 'rgba(0,0,0,0.22)';
     ctx.strokeStyle = opts?.active ? 'rgba(147,197,253,0.55)' : 'rgba(255,255,255,0.14)';
-    ctx.lineWidth = 1 / z;
+    ctx.lineWidth = 1;
 
     ctx.beginPath();
     ctx.moveTo(rect.x + r, rect.y);
@@ -3659,7 +3654,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     ctx.stroke();
 
     ctx.fillStyle = 'rgba(255,255,255,0.86)';
-    ctx.font = `${12 / z}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
+    ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
     ctx.textBaseline = 'middle';
     const label = 'Reply';
     const m = ctx.measureText(label);
@@ -3671,14 +3666,13 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
   private drawStopButton(node: TextNode): void {
     const ctx = this.ctx;
-    const z = Math.max(0.01, this.camera.zoom || 1);
-    const r = 9 / z;
+    const r = 9;
     const rect = this.stopButtonRect(node);
 
     ctx.save();
     ctx.fillStyle = 'rgba(248,113,113,0.18)';
     ctx.strokeStyle = 'rgba(248,113,113,0.62)';
-    ctx.lineWidth = 1 / z;
+    ctx.lineWidth = 1;
 
     ctx.beginPath();
     ctx.moveTo(rect.x + r, rect.y);
@@ -3695,7 +3689,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     ctx.stroke();
 
     ctx.fillStyle = 'rgba(255,255,255,0.86)';
-    ctx.font = `${12 / z}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
+    ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
     ctx.textBaseline = 'middle';
     const label = 'Stop';
     const m = ctx.measureText(label);
@@ -3793,7 +3787,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       ctx.stroke();
 
       ctx.fillStyle = 'rgba(255,255,255,0.85)';
-      ctx.font = `${14 / (this.camera.zoom || 1)}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
+      ctx.font = '14px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
       ctx.textBaseline = 'top';
       ctx.fillText(node.title, x + 14, y + 12);
 
@@ -3802,7 +3796,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       this.drawReplyButton(node.rect, { active: isSelected });
 
       ctx.fillStyle = 'rgba(255,255,255,0.55)';
-      ctx.font = `${12 / (this.camera.zoom || 1)}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
+      ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
 
       // Header separator.
       ctx.strokeStyle = 'rgba(255,255,255,0.10)';
