@@ -8,6 +8,12 @@ export type PersistedWorkspaceSnapshot = {
   root: WorkspaceFolder;
   activeChatId: string;
   focusedFolderId: string;
+  visual?: {
+    glassNodesEnabled: boolean;
+    glassNodesBlurCssPx: number;
+    glassNodesSaturatePct: number;
+    glassNodesUnderlayAlpha: number;
+  };
   updatedAt: number;
 };
 

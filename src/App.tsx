@@ -53,9 +53,6 @@ type ChatRuntimeMeta = {
   turns: ChatTurnMeta[];
   llm: OpenAIChatSettings;
   backgroundStorageKey: string | null;
-  glassNodesEnabled: boolean;
-  glassNodesBlurCssPx: number;
-  glassNodesUnderlayAlpha: number;
 };
 
 type GenerationJob = {
@@ -275,6 +272,12 @@ export default function App() {
     root: WorkspaceFolder;
     activeChatId: string;
     focusedFolderId: string;
+    visual: {
+      glassNodesEnabled: boolean;
+      glassNodesBlurCssPx: number;
+      glassNodesSaturatePct: number;
+      glassNodesUnderlayAlpha: number;
+    };
     chatStates: Map<string, WorldEngineChatState>;
     chatMeta: Map<string, ChatRuntimeMeta>;
   } | null>(null);
@@ -299,7 +302,12 @@ export default function App() {
   const [backgroundStorageKey, setBackgroundStorageKey] = useState<string | null>(() => null);
   const [glassNodesEnabled, setGlassNodesEnabled] = useState<boolean>(() => false);
   const [glassNodesBlurCssPx, setGlassNodesBlurCssPx] = useState<number>(() => 10);
+  const [glassNodesSaturatePct, setGlassNodesSaturatePct] = useState<number>(() => 140);
   const [glassNodesUnderlayAlpha, setGlassNodesUnderlayAlpha] = useState<number>(() => 0.95);
+  const glassNodesEnabledRef = useRef<boolean>(glassNodesEnabled);
+  const glassNodesBlurCssPxRef = useRef<number>(glassNodesBlurCssPx);
+  const glassNodesSaturatePctRef = useRef<number>(glassNodesSaturatePct);
+  const glassNodesUnderlayAlphaRef = useRef<number>(glassNodesUnderlayAlpha);
   const backgroundLoadSeqRef = useRef(0);
   const modelOptions = useMemo(() => listModels(), []);
   const [composerModelId, setComposerModelId] = useState<string>(() => DEFAULT_MODEL_ID);
@@ -327,9 +335,6 @@ export default function App() {
       turns: [],
       llm: { modelId: DEFAULT_MODEL_ID, verbosity: 'medium', webSearchEnabled: false },
       backgroundStorageKey: null,
-      glassNodesEnabled: false,
-      glassNodesBlurCssPx: 10,
-      glassNodesUnderlayAlpha: 0.95,
     });
     return { root, chatId, chatStates, chatMeta };
   }, []);
@@ -355,9 +360,6 @@ export default function App() {
       turns: [],
       llm: { modelId: DEFAULT_MODEL_ID, verbosity: 'medium', webSearchEnabled: false },
       backgroundStorageKey: null,
-      glassNodesEnabled: false,
-      glassNodesBlurCssPx: 10,
-      glassNodesUnderlayAlpha: 0.95,
     };
     chatMetaRef.current.set(chatId, meta);
     return meta;
@@ -366,6 +368,24 @@ export default function App() {
   useEffect(() => {
     activeChatIdRef.current = activeChatId;
   }, [activeChatId]);
+
+  useEffect(() => {
+    glassNodesEnabledRef.current = glassNodesEnabled;
+    glassNodesBlurCssPxRef.current = glassNodesBlurCssPx;
+    glassNodesSaturatePctRef.current = glassNodesSaturatePct;
+    glassNodesUnderlayAlphaRef.current = glassNodesUnderlayAlpha;
+
+    if (typeof document === 'undefined') return;
+    const root = document.documentElement;
+    root.style.setProperty('--ui-glass-blur', `${Math.round(glassNodesBlurCssPx)}px`);
+    root.style.setProperty('--ui-glass-saturate', `${Math.round(glassNodesSaturatePct)}%`);
+    const t = Math.max(0, Math.min(1, glassNodesUnderlayAlpha));
+    const uiMinAlpha = 0.12;
+    const uiMaxAlpha = 0.6;
+    const gamma = 0.26;
+    const uiAlpha = uiMinAlpha + (uiMaxAlpha - uiMinAlpha) * Math.pow(1 - t, gamma);
+    root.style.setProperty('--ui-glass-bg-alpha', uiAlpha.toFixed(3));
+  }, [glassNodesEnabled, glassNodesBlurCssPx, glassNodesSaturatePct, glassNodesUnderlayAlpha]);
 
   useEffect(() => {
     setRawViewer(null);
@@ -402,7 +422,24 @@ export default function App() {
 
       void (async () => {
         try {
-          await putWorkspaceSnapshot({ key: 'workspace', root, activeChatId: active, focusedFolderId: focused });
+          await putWorkspaceSnapshot({
+            key: 'workspace',
+            root,
+            activeChatId: active,
+            focusedFolderId: focused,
+            visual: {
+              glassNodesEnabled: Boolean(glassNodesEnabledRef.current),
+              glassNodesBlurCssPx: Number.isFinite(glassNodesBlurCssPxRef.current)
+                ? Math.max(0, Math.min(30, glassNodesBlurCssPxRef.current))
+                : 10,
+              glassNodesSaturatePct: Number.isFinite(glassNodesSaturatePctRef.current)
+                ? Math.max(100, Math.min(200, glassNodesSaturatePctRef.current))
+                : 140,
+              glassNodesUnderlayAlpha: Number.isFinite(glassNodesUnderlayAlphaRef.current)
+                ? Math.max(0, Math.min(1, glassNodesUnderlayAlphaRef.current))
+                : 0.95,
+            },
+          });
         } catch {
           // ignore
         }
@@ -478,9 +515,14 @@ export default function App() {
     if (!engine) return;
 
     const meta = ensureChatMeta(chatId);
-    engine.setGlassNodesEnabled(Boolean(meta.glassNodesEnabled));
-    engine.setGlassNodesBlurCssPx(meta.glassNodesBlurCssPx ?? 10);
-    engine.setGlassNodesUnderlayAlpha(meta.glassNodesUnderlayAlpha ?? 0.95);
+    engine.setGlassNodesEnabled(Boolean(glassNodesEnabledRef.current));
+    engine.setGlassNodesBlurCssPx(Number.isFinite(glassNodesBlurCssPxRef.current) ? glassNodesBlurCssPxRef.current : 10);
+    engine.setGlassNodesSaturatePct(
+      Number.isFinite(glassNodesSaturatePctRef.current) ? glassNodesSaturatePctRef.current : 140,
+    );
+    engine.setGlassNodesUnderlayAlpha(
+      Number.isFinite(glassNodesUnderlayAlphaRef.current) ? glassNodesUnderlayAlphaRef.current : 0.95,
+    );
 
     const key = typeof meta.backgroundStorageKey === 'string' ? meta.backgroundStorageKey : null;
     const seq = (backgroundLoadSeqRef.current += 1);
@@ -898,9 +940,6 @@ export default function App() {
     setReplySelection(meta.replyTo);
     setReplySelectedAttachmentKeys(Array.isArray(meta.selectedAttachmentKeys) ? meta.selectedAttachmentKeys : []);
     setBackgroundStorageKey(typeof meta.backgroundStorageKey === 'string' ? meta.backgroundStorageKey : null);
-    setGlassNodesEnabled(Boolean(meta.glassNodesEnabled));
-    setGlassNodesBlurCssPx(Number.isFinite(meta.glassNodesBlurCssPx) ? meta.glassNodesBlurCssPx : 10);
-    setGlassNodesUnderlayAlpha(Number.isFinite(meta.glassNodesUnderlayAlpha) ? meta.glassNodesUnderlayAlpha : 0.95);
     if (meta.replyTo?.nodeId) {
       const nextState = chatStatesRef.current.get(nextChatId) ?? createEmptyChatState();
       setReplyContextAttachments(collectContextAttachments(nextState.nodes, meta.replyTo.nodeId));
@@ -933,11 +972,25 @@ export default function App() {
     const active = chatIds.includes(desiredActive) ? desiredActive : findFirstChatId(root) ?? desiredActive;
     const resolvedActive = active || (chatIds[0] ?? activeChatIdRef.current);
 
+    const visual = payload.visual;
+    glassNodesEnabledRef.current = Boolean(visual.glassNodesEnabled);
+    glassNodesBlurCssPxRef.current = Number.isFinite(visual.glassNodesBlurCssPx) ? visual.glassNodesBlurCssPx : 10;
+    glassNodesSaturatePctRef.current = Number.isFinite(visual.glassNodesSaturatePct) ? visual.glassNodesSaturatePct : 140;
+    glassNodesUnderlayAlphaRef.current = Number.isFinite(visual.glassNodesUnderlayAlpha) ? visual.glassNodesUnderlayAlpha : 0.95;
+    setGlassNodesEnabled(glassNodesEnabledRef.current);
+    setGlassNodesBlurCssPx(glassNodesBlurCssPxRef.current);
+    setGlassNodesSaturatePct(glassNodesSaturatePctRef.current);
+    setGlassNodesUnderlayAlpha(glassNodesUnderlayAlphaRef.current);
+
     bootedRef.current = true;
     setActiveChatId(resolvedActive);
 
     const engine = engineRef.current;
     if (engine) {
+      engine.setGlassNodesEnabled(glassNodesEnabledRef.current);
+      engine.setGlassNodesBlurCssPx(glassNodesBlurCssPxRef.current);
+      engine.setGlassNodesSaturatePct(glassNodesSaturatePctRef.current);
+      engine.setGlassNodesUnderlayAlpha(glassNodesUnderlayAlphaRef.current);
       engine.cancelEditing();
       const nextState = chatStatesRef.current.get(resolvedActive) ?? createEmptyChatState();
       chatStatesRef.current.set(resolvedActive, nextState);
@@ -954,9 +1007,6 @@ export default function App() {
     setReplySelection(meta.replyTo);
     setReplySelectedAttachmentKeys(Array.isArray(meta.selectedAttachmentKeys) ? meta.selectedAttachmentKeys : []);
     setBackgroundStorageKey(typeof meta.backgroundStorageKey === 'string' ? meta.backgroundStorageKey : null);
-    setGlassNodesEnabled(Boolean(meta.glassNodesEnabled));
-    setGlassNodesBlurCssPx(Number.isFinite(meta.glassNodesBlurCssPx) ? meta.glassNodesBlurCssPx : 10);
-    setGlassNodesUnderlayAlpha(Number.isFinite(meta.glassNodesUnderlayAlpha) ? meta.glassNodesUnderlayAlpha : 0.95);
     if (meta.replyTo?.nodeId) {
       const nextState = chatStatesRef.current.get(resolvedActive) ?? createEmptyChatState();
       setReplyContextAttachments(collectContextAttachments(nextState.nodes, meta.replyTo.nodeId));
@@ -994,6 +1044,14 @@ export default function App() {
         return;
       }
 
+      const desiredActiveChatId = typeof ws.activeChatId === 'string' ? ws.activeChatId : chatIds[0];
+      let legacyVisualFromActive: {
+        glassNodesEnabled: boolean;
+        glassNodesBlurCssPx: number;
+        glassNodesSaturatePct: number;
+        glassNodesUnderlayAlpha: number;
+      } | null = null;
+
       const chatStates = new Map<string, WorldEngineChatState>();
       const chatMeta = new Map<string, ChatRuntimeMeta>();
 
@@ -1019,6 +1077,22 @@ export default function App() {
           const metaRec = await getChatMetaRecord(chatId);
           const raw = (metaRec?.meta ?? null) as any;
           const llmRaw = raw?.llm ?? null;
+
+          if (chatId === desiredActiveChatId) {
+            legacyVisualFromActive = {
+              glassNodesEnabled: Boolean(raw?.glassNodesEnabled),
+              glassNodesBlurCssPx: Number.isFinite(Number(raw?.glassNodesBlurCssPx))
+                ? Math.max(0, Math.min(30, Number(raw.glassNodesBlurCssPx)))
+                : 10,
+              glassNodesSaturatePct: Number.isFinite(Number(raw?.glassNodesSaturatePct))
+                ? Math.max(100, Math.min(200, Number(raw.glassNodesSaturatePct)))
+                : 140,
+              glassNodesUnderlayAlpha: Number.isFinite(Number(raw?.glassNodesUnderlayAlpha))
+                ? Math.max(0, Math.min(1, Number(raw.glassNodesUnderlayAlpha)))
+                : 0.95,
+            };
+          }
+
           const meta: ChatRuntimeMeta = {
             draft: typeof raw?.draft === 'string' ? raw.draft : '',
             draftAttachments: Array.isArray(raw?.draftAttachments) ? (raw.draftAttachments as ChatAttachment[]) : [],
@@ -1037,13 +1111,6 @@ export default function App() {
               webSearchEnabled: Boolean(llmRaw?.webSearchEnabled),
             },
             backgroundStorageKey: typeof raw?.backgroundStorageKey === 'string' ? raw.backgroundStorageKey : null,
-            glassNodesEnabled: Boolean(raw?.glassNodesEnabled),
-            glassNodesBlurCssPx: Number.isFinite(Number(raw?.glassNodesBlurCssPx))
-              ? Math.max(0, Math.min(30, Number(raw.glassNodesBlurCssPx)))
-              : 10,
-            glassNodesUnderlayAlpha: Number.isFinite(Number(raw?.glassNodesUnderlayAlpha))
-              ? Math.max(0, Math.min(1, Number(raw.glassNodesUnderlayAlpha)))
-              : 0.95,
           };
           chatMeta.set(chatId, meta);
         } catch {
@@ -1051,10 +1118,31 @@ export default function App() {
         }
       }
 
+      const visualRaw = (ws as any)?.visual ?? null;
+      const visualSrc =
+        visualRaw && typeof visualRaw === 'object'
+          ? visualRaw
+          : legacyVisualFromActive && typeof legacyVisualFromActive === 'object'
+            ? legacyVisualFromActive
+            : null;
+      const visual = {
+        glassNodesEnabled: Boolean(visualSrc?.glassNodesEnabled),
+        glassNodesBlurCssPx: Number.isFinite(Number(visualSrc?.glassNodesBlurCssPx))
+          ? Math.max(0, Math.min(30, Number(visualSrc.glassNodesBlurCssPx)))
+          : 10,
+        glassNodesSaturatePct: Number.isFinite(Number(visualSrc?.glassNodesSaturatePct))
+          ? Math.max(100, Math.min(200, Number(visualSrc.glassNodesSaturatePct)))
+          : 140,
+        glassNodesUnderlayAlpha: Number.isFinite(Number(visualSrc?.glassNodesUnderlayAlpha))
+          ? Math.max(0, Math.min(1, Number(visualSrc.glassNodesUnderlayAlpha)))
+          : 0.95,
+      };
+
       const payload = {
         root,
-        activeChatId: typeof ws.activeChatId === 'string' ? ws.activeChatId : chatIds[0],
+        activeChatId: desiredActiveChatId,
         focusedFolderId: typeof ws.focusedFolderId === 'string' ? ws.focusedFolderId : root.id,
+        visual,
         chatStates,
         chatMeta,
       };
@@ -1089,9 +1177,6 @@ export default function App() {
       turns: [],
       llm: { modelId: DEFAULT_MODEL_ID, verbosity: 'medium', webSearchEnabled: false },
       backgroundStorageKey: null,
-      glassNodesEnabled: false,
-      glassNodesBlurCssPx: 10,
-      glassNodesUnderlayAlpha: 0.95,
     });
     switchChat(id);
   };
@@ -1174,9 +1259,6 @@ export default function App() {
           turns: [],
           llm: { modelId: DEFAULT_MODEL_ID, verbosity: 'medium', webSearchEnabled: false },
           backgroundStorageKey: null,
-          glassNodesEnabled: false,
-          glassNodesBlurCssPx: 10,
-          glassNodesUnderlayAlpha: 0.95,
         });
         switchChat(id, { saveCurrent: false });
         return;
@@ -1469,14 +1551,10 @@ export default function App() {
             className={`controls__btn ${glassNodesEnabled ? 'controls__btn--active' : ''}`}
             type="button"
             onClick={() => {
-              const chatId = activeChatIdRef.current;
-              const meta = ensureChatMeta(chatId);
-              const next = !Boolean(meta.glassNodesEnabled);
-              meta.glassNodesEnabled = next;
+              const next = !glassNodesEnabledRef.current;
+              glassNodesEnabledRef.current = next;
               setGlassNodesEnabled(next);
               engineRef.current?.setGlassNodesEnabled(next);
-              engineRef.current?.setGlassNodesBlurCssPx(meta.glassNodesBlurCssPx ?? 10);
-              engineRef.current?.setGlassNodesUnderlayAlpha(meta.glassNodesUnderlayAlpha ?? 0.95);
               schedulePersistSoon();
             }}
           >
@@ -1494,15 +1572,34 @@ export default function App() {
               max={30}
               step={1}
               value={Math.round(glassNodesBlurCssPx)}
-              disabled={!glassNodesEnabled}
               onChange={(e) => {
                 const raw = Number(e.currentTarget.value);
                 const next = Number.isFinite(raw) ? Math.max(0, Math.min(30, raw)) : 0;
-                const chatId = activeChatIdRef.current;
-                const meta = ensureChatMeta(chatId);
-                meta.glassNodesBlurCssPx = next;
+                glassNodesBlurCssPxRef.current = next;
                 setGlassNodesBlurCssPx(next);
                 engineRef.current?.setGlassNodesBlurCssPx(next);
+                schedulePersistSoon();
+              }}
+            />
+          </div>
+          <div className="controls__slider">
+            <div className="controls__sliderLabel">
+              <span>Glass saturation</span>
+              <span>{Math.round(glassNodesSaturatePct)}%</span>
+            </div>
+            <input
+              className="controls__range"
+              type="range"
+              min={100}
+              max={200}
+              step={1}
+              value={Math.round(glassNodesSaturatePct)}
+              onChange={(e) => {
+                const raw = Number(e.currentTarget.value);
+                const next = Number.isFinite(raw) ? Math.max(100, Math.min(200, raw)) : 140;
+                glassNodesSaturatePctRef.current = next;
+                setGlassNodesSaturatePct(next);
+                engineRef.current?.setGlassNodesSaturatePct(next);
                 schedulePersistSoon();
               }}
             />
@@ -1519,14 +1616,11 @@ export default function App() {
               max={100}
               step={1}
               value={Math.round(glassNodesUnderlayAlpha * 100)}
-              disabled={!glassNodesEnabled}
               onChange={(e) => {
                 const raw = Number(e.currentTarget.value);
                 const pct = Number.isFinite(raw) ? Math.max(0, Math.min(100, raw)) : 0;
                 const next = pct / 100;
-                const chatId = activeChatIdRef.current;
-                const meta = ensureChatMeta(chatId);
-                meta.glassNodesUnderlayAlpha = next;
+                glassNodesUnderlayAlphaRef.current = next;
                 setGlassNodesUnderlayAlpha(next);
                 engineRef.current?.setGlassNodesUnderlayAlpha(next);
                 schedulePersistSoon();

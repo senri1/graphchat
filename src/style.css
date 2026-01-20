@@ -1,5 +1,8 @@
 :root {
   color-scheme: dark;
+  --ui-glass-blur: 10px;
+  --ui-glass-saturate: 140%;
+  --ui-glass-bg-alpha: 0.34;
 }
 
 html,
@@ -75,9 +78,10 @@ body {
   display: flex;
   flex-direction: column;
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(0, 0, 0, var(--ui-glass-bg-alpha));
   border: 1px solid rgba(255, 255, 255, 0.12);
-  backdrop-filter: blur(10px);
+  backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
   box-shadow: 0 24px 65px rgba(0, 0, 0, 0.45);
   overflow: hidden;
   color: rgba(255, 255, 255, 0.9);
@@ -103,8 +107,9 @@ body {
   justify-content: center;
   appearance: none;
   border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.06);
-  backdrop-filter: blur(10px);
+  background: rgba(0, 0, 0, var(--ui-glass-bg-alpha));
+  backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
   box-shadow: 0 24px 65px rgba(0, 0, 0, 0.45);
   color: rgba(255, 255, 255, 0.88);
   border-radius: 12px;
@@ -293,14 +298,15 @@ body {
   z-index: 30;
   padding: 8px 10px;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(0, 0, 0, var(--ui-glass-bg-alpha));
   border: 1px solid rgba(255, 255, 255, 0.12);
   color: rgba(255, 255, 255, 0.9);
   font-size: 12px;
   line-height: 1.35;
   user-select: none;
   pointer-events: none;
-  backdrop-filter: blur(10px);
+  backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
 }
 
 .controls {
@@ -313,9 +319,10 @@ body {
   gap: 8px;
   padding: 8px;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(0, 0, 0, var(--ui-glass-bg-alpha));
   border: 1px solid rgba(255, 255, 255, 0.12);
-  backdrop-filter: blur(10px);
+  backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
   pointer-events: auto;
   user-select: none;
   touch-action: auto;
@@ -386,9 +393,10 @@ body {
 
 .composerSurface {
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(0, 0, 0, var(--ui-glass-bg-alpha));
   border: 1px solid rgba(255, 255, 255, 0.12);
-  backdrop-filter: blur(10px);
+  backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
 }
 
 .composer {

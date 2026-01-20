@@ -276,6 +276,7 @@ export class WorldEngine {
 
   private glassNodesEnabled = false;
   private glassBlurCssPx = 10;
+  private glassSaturatePct = 140;
   private glassUnderlayAlpha = 0.95;
 
   private backgroundImage: CanvasImageSource | null = null;
@@ -288,6 +289,7 @@ export class WorldEngine {
     pxW: number;
     pxH: number;
     blurPx: number;
+    saturatePct: number;
     sharp: HTMLCanvasElement;
     blurred: HTMLCanvasElement;
   } | null = null;
@@ -844,6 +846,14 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const next = clamp(Number.isFinite(raw) ? raw : 0, 0, 30);
     if (Math.abs(next - this.glassBlurCssPx) < 0.001) return;
     this.glassBlurCssPx = next;
+    this.requestRender();
+  }
+
+  setGlassNodesSaturatePct(saturatePct: number): void {
+    const raw = Number(saturatePct);
+    const next = clamp(Number.isFinite(raw) ? raw : 100, 100, 200);
+    if (Math.abs(next - this.glassSaturatePct) < 0.001) return;
+    this.glassSaturatePct = next;
     this.requestRender();
   }
 
@@ -3399,9 +3409,15 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const pxH = Math.max(1, this.canvas.height);
     const cur = this.backgroundCache;
     const blurPx = Math.max(0, this.glassBlurCssPx * this.dpr);
+    const saturatePct = Math.max(0, this.glassSaturatePct);
     const needsResize = !cur || cur.pxW !== pxW || cur.pxH !== pxH;
     const needsSharp = !cur || needsResize || cur.version !== this.backgroundVersion;
-    const needsBlur = !cur || needsResize || cur.version !== this.backgroundVersion || Math.abs(cur.blurPx - blurPx) > 0.01;
+    const needsBlur =
+      !cur ||
+      needsResize ||
+      cur.version !== this.backgroundVersion ||
+      Math.abs(cur.blurPx - blurPx) > 0.01 ||
+      Math.abs(cur.saturatePct - saturatePct) > 0.01;
     if (cur && !needsSharp && !needsBlur) return cur;
 
     const sharp = cur?.sharp ?? document.createElement('canvas');
@@ -3436,7 +3452,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       bctx.clearRect(0, 0, pxW, pxH);
       try {
         bctx.save();
-        bctx.filter = blurPx > 0.01 ? `blur(${blurPx.toFixed(2)}px)` : 'none';
+        const filters: string[] = [];
+        if (blurPx > 0.01) filters.push(`blur(${blurPx.toFixed(2)}px)`);
+        if (Math.abs(saturatePct - 100) > 0.01) filters.push(`saturate(${saturatePct.toFixed(0)}%)`);
+        bctx.filter = filters.length ? filters.join(' ') : 'none';
         bctx.drawImage(sharp, 0, 0);
         bctx.restore();
       } catch {
@@ -3444,7 +3463,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       }
     }
 
-    const next = { version: this.backgroundVersion, pxW, pxH, blurPx, sharp, blurred };
+    const next = { version: this.backgroundVersion, pxW, pxH, blurPx, saturatePct, sharp, blurred };
     this.backgroundCache = next;
     return next;
   }
@@ -3585,7 +3604,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const rect = this.rawButtonRect(nodeRect);
 
     ctx.save();
-    ctx.fillStyle = opts?.active ? 'rgba(147,197,253,0.22)' : 'rgba(255,255,255,0.06)';
+    ctx.fillStyle = opts?.active ? 'rgba(147,197,253,0.22)' : 'rgba(0,0,0,0.22)';
     ctx.strokeStyle = opts?.active ? 'rgba(147,197,253,0.5)' : 'rgba(255,255,255,0.14)';
     ctx.lineWidth = 1 / z;
 
@@ -3621,7 +3640,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const rect = this.replyButtonRect(nodeRect);
 
     ctx.save();
-    ctx.fillStyle = opts?.active ? 'rgba(147,197,253,0.28)' : 'rgba(255,255,255,0.06)';
+    ctx.fillStyle = opts?.active ? 'rgba(147,197,253,0.28)' : 'rgba(0,0,0,0.22)';
     ctx.strokeStyle = opts?.active ? 'rgba(147,197,253,0.55)' : 'rgba(255,255,255,0.14)';
     ctx.lineWidth = 1 / z;
 
@@ -3755,7 +3774,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       const r = 18;
 
       const isSelected = node.id === this.selectedNodeId;
-      ctx.fillStyle = isSelected ? 'rgba(255,255,255,0.085)' : 'rgba(255,255,255,0.06)';
+      ctx.fillStyle = isSelected ? 'rgba(0,0,0,0.36)' : 'rgba(0,0,0,0.28)';
       ctx.strokeStyle = isSelected ? 'rgba(147,197,253,0.65)' : 'rgba(255,255,255,0.14)';
       ctx.lineWidth = 1.2 / (this.camera.zoom || 1);
 
