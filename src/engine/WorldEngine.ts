@@ -131,6 +131,7 @@ type PdfNode = DemoNodeBase & {
   kind: 'pdf';
   rect: Rect;
   fileName: string | null;
+  storageKey?: string | null;
   pageCount: number;
   status: 'empty' | 'loading' | 'ready' | 'error';
   error: string | null;
@@ -580,6 +581,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           parentId: n.parentId,
           rect: { ...n.rect },
           fileName: n.fileName,
+          storageKey: (n as any).storageKey ?? null,
           pageCount: n.pageCount,
           status: n.status,
           error: n.error,
@@ -700,6 +702,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           rect: { ...n.rect },
           title: n.title,
           fileName: n.fileName ?? null,
+          storageKey: (n as any)?.storageKey ?? null,
           pageCount: n.pageCount ?? 0,
           status: n.status,
           error: n.error ?? null,
@@ -916,10 +919,11 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.requestRender();
   }
 
-  async importPdfFromFile(file: File): Promise<void> {
+  async importPdfFromFile(file: File, opts?: { storageKey?: string | null }): Promise<void> {
     const f = file;
     if (!f) return;
 
+    const storageKey = opts?.storageKey ?? null;
     const id = `p${Date.now().toString(36)}-${(this.nodeSeq++).toString(36)}`;
     const center = this.camera.screenToWorld({ x: this.cssW * 0.5, y: this.cssH * 0.5 });
     const nodeW = 680;
@@ -931,6 +935,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       rect: { x: center.x - nodeW * 0.5, y: center.y - 120, w: nodeW, h: nodeH },
       title: f.name || 'PDF',
       fileName: f.name || null,
+      storageKey,
       pageCount: 0,
       status: 'loading',
       error: null,
@@ -965,6 +970,51 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
       this.requestRender();
       void this.prefetchPdfMetas(id, token);
+    } catch (err: any) {
+      node.status = 'error';
+      node.error = err ? String(err?.message ?? err) : 'Failed to load PDF';
+      this.requestRender();
+    }
+  }
+
+  async hydratePdfNodeFromArrayBuffer(args: {
+    nodeId: string;
+    buffer: ArrayBuffer;
+    fileName?: string | null;
+    storageKey?: string | null;
+  }): Promise<void> {
+    const node = this.nodes.find((n): n is PdfNode => n.kind === 'pdf' && n.id === args.nodeId);
+    if (!node) return;
+
+    if (args.fileName !== undefined) node.fileName = args.fileName ?? null;
+    if (args.storageKey !== undefined) node.storageKey = args.storageKey ?? null;
+
+    // Reset any existing runtime state first.
+    this.disposePdfNode(node.id);
+    node.pageCount = 0;
+    node.status = 'loading';
+    node.error = null;
+    this.requestRender();
+
+    const token = this.pdfTokenSeq++;
+    try {
+      const doc = await loadPdfDocument(args.buffer);
+      const state: PdfNodeState = {
+        token,
+        doc,
+        pageCount: doc.numPages,
+        metas: new Array(doc.numPages).fill(null),
+        defaultAspect: 1.414,
+      };
+      this.pdfStateByNodeId.set(node.id, state);
+
+      node.pageCount = doc.numPages;
+      node.status = 'ready';
+      node.error = null;
+      node.title = `${node.fileName ?? 'PDF'} (${doc.numPages}p)`;
+
+      this.requestRender();
+      void this.prefetchPdfMetas(node.id, token);
     } catch (err: any) {
       node.status = 'error';
       node.error = err ? String(err?.message ?? err) : 'Failed to load PDF';

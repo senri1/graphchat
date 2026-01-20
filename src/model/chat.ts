@@ -62,6 +62,7 @@ export type ChatNode =
       parentId: string | null;
       rect: Rect;
       fileName: string | null;
+      storageKey?: string | null;
       pageCount: number;
       status: 'empty' | 'loading' | 'ready' | 'error';
       error: string | null;

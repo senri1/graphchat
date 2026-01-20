@@ -21,7 +21,17 @@ import type { ChatAttachment, ChatNode } from './model/chat';
 import { buildOpenAIResponseRequest, type OpenAIChatSettings } from './llm/openai';
 import { DEFAULT_MODEL_ID, listModels, type TextVerbosity } from './llm/registry';
 import { readFileAsDataUrl, splitDataUrl } from './utils/files';
-import { deleteAttachment, putAttachment } from './storage/attachments';
+import { deleteAttachment, getAttachment, putAttachment } from './storage/attachments';
+import {
+  deleteChatMetaRecord,
+  deleteChatStateRecord,
+  getChatMetaRecord,
+  getChatStateRecord,
+  getWorkspaceSnapshot,
+  putChatMetaRecord,
+  putChatStateRecord,
+  putWorkspaceSnapshot,
+} from './storage/persistence';
 
 type ChatTurnMeta = {
   id: string;
@@ -120,12 +130,19 @@ type ContextAttachmentItem = {
 function collectAttachmentStorageKeys(nodes: ChatNode[]): string[] {
   const out = new Set<string>();
   for (const n of nodes) {
-    if (n.kind !== 'text') continue;
-    const atts = Array.isArray((n as any)?.attachments) ? ((n as any).attachments as ChatAttachment[]) : [];
-    for (const att of atts) {
-      if (!att) continue;
-      const storageKey =
-        att.kind === 'image' || att.kind === 'pdf' ? (typeof att.storageKey === 'string' ? att.storageKey : '') : '';
+    if (n.kind === 'text') {
+      const atts = Array.isArray((n as any)?.attachments) ? ((n as any).attachments as ChatAttachment[]) : [];
+      for (const att of atts) {
+        if (!att) continue;
+        const storageKey =
+          att.kind === 'image' || att.kind === 'pdf' ? (typeof att.storageKey === 'string' ? att.storageKey : '') : '';
+        if (storageKey) out.add(storageKey);
+      }
+      continue;
+    }
+
+    if (n.kind === 'pdf') {
+      const storageKey = typeof (n as any)?.storageKey === 'string' ? String((n as any).storageKey) : '';
       if (storageKey) out.add(storageKey);
     }
   }
@@ -162,6 +179,18 @@ export default function App() {
   const engineRef = useRef<WorldEngine | null>(null);
   const generationJobsByAssistantIdRef = useRef<Map<string, GenerationJob>>(new Map());
   const [debug, setDebug] = useState<WorldEngineDebug | null>(null);
+  const [engineReady, setEngineReady] = useState(false);
+  const engineReadyRef = useRef(false);
+  const bootedRef = useRef(false);
+  const bootPayloadRef = useRef<{
+    root: WorkspaceFolder;
+    activeChatId: string;
+    focusedFolderId: string;
+    chatStates: Map<string, WorldEngineChatState>;
+    chatMeta: Map<string, ChatRuntimeMeta>;
+  } | null>(null);
+  const persistTimerRef = useRef<number | null>(null);
+  const hydratingPdfChatsRef = useRef<Set<string>>(new Set());
   const [ui, setUi] = useState(() => ({
     selectedNodeId: null as string | null,
     editingNodeId: null as string | null,
@@ -206,6 +235,8 @@ export default function App() {
   const [treeRoot, setTreeRoot] = useState<WorkspaceFolder>(() => initial.root);
   const [activeChatId, setActiveChatId] = useState<string>(() => initial.chatId);
   const [focusedFolderId, setFocusedFolderId] = useState<string>(() => initial.root.id);
+  const treeRootRef = useRef<WorkspaceFolder>(initial.root);
+  const focusedFolderIdRef = useRef<string>(initial.root.id);
   const chatStatesRef = useRef<Map<string, WorldEngineChatState>>(initial.chatStates);
   const chatMetaRef = useRef<Map<string, ChatRuntimeMeta>>(initial.chatMeta);
   const activeChatIdRef = useRef<string>(activeChatId);
@@ -229,6 +260,121 @@ export default function App() {
   useEffect(() => {
     activeChatIdRef.current = activeChatId;
   }, [activeChatId]);
+
+  useEffect(() => {
+    engineReadyRef.current = engineReady;
+  }, [engineReady]);
+
+  useEffect(() => {
+    treeRootRef.current = treeRoot;
+  }, [treeRoot]);
+
+  useEffect(() => {
+    focusedFolderIdRef.current = focusedFolderId;
+  }, [focusedFolderId]);
+
+  const schedulePersistSoon = useMemo(() => {
+    const persist = () => {
+      if (!bootedRef.current) return;
+      const root = treeRootRef.current;
+      const active = activeChatIdRef.current;
+      const focused = focusedFolderIdRef.current;
+
+      const chatIds = collectChatIds(root);
+      const engine = engineRef.current;
+      if (engine && active) {
+        try {
+          chatStatesRef.current.set(active, engine.exportChatState());
+        } catch {
+          // ignore
+        }
+      }
+
+      void (async () => {
+        try {
+          await putWorkspaceSnapshot({ key: 'workspace', root, activeChatId: active, focusedFolderId: focused });
+        } catch {
+          // ignore
+        }
+
+        for (const chatId of chatIds) {
+          const state = chatStatesRef.current.get(chatId);
+          if (state) {
+            try {
+              await putChatStateRecord(chatId, {
+                camera: state.camera,
+                nodes: state.nodes,
+                worldInkStrokes: state.worldInkStrokes,
+              });
+            } catch {
+              // ignore
+            }
+          }
+          const meta = chatMetaRef.current.get(chatId);
+          if (meta) {
+            try {
+              await putChatMetaRecord(chatId, meta);
+            } catch {
+              // ignore
+            }
+          }
+        }
+      })();
+    };
+
+    return () => {
+      if (!bootedRef.current) return;
+      if (persistTimerRef.current != null) return;
+      persistTimerRef.current = window.setTimeout(() => {
+        persistTimerRef.current = null;
+        persist();
+      }, 350);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!bootedRef.current) return;
+    if (!debug) return;
+    if (debug.interacting) return;
+    schedulePersistSoon();
+  }, [debug?.interacting, schedulePersistSoon]);
+
+  const hydratePdfNodesForChat = (chatId: string, state: WorldEngineChatState) => {
+    const cid = chatId;
+    if (!cid) return;
+    if (hydratingPdfChatsRef.current.has(cid)) return;
+
+    const pdfNodes = (state?.nodes ?? []).filter(
+      (n): n is Extract<ChatNode, { kind: 'pdf' }> =>
+        n.kind === 'pdf' && typeof (n as any)?.storageKey === 'string' && Boolean(String((n as any).storageKey).trim()),
+    );
+    if (pdfNodes.length === 0) return;
+
+    hydratingPdfChatsRef.current.add(cid);
+    void (async () => {
+      try {
+        const engine = engineRef.current;
+        if (!engine) return;
+
+        for (const node of pdfNodes) {
+          const storageKey = String((node as any).storageKey ?? '').trim();
+          if (!storageKey) continue;
+          const rec = await getAttachment(storageKey);
+          if (!rec?.blob) continue;
+          const buf = await rec.blob.arrayBuffer();
+          await engine.hydratePdfNodeFromArrayBuffer({
+            nodeId: node.id,
+            buffer: buf,
+            fileName: node.fileName ?? null,
+            storageKey,
+          });
+        }
+      } finally {
+        hydratingPdfChatsRef.current.delete(cid);
+        schedulePersistSoon();
+      }
+    })();
+  };
 
   const updateStoredTextNode = (chatId: string, nodeId: string, patch: Partial<Extract<ChatNode, { kind: 'text' }>>) => {
     const state = chatStatesRef.current.get(chatId);
@@ -304,6 +450,7 @@ export default function App() {
     }
 
     generationJobsByAssistantIdRef.current.delete(assistantNodeId);
+    schedulePersistSoon();
   };
 
   const cancelJob = (assistantNodeId: string) => {
@@ -462,6 +609,7 @@ export default function App() {
     const initialState = chatStatesRef.current.get(activeChatId) ?? createEmptyChatState();
     chatStatesRef.current.set(activeChatId, initialState);
     engine.loadChatState(initialState);
+    setEngineReady(true);
 
     const resize = () => {
       const rect = container.getBoundingClientRect();
@@ -549,6 +697,9 @@ export default function App() {
       chatStatesRef.current.set(nextChatId, nextState);
       engine.loadChatState(nextState);
       setUi(engine.getUiState());
+      if ((nextState.pdfStates?.length ?? 0) === 0) {
+        hydratePdfNodesForChat(nextChatId, nextState);
+      }
     }
 
     const meta = ensureChatMeta(nextChatId);
@@ -566,7 +717,155 @@ export default function App() {
     setComposerVerbosity((meta.llm.verbosity as TextVerbosity) || 'medium');
     setComposerWebSearch(Boolean(meta.llm.webSearchEnabled));
     setActiveChatId(nextChatId);
+    schedulePersistSoon();
   };
+
+  const applyBootPayload = (payload: NonNullable<typeof bootPayloadRef.current>) => {
+    if (!payload) return;
+    if (bootedRef.current) return;
+
+    const root = payload.root;
+    const chatStates = payload.chatStates;
+    const chatMeta = payload.chatMeta;
+    const desiredActive = payload.activeChatId;
+
+    setTreeRoot(root);
+    setFocusedFolderId(payload.focusedFolderId || root.id);
+    chatStatesRef.current = chatStates;
+    chatMetaRef.current = chatMeta;
+
+    const chatIds = collectChatIds(root);
+    const active = chatIds.includes(desiredActive) ? desiredActive : findFirstChatId(root) ?? desiredActive;
+    const resolvedActive = active || (chatIds[0] ?? activeChatIdRef.current);
+
+    bootedRef.current = true;
+    setActiveChatId(resolvedActive);
+
+    const engine = engineRef.current;
+    if (engine) {
+      engine.cancelEditing();
+      const nextState = chatStatesRef.current.get(resolvedActive) ?? createEmptyChatState();
+      chatStatesRef.current.set(resolvedActive, nextState);
+      engine.loadChatState(nextState);
+      setUi(engine.getUiState());
+      if ((nextState.pdfStates?.length ?? 0) === 0) {
+        hydratePdfNodesForChat(resolvedActive, nextState);
+      }
+    }
+
+    const meta = ensureChatMeta(resolvedActive);
+    setComposerDraft(meta.draft);
+    setComposerDraftAttachments(Array.isArray(meta.draftAttachments) ? meta.draftAttachments : []);
+    setReplySelection(meta.replyTo);
+    setReplySelectedAttachmentKeys(Array.isArray(meta.selectedAttachmentKeys) ? meta.selectedAttachmentKeys : []);
+    if (meta.replyTo?.nodeId) {
+      const nextState = chatStatesRef.current.get(resolvedActive) ?? createEmptyChatState();
+      setReplyContextAttachments(collectContextAttachments(nextState.nodes, meta.replyTo.nodeId));
+    } else {
+      setReplyContextAttachments([]);
+    }
+    setComposerModelId(meta.llm.modelId || DEFAULT_MODEL_ID);
+    setComposerVerbosity((meta.llm.verbosity as TextVerbosity) || 'medium');
+    setComposerWebSearch(Boolean(meta.llm.webSearchEnabled));
+
+    schedulePersistSoon();
+  };
+
+  useEffect(() => {
+    void (async () => {
+      if (bootedRef.current) return;
+      let ws: Awaited<ReturnType<typeof getWorkspaceSnapshot>> = null;
+      try {
+        ws = await getWorkspaceSnapshot();
+      } catch {
+        ws = null;
+      }
+      if (!ws || !ws.root || ws.root.kind !== 'folder') {
+        bootedRef.current = true;
+        schedulePersistSoon();
+        return;
+      }
+
+      const root = ws.root;
+      const chatIds = collectChatIds(root);
+      if (chatIds.length === 0) {
+        bootedRef.current = true;
+        schedulePersistSoon();
+        return;
+      }
+
+      const chatStates = new Map<string, WorldEngineChatState>();
+      const chatMeta = new Map<string, ChatRuntimeMeta>();
+
+      for (const chatId of chatIds) {
+        try {
+          const rec = await getChatStateRecord(chatId);
+          if (rec?.state) {
+            const s = rec.state as any;
+            chatStates.set(chatId, {
+              camera: s.camera ?? { x: 0, y: 0, zoom: 1 },
+              nodes: Array.isArray(s.nodes) ? (s.nodes as ChatNode[]) : [],
+              worldInkStrokes: Array.isArray(s.worldInkStrokes) ? (s.worldInkStrokes as any) : [],
+              pdfStates: [],
+            });
+          } else {
+            chatStates.set(chatId, createEmptyChatState());
+          }
+        } catch {
+          chatStates.set(chatId, createEmptyChatState());
+        }
+
+        try {
+          const metaRec = await getChatMetaRecord(chatId);
+          const raw = (metaRec?.meta ?? null) as any;
+          const llmRaw = raw?.llm ?? null;
+          const meta: ChatRuntimeMeta = {
+            draft: typeof raw?.draft === 'string' ? raw.draft : '',
+            draftAttachments: Array.isArray(raw?.draftAttachments) ? (raw.draftAttachments as ChatAttachment[]) : [],
+            replyTo:
+              raw?.replyTo && typeof raw.replyTo === 'object' && typeof raw.replyTo.nodeId === 'string'
+                ? { nodeId: raw.replyTo.nodeId, preview: String(raw.replyTo.preview ?? '') }
+                : null,
+            selectedAttachmentKeys: Array.isArray(raw?.selectedAttachmentKeys)
+              ? (raw.selectedAttachmentKeys as any[]).filter((k) => typeof k === 'string')
+              : [],
+            headNodeId: typeof raw?.headNodeId === 'string' ? raw.headNodeId : null,
+            turns: Array.isArray(raw?.turns) ? (raw.turns as ChatTurnMeta[]) : [],
+            llm: {
+              modelId: typeof llmRaw?.modelId === 'string' ? llmRaw.modelId : DEFAULT_MODEL_ID,
+              verbosity: typeof llmRaw?.verbosity === 'string' ? llmRaw.verbosity : 'medium',
+              webSearchEnabled: Boolean(llmRaw?.webSearchEnabled),
+            },
+          };
+          chatMeta.set(chatId, meta);
+        } catch {
+          // ignore missing meta
+        }
+      }
+
+      const payload = {
+        root,
+        activeChatId: typeof ws.activeChatId === 'string' ? ws.activeChatId : chatIds[0],
+        focusedFolderId: typeof ws.focusedFolderId === 'string' ? ws.focusedFolderId : root.id,
+        chatStates,
+        chatMeta,
+      };
+
+      bootPayloadRef.current = payload;
+      if (engineReadyRef.current) {
+        applyBootPayload(payload);
+        bootPayloadRef.current = null;
+      }
+    })();
+  }, [schedulePersistSoon]);
+
+  useEffect(() => {
+    if (!engineReady) return;
+    const payload = bootPayloadRef.current;
+    if (!payload) return;
+    applyBootPayload(payload);
+    bootPayloadRef.current = null;
+  }, [engineReady]);
 
   const createChat = (parentFolderId: string) => {
     const id = genId('chat');
@@ -590,6 +889,7 @@ export default function App() {
     const folder: WorkspaceFolder = { kind: 'folder', id, name: 'New folder', expanded: true, children: [] };
     setTreeRoot((prev) => insertItem(prev, parentFolderId || prev.id, folder));
     setFocusedFolderId(id);
+    schedulePersistSoon();
   };
 
   const deleteTreeItem = (itemId: string) => {
@@ -614,7 +914,17 @@ export default function App() {
 
     for (const chatId of removedChatIds) {
       const state = chatStatesRef.current.get(chatId);
-      const keys = state ? collectAttachmentStorageKeys(state.nodes ?? []) : [];
+      const nodeKeys = state ? collectAttachmentStorageKeys(state.nodes ?? []) : [];
+      const meta = chatMetaRef.current.get(chatId);
+      const draftKeys =
+        meta?.draftAttachments
+          ?.map((att) => {
+            if (!att) return '';
+            if (att.kind !== 'image' && att.kind !== 'pdf') return '';
+            return typeof att.storageKey === 'string' ? att.storageKey : '';
+          })
+          .filter(Boolean) ?? [];
+      const keys = Array.from(new Set([...nodeKeys, ...draftKeys]));
       if (keys.length) {
         void (async () => {
           for (const key of keys) {
@@ -628,6 +938,8 @@ export default function App() {
       }
       chatStatesRef.current.delete(chatId);
       chatMetaRef.current.delete(chatId);
+      void deleteChatStateRecord(chatId);
+      void deleteChatMetaRecord(chatId);
     }
 
     let nextActive = activeChatId;
@@ -655,6 +967,7 @@ export default function App() {
 
     setTreeRoot(nextRoot);
     if (nextActive !== activeChatId) switchChat(nextActive, { saveCurrent: false });
+    schedulePersistSoon();
   };
 
   return (
@@ -663,14 +976,26 @@ export default function App() {
         root={treeRoot}
         activeChatId={activeChatId}
         focusedFolderId={focusedFolderId}
-        onFocusFolder={setFocusedFolderId}
-        onToggleFolder={(folderId) => setTreeRoot((prev) => toggleFolder(prev, folderId))}
+        onFocusFolder={(folderId) => {
+          setFocusedFolderId(folderId);
+          schedulePersistSoon();
+        }}
+        onToggleFolder={(folderId) => {
+          setTreeRoot((prev) => toggleFolder(prev, folderId));
+          schedulePersistSoon();
+        }}
         onSelectChat={(chatId) => switchChat(chatId)}
         onCreateChat={(folderId) => createChat(folderId)}
         onCreateFolder={(folderId) => createFolder(folderId)}
-        onRenameItem={(itemId, name) => setTreeRoot((prev) => renameItem(prev, itemId, name))}
+        onRenameItem={(itemId, name) => {
+          setTreeRoot((prev) => renameItem(prev, itemId, name));
+          schedulePersistSoon();
+        }}
         onDeleteItem={(itemId) => deleteTreeItem(itemId)}
-        onMoveItem={(itemId, folderId) => setTreeRoot((prev) => moveItem(prev, itemId, folderId))}
+        onMoveItem={(itemId, folderId) => {
+          setTreeRoot((prev) => moveItem(prev, itemId, folderId));
+          schedulePersistSoon();
+        }}
       />
 
       <div className="workspace" ref={workspaceRef}>
@@ -683,7 +1008,10 @@ export default function App() {
             anchorRect={editorAnchor}
             viewport={viewport}
             zoom={editorZoom}
-            onCommit={(next) => engineRef.current?.commitEditing(next)}
+            onCommit={(next) => {
+              engineRef.current?.commitEditing(next);
+              schedulePersistSoon();
+            }}
             onCancel={() => engineRef.current?.cancelEditing()}
           />
         ) : null}
@@ -809,6 +1137,7 @@ export default function App() {
               assistantNodeId: res.assistantNodeId,
               settings,
             });
+            schedulePersistSoon();
           }}
         />
         <div
@@ -828,7 +1157,24 @@ export default function App() {
               const file = e.currentTarget.files?.[0];
               e.currentTarget.value = '';
               if (!file) return;
-              void engineRef.current?.importPdfFromFile(file);
+              void (async () => {
+                try {
+                  let storageKey: string | null = null;
+                  try {
+                    storageKey = await putAttachment({
+                      blob: file,
+                      mimeType: 'application/pdf',
+                      name: file.name || undefined,
+                      size: Number.isFinite(file.size) ? file.size : undefined,
+                    });
+                  } catch {
+                    storageKey = null;
+                  }
+                  await engineRef.current?.importPdfFromFile(file, { storageKey });
+                } finally {
+                  schedulePersistSoon();
+                }
+              })();
             }}
           />
           <button className="controls__btn" type="button" onClick={() => pdfInputRef.current?.click()}>

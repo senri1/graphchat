@@ -1,3 +1,5 @@
+import { openDb, txDone } from './db';
+
 export type StoredAttachment = {
   key: string;
   mimeType: string;
@@ -7,45 +9,7 @@ export type StoredAttachment = {
   createdAt: number;
 };
 
-const DB_NAME = 'graphchatv1';
-const DB_VERSION = 1;
 const STORE = 'attachments';
-
-let dbPromise: Promise<IDBDatabase> | null = null;
-
-function openDb(): Promise<IDBDatabase> {
-  if (dbPromise) return dbPromise;
-  if (typeof indexedDB === 'undefined') {
-    return Promise.reject(new Error('IndexedDB is not available in this environment.'));
-  }
-
-  dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(STORE)) {
-        const s = db.createObjectStore(STORE, { keyPath: 'key' });
-        try {
-          s.createIndex('createdAt', 'createdAt', { unique: false });
-        } catch {
-          // ignore
-        }
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error ?? new Error('Failed to open IndexedDB.'));
-  });
-
-  return dbPromise;
-}
-
-function txDone(tx: IDBTransaction): Promise<void> {
-  return new Promise((resolve, reject) => {
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error ?? new Error('IndexedDB transaction failed.'));
-    tx.onabort = () => reject(tx.error ?? new Error('IndexedDB transaction aborted.'));
-  });
-}
 
 function genAttachmentKey(prefix = 'att'): string {
   const p = prefix.replace(/[^a-z0-9_-]/gi, '').slice(0, 12) || 'att';
@@ -108,4 +72,3 @@ export async function blobToDataUrl(blob: Blob, mimeType?: string): Promise<stri
     reader.readAsDataURL(normalized);
   });
 }
-
