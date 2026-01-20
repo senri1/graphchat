@@ -33,6 +33,7 @@ import {
   putChatStateRecord,
   putWorkspaceSnapshot,
 } from './storage/persistence';
+import { putPayload } from './storage/payloads';
 
 type ChatTurnMeta = {
   id: string;
@@ -627,7 +628,16 @@ export default function App() {
 
   const finishJob = (
     assistantNodeId: string,
-    result: { finalText: string; error: string | null; cancelled?: boolean; apiResponse?: unknown },
+    result: {
+      finalText: string;
+      error: string | null;
+      cancelled?: boolean;
+      apiResponse?: unknown;
+      apiResponseKey?: string;
+      canonicalMessage?: unknown;
+      canonicalMeta?: unknown;
+      usage?: unknown;
+    },
   ) => {
     const job = generationJobsByAssistantIdRef.current.get(assistantNodeId);
     if (!job) return;
@@ -651,6 +661,9 @@ export default function App() {
       llmError: result.error,
     };
     if (result.apiResponse !== undefined) patch.apiResponse = result.apiResponse;
+    if (result.apiResponseKey !== undefined) patch.apiResponseKey = result.apiResponseKey;
+    if (result.canonicalMessage !== undefined) patch.canonicalMessage = result.canonicalMessage as any;
+    if (result.canonicalMeta !== undefined) patch.canonicalMeta = result.canonicalMeta as any;
     updateStoredTextNode(job.chatId, job.assistantNodeId, patch);
 
     if (activeChatIdRef.current === job.chatId) {
@@ -756,6 +769,13 @@ export default function App() {
       if (activeChatIdRef.current === chatId) {
         engineRef.current?.setTextNodeApiPayload(job.userNodeId, { apiRequest: storedRequest });
       }
+      try {
+        const key = `${chatId}/${job.userNodeId}/req`;
+        await putPayload({ key, json: sentRequest });
+        updateStoredTextNode(chatId, job.userNodeId, { apiRequestKey: key });
+      } catch {
+        // ignore
+      }
       schedulePersistSoon();
 
       const res = await streamOpenAIResponse({
@@ -773,11 +793,27 @@ export default function App() {
 
       if (!generationJobsByAssistantIdRef.current.has(job.assistantNodeId)) return;
       const storedResponse = res.response !== undefined ? cloneRawPayloadForDisplay(res.response) : undefined;
+      let responseKey: string | undefined = undefined;
+      if (res.response !== undefined) {
+        try {
+          const key = `${chatId}/${job.assistantNodeId}/res`;
+          await putPayload({ key, json: res.response });
+          responseKey = key;
+        } catch {
+          // ignore
+        }
+      }
       if (res.ok) {
-        finishJob(job.assistantNodeId, { finalText: res.text, error: null, apiResponse: storedResponse });
+        finishJob(job.assistantNodeId, { finalText: res.text, error: null, apiResponse: storedResponse, apiResponseKey: responseKey });
       } else {
         const error = res.cancelled ? 'Canceled' : res.error;
-        finishJob(job.assistantNodeId, { finalText: res.text ?? job.fullText, error, cancelled: res.cancelled, apiResponse: storedResponse });
+        finishJob(job.assistantNodeId, {
+          finalText: res.text ?? job.fullText,
+          error,
+          cancelled: res.cancelled,
+          apiResponse: storedResponse,
+          apiResponseKey: responseKey,
+        });
       }
     })();
   };

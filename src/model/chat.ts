@@ -7,6 +7,11 @@ export type ChatLlmParams = {
   webSearchEnabled?: boolean;
 };
 
+export type CanonicalAssistantMessage = {
+  role: 'assistant';
+  text: string;
+};
+
 export type ChatAttachment =
   | {
       kind: 'image';
@@ -53,7 +58,11 @@ export type ChatNode =
       llmParams?: ChatLlmParams;
       llmError?: string | null;
       apiRequest?: unknown;
+      apiRequestKey?: string;
       apiResponse?: unknown;
+      apiResponseKey?: string;
+      canonicalMessage?: CanonicalAssistantMessage;
+      canonicalMeta?: unknown;
       attachments?: ChatAttachment[];
       selectedAttachmentKeys?: string[];
     }

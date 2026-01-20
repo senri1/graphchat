@@ -16,6 +16,7 @@
     "markdown-it-footnote": "^4.0.0",
     "markdown-it-sub": "^2.0.0",
     "markdown-it-sup": "^2.0.0",
+    "openai": "^6.15.0",
     "pdfjs-dist": "^4.10.38",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"

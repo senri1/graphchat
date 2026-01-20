@@ -2,6 +2,7 @@ import systemInstructions from './SystemInstructions.md?raw';
 import type { ChatNode } from '../model/chat';
 import { DEFAULT_MODEL_ID, getModelInfo, type TextVerbosity } from './registry';
 import { blobToDataUrl, getAttachment as getStoredAttachment } from '../storage/attachments';
+import { getPayload } from '../storage/payloads';
 
 export type OpenAIChatSettings = {
   modelId: string;
@@ -74,6 +75,7 @@ async function buildOpenAIInputFromChatNodes(nodes: ChatNode[], leafUserNodeId: 
   chain.reverse();
 
   const input: any[] = [];
+
   for (const n of chain) {
     if (n.kind !== 'text') continue;
     const text = typeof n.content === 'string' ? n.content : String((n as any)?.content ?? '');
@@ -94,7 +96,32 @@ async function buildOpenAIInputFromChatNodes(nodes: ChatNode[], leafUserNodeId: 
 
       if (content.length) input.push({ role: 'user', content });
     } else {
-      if (text.trim()) input.push({ role: 'assistant', content: [{ type: 'output_text', text }] });
+      const modelId = typeof (n as any)?.modelId === 'string' ? String((n as any).modelId) : '';
+      const info = modelId ? getModelInfo(modelId) : undefined;
+      const provider = info?.provider ?? 'openai';
+
+      if (provider === 'openai') {
+        let raw: any = null;
+        const responseKey = typeof (n as any)?.apiResponseKey === 'string' ? String((n as any).apiResponseKey).trim() : '';
+        if (responseKey) {
+          try {
+            raw = await getPayload(responseKey);
+          } catch {
+            raw = null;
+          }
+        }
+        if (!raw && (n as any).apiResponse !== undefined) raw = (n as any).apiResponse;
+
+        if (raw && Array.isArray(raw.output)) {
+          input.push(...raw.output);
+          continue;
+        }
+      }
+
+      const canonical = (n as any).canonicalMessage;
+      const canonicalText = canonical && typeof canonical.text === 'string' ? canonical.text : '';
+      const assistantText = canonicalText || text;
+      if (assistantText.trim()) input.push({ role: 'assistant', content: [{ type: 'output_text', text: assistantText }] });
     }
   }
   return input;
@@ -118,7 +145,7 @@ export async function buildOpenAIResponseRequest(args: {
     model: apiModel,
     input,
     instructions: systemInstructions,
-    store: false,
+    store: true,
   };
 
   const verbosity = args.settings.verbosity ?? info?.defaults?.verbosity;
@@ -134,6 +161,10 @@ export async function buildOpenAIResponseRequest(args: {
   if (info?.effort) {
     body.reasoning = { effort: info.effort };
     if (info.reasoningSummary) body.reasoning.summary = 'auto';
+    const existingInclude = Array.isArray(body.include) ? body.include : [];
+    if (!existingInclude.includes('reasoning.encrypted_content')) {
+      body.include = [...existingInclude, 'reasoning.encrypted_content'];
+    }
   }
 
   return body as Record<string, unknown>;
