@@ -54,6 +54,8 @@ type ChatRuntimeMeta = {
   llm: OpenAIChatSettings;
   backgroundStorageKey: string | null;
   glassNodesEnabled: boolean;
+  glassNodesBlurCssPx: number;
+  glassNodesUnderlayAlpha: number;
 };
 
 type GenerationJob = {
@@ -296,6 +298,8 @@ export default function App() {
   const [replySelectedAttachmentKeys, setReplySelectedAttachmentKeys] = useState<string[]>(() => []);
   const [backgroundStorageKey, setBackgroundStorageKey] = useState<string | null>(() => null);
   const [glassNodesEnabled, setGlassNodesEnabled] = useState<boolean>(() => false);
+  const [glassNodesBlurCssPx, setGlassNodesBlurCssPx] = useState<number>(() => 10);
+  const [glassNodesUnderlayAlpha, setGlassNodesUnderlayAlpha] = useState<number>(() => 0.95);
   const backgroundLoadSeqRef = useRef(0);
   const modelOptions = useMemo(() => listModels(), []);
   const [composerModelId, setComposerModelId] = useState<string>(() => DEFAULT_MODEL_ID);
@@ -324,6 +328,8 @@ export default function App() {
       llm: { modelId: DEFAULT_MODEL_ID, verbosity: 'medium', webSearchEnabled: false },
       backgroundStorageKey: null,
       glassNodesEnabled: false,
+      glassNodesBlurCssPx: 10,
+      glassNodesUnderlayAlpha: 0.95,
     });
     return { root, chatId, chatStates, chatMeta };
   }, []);
@@ -350,6 +356,8 @@ export default function App() {
       llm: { modelId: DEFAULT_MODEL_ID, verbosity: 'medium', webSearchEnabled: false },
       backgroundStorageKey: null,
       glassNodesEnabled: false,
+      glassNodesBlurCssPx: 10,
+      glassNodesUnderlayAlpha: 0.95,
     };
     chatMetaRef.current.set(chatId, meta);
     return meta;
@@ -471,6 +479,8 @@ export default function App() {
 
     const meta = ensureChatMeta(chatId);
     engine.setGlassNodesEnabled(Boolean(meta.glassNodesEnabled));
+    engine.setGlassNodesBlurCssPx(meta.glassNodesBlurCssPx ?? 10);
+    engine.setGlassNodesUnderlayAlpha(meta.glassNodesUnderlayAlpha ?? 0.95);
 
     const key = typeof meta.backgroundStorageKey === 'string' ? meta.backgroundStorageKey : null;
     const seq = (backgroundLoadSeqRef.current += 1);
@@ -889,6 +899,8 @@ export default function App() {
     setReplySelectedAttachmentKeys(Array.isArray(meta.selectedAttachmentKeys) ? meta.selectedAttachmentKeys : []);
     setBackgroundStorageKey(typeof meta.backgroundStorageKey === 'string' ? meta.backgroundStorageKey : null);
     setGlassNodesEnabled(Boolean(meta.glassNodesEnabled));
+    setGlassNodesBlurCssPx(Number.isFinite(meta.glassNodesBlurCssPx) ? meta.glassNodesBlurCssPx : 10);
+    setGlassNodesUnderlayAlpha(Number.isFinite(meta.glassNodesUnderlayAlpha) ? meta.glassNodesUnderlayAlpha : 0.95);
     if (meta.replyTo?.nodeId) {
       const nextState = chatStatesRef.current.get(nextChatId) ?? createEmptyChatState();
       setReplyContextAttachments(collectContextAttachments(nextState.nodes, meta.replyTo.nodeId));
@@ -943,6 +955,8 @@ export default function App() {
     setReplySelectedAttachmentKeys(Array.isArray(meta.selectedAttachmentKeys) ? meta.selectedAttachmentKeys : []);
     setBackgroundStorageKey(typeof meta.backgroundStorageKey === 'string' ? meta.backgroundStorageKey : null);
     setGlassNodesEnabled(Boolean(meta.glassNodesEnabled));
+    setGlassNodesBlurCssPx(Number.isFinite(meta.glassNodesBlurCssPx) ? meta.glassNodesBlurCssPx : 10);
+    setGlassNodesUnderlayAlpha(Number.isFinite(meta.glassNodesUnderlayAlpha) ? meta.glassNodesUnderlayAlpha : 0.95);
     if (meta.replyTo?.nodeId) {
       const nextState = chatStatesRef.current.get(resolvedActive) ?? createEmptyChatState();
       setReplyContextAttachments(collectContextAttachments(nextState.nodes, meta.replyTo.nodeId));
@@ -1024,6 +1038,12 @@ export default function App() {
             },
             backgroundStorageKey: typeof raw?.backgroundStorageKey === 'string' ? raw.backgroundStorageKey : null,
             glassNodesEnabled: Boolean(raw?.glassNodesEnabled),
+            glassNodesBlurCssPx: Number.isFinite(Number(raw?.glassNodesBlurCssPx))
+              ? Math.max(0, Math.min(30, Number(raw.glassNodesBlurCssPx)))
+              : 10,
+            glassNodesUnderlayAlpha: Number.isFinite(Number(raw?.glassNodesUnderlayAlpha))
+              ? Math.max(0, Math.min(1, Number(raw.glassNodesUnderlayAlpha)))
+              : 0.95,
           };
           chatMeta.set(chatId, meta);
         } catch {
@@ -1070,6 +1090,8 @@ export default function App() {
       llm: { modelId: DEFAULT_MODEL_ID, verbosity: 'medium', webSearchEnabled: false },
       backgroundStorageKey: null,
       glassNodesEnabled: false,
+      glassNodesBlurCssPx: 10,
+      glassNodesUnderlayAlpha: 0.95,
     });
     switchChat(id);
   };
@@ -1153,6 +1175,8 @@ export default function App() {
           llm: { modelId: DEFAULT_MODEL_ID, verbosity: 'medium', webSearchEnabled: false },
           backgroundStorageKey: null,
           glassNodesEnabled: false,
+          glassNodesBlurCssPx: 10,
+          glassNodesUnderlayAlpha: 0.95,
         });
         switchChat(id, { saveCurrent: false });
         return;
@@ -1451,11 +1475,64 @@ export default function App() {
               meta.glassNodesEnabled = next;
               setGlassNodesEnabled(next);
               engineRef.current?.setGlassNodesEnabled(next);
+              engineRef.current?.setGlassNodesBlurCssPx(meta.glassNodesBlurCssPx ?? 10);
+              engineRef.current?.setGlassNodesUnderlayAlpha(meta.glassNodesUnderlayAlpha ?? 0.95);
               schedulePersistSoon();
             }}
           >
             Glass Nodes
           </button>
+          <div className="controls__slider">
+            <div className="controls__sliderLabel">
+              <span>Glass blur</span>
+              <span>{Math.round(glassNodesBlurCssPx)}px</span>
+            </div>
+            <input
+              className="controls__range"
+              type="range"
+              min={0}
+              max={30}
+              step={1}
+              value={Math.round(glassNodesBlurCssPx)}
+              disabled={!glassNodesEnabled}
+              onChange={(e) => {
+                const raw = Number(e.currentTarget.value);
+                const next = Number.isFinite(raw) ? Math.max(0, Math.min(30, raw)) : 0;
+                const chatId = activeChatIdRef.current;
+                const meta = ensureChatMeta(chatId);
+                meta.glassNodesBlurCssPx = next;
+                setGlassNodesBlurCssPx(next);
+                engineRef.current?.setGlassNodesBlurCssPx(next);
+                schedulePersistSoon();
+              }}
+            />
+          </div>
+          <div className="controls__slider">
+            <div className="controls__sliderLabel">
+              <span>Glass opacity</span>
+              <span>{Math.round(glassNodesUnderlayAlpha * 100)}%</span>
+            </div>
+            <input
+              className="controls__range"
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={Math.round(glassNodesUnderlayAlpha * 100)}
+              disabled={!glassNodesEnabled}
+              onChange={(e) => {
+                const raw = Number(e.currentTarget.value);
+                const pct = Number.isFinite(raw) ? Math.max(0, Math.min(100, raw)) : 0;
+                const next = pct / 100;
+                const chatId = activeChatIdRef.current;
+                const meta = ensureChatMeta(chatId);
+                meta.glassNodesUnderlayAlpha = next;
+                setGlassNodesUnderlayAlpha(next);
+                engineRef.current?.setGlassNodesUnderlayAlpha(next);
+                schedulePersistSoon();
+              }}
+            />
+          </div>
           <button
             className={`controls__btn ${ui.tool === 'select' ? 'controls__btn--active' : ''}`}
             type="button"

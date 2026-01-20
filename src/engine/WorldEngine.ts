@@ -275,16 +275,22 @@ export class WorldEngine {
   private dpr = 1;
 
   private glassNodesEnabled = false;
-  private readonly glassBlurCssPx = 10;
-  private readonly glassUnderlayAlpha = 0.95;
+  private glassBlurCssPx = 10;
+  private glassUnderlayAlpha = 0.95;
 
   private backgroundImage: CanvasImageSource | null = null;
   private backgroundImageW = 0;
   private backgroundImageH = 0;
   private backgroundLoadToken = 0;
   private backgroundVersion = 0;
-  private backgroundCache: { version: number; pxW: number; pxH: number; sharp: HTMLCanvasElement; blurred: HTMLCanvasElement } | null =
-    null;
+  private backgroundCache: {
+    version: number;
+    pxW: number;
+    pxH: number;
+    blurPx: number;
+    sharp: HTMLCanvasElement;
+    blurred: HTMLCanvasElement;
+  } | null = null;
 
   private raf: number | null = null;
   private interacting = false;
@@ -830,6 +836,22 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const next = Boolean(enabled);
     if (this.glassNodesEnabled === next) return;
     this.glassNodesEnabled = next;
+    this.requestRender();
+  }
+
+  setGlassNodesBlurCssPx(blurCssPx: number): void {
+    const raw = Number(blurCssPx);
+    const next = clamp(Number.isFinite(raw) ? raw : 0, 0, 30);
+    if (Math.abs(next - this.glassBlurCssPx) < 0.001) return;
+    this.glassBlurCssPx = next;
+    this.requestRender();
+  }
+
+  setGlassNodesUnderlayAlpha(alpha: number): void {
+    const raw = Number(alpha);
+    const next = clamp(Number.isFinite(raw) ? raw : 0, 0, 1);
+    if (Math.abs(next - this.glassUnderlayAlpha) < 0.001) return;
+    this.glassUnderlayAlpha = next;
     this.requestRender();
   }
 
@@ -3376,44 +3398,53 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const pxW = Math.max(1, this.canvas.width);
     const pxH = Math.max(1, this.canvas.height);
     const cur = this.backgroundCache;
-    if (cur && cur.version === this.backgroundVersion && cur.pxW === pxW && cur.pxH === pxH) return cur;
+    const blurPx = Math.max(0, this.glassBlurCssPx * this.dpr);
+    const needsResize = !cur || cur.pxW !== pxW || cur.pxH !== pxH;
+    const needsSharp = !cur || needsResize || cur.version !== this.backgroundVersion;
+    const needsBlur = !cur || needsResize || cur.version !== this.backgroundVersion || Math.abs(cur.blurPx - blurPx) > 0.01;
+    if (cur && !needsSharp && !needsBlur) return cur;
 
     const sharp = cur?.sharp ?? document.createElement('canvas');
     const blurred = cur?.blurred ?? document.createElement('canvas');
-    sharp.width = pxW;
-    sharp.height = pxH;
-    blurred.width = pxW;
-    blurred.height = pxH;
+    if (needsResize) {
+      sharp.width = pxW;
+      sharp.height = pxH;
+      blurred.width = pxW;
+      blurred.height = pxH;
+    }
 
     const sctx = sharp.getContext('2d');
     const bctx = blurred.getContext('2d');
     if (!sctx || !bctx) return null;
 
-    sctx.clearRect(0, 0, pxW, pxH);
-    try {
-      const scale = Math.max(pxW / w, pxH / h);
-      const dw = w * scale;
-      const dh = h * scale;
-      const dx = (pxW - dw) * 0.5;
-      const dy = (pxH - dh) * 0.5;
-      sctx.imageSmoothingEnabled = true;
-      sctx.drawImage(this.backgroundImage, dx, dy, dw, dh);
-    } catch {
-      // ignore; leave blank
+    if (needsSharp) {
+      sctx.clearRect(0, 0, pxW, pxH);
+      try {
+        const scale = Math.max(pxW / w, pxH / h);
+        const dw = w * scale;
+        const dh = h * scale;
+        const dx = (pxW - dw) * 0.5;
+        const dy = (pxH - dh) * 0.5;
+        sctx.imageSmoothingEnabled = true;
+        sctx.drawImage(this.backgroundImage, dx, dy, dw, dh);
+      } catch {
+        // ignore; leave blank
+      }
     }
 
-    bctx.clearRect(0, 0, pxW, pxH);
-    try {
-      const blurPx = Math.max(0.001, this.glassBlurCssPx * this.dpr);
-      bctx.save();
-      bctx.filter = `blur(${blurPx}px)`;
-      bctx.drawImage(sharp, 0, 0);
-      bctx.restore();
-    } catch {
-      // ignore; leave blank
+    if (needsBlur) {
+      bctx.clearRect(0, 0, pxW, pxH);
+      try {
+        bctx.save();
+        bctx.filter = blurPx > 0.01 ? `blur(${blurPx.toFixed(2)}px)` : 'none';
+        bctx.drawImage(sharp, 0, 0);
+        bctx.restore();
+      } catch {
+        // ignore; leave blank
+      }
     }
 
-    const next = { version: this.backgroundVersion, pxW, pxH, sharp, blurred };
+    const next = { version: this.backgroundVersion, pxW, pxH, blurPx, sharp, blurred };
     this.backgroundCache = next;
     return next;
   }

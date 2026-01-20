@@ -345,6 +345,30 @@ body {
   background: rgba(255, 255, 255, 0.08);
 }
 
+.controls__slider {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.25);
+  min-width: 170px;
+}
+
+.controls__sliderLabel {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.controls__range {
+  width: 100%;
+}
+
 .composerDock {
   position: absolute;
   left: 50%;
