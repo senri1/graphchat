@@ -4,6 +4,8 @@ import ChatComposer from './components/ChatComposer';
 import RawPayloadViewer from './components/RawPayloadViewer';
 import TextNodeEditor from './components/TextNodeEditor';
 import WorkspaceSidebar from './components/WorkspaceSidebar';
+import { Icons } from './components/Icons';
+import SettingsModal from './components/SettingsModal';
 import { createEmptyChatState, type WorldEngineChatState } from './engine/WorldEngine';
 import {
   type WorkspaceChat,
@@ -23,6 +25,7 @@ import { buildOpenAIResponseRequest, type OpenAIChatSettings } from './llm/opena
 import { DEFAULT_MODEL_ID, listModels, type TextVerbosity } from './llm/registry';
 import { readFileAsDataUrl, splitDataUrl } from './utils/files';
 import { deleteAttachment, deleteAttachments, getAttachment, listAttachmentKeys, putAttachment } from './storage/attachments';
+import { clearAllStores } from './storage/db';
 import {
   deleteChatMetaRecord,
   deleteChatStateRecord,
@@ -300,6 +303,10 @@ export default function App() {
   const [replySelection, setReplySelection] = useState<ReplySelection | null>(null);
   const [replyContextAttachments, setReplyContextAttachments] = useState<ContextAttachmentItem[]>(() => []);
   const [replySelectedAttachmentKeys, setReplySelectedAttachmentKeys] = useState<string[]>(() => []);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsPanel, setSettingsPanel] = useState<'appearance' | 'debug' | 'reset'>('appearance');
+  const [debugHudVisible, setDebugHudVisible] = useState(true);
+  const [stressSpawnCount, setStressSpawnCount] = useState<number>(50);
   const [backgroundStorageKey, setBackgroundStorageKey] = useState<string | null>(() => null);
   const [glassNodesEnabled, setGlassNodesEnabled] = useState<boolean>(() => false);
   const [glassNodesBlurCssPx, setGlassNodesBlurCssPx] = useState<number>(() => 10);
@@ -1488,223 +1495,292 @@ export default function App() {
             schedulePersistSoon();
           }}
         />
+        <input
+          ref={pdfInputRef}
+          className="controls__fileInput"
+          type="file"
+          accept="application/pdf"
+          onChange={(e) => {
+            const file = e.currentTarget.files?.[0];
+            e.currentTarget.value = '';
+            if (!file) return;
+            void (async () => {
+              try {
+                let storageKey: string | null = null;
+                try {
+                  storageKey = await putAttachment({
+                    blob: file,
+                    mimeType: 'application/pdf',
+                    name: file.name || undefined,
+                    size: Number.isFinite(file.size) ? file.size : undefined,
+                  });
+                } catch {
+                  storageKey = null;
+                }
+                await engineRef.current?.importPdfFromFile(file, { storageKey });
+              } finally {
+                schedulePersistSoon();
+              }
+            })();
+          }}
+        />
+        <input
+          ref={backgroundInputRef}
+          className="controls__fileInput"
+          type="file"
+          accept="image/*"
+          onChange={(e) => {
+            const file = e.currentTarget.files?.[0];
+            e.currentTarget.value = '';
+            if (!file) return;
+            const chatId = activeChatIdRef.current;
+            void (async () => {
+              try {
+                let storageKey: string | null = null;
+                try {
+                  storageKey = await putAttachment({
+                    blob: file,
+                    mimeType: file.type || 'image/png',
+                    name: file.name || undefined,
+                    size: Number.isFinite(file.size) ? file.size : undefined,
+                  });
+                } catch {
+                  storageKey = null;
+                }
+
+                const meta = ensureChatMeta(chatId);
+                meta.backgroundStorageKey = storageKey;
+                if (activeChatIdRef.current === chatId) setBackgroundStorageKey(storageKey);
+                attachmentsGcDirtyRef.current = true;
+
+                await engineRef.current?.setBackgroundFromBlob(file);
+              } finally {
+                schedulePersistSoon();
+              }
+            })();
+          }}
+        />
         <div
-          className="controls"
+          className="toolStrip"
           onPointerDown={(e) => e.stopPropagation()}
           onPointerMove={(e) => e.stopPropagation()}
           onPointerUp={(e) => e.stopPropagation()}
           onWheel={(e) => e.stopPropagation()}
         >
-          <div className="controls__title">{findItem(treeRoot, activeChatId)?.name ?? 'Chat'}</div>
-          <input
-            ref={pdfInputRef}
-            className="controls__fileInput"
-            type="file"
-            accept="application/pdf"
-            onChange={(e) => {
-              const file = e.currentTarget.files?.[0];
-              e.currentTarget.value = '';
-              if (!file) return;
-              void (async () => {
-                try {
-                  let storageKey: string | null = null;
-                  try {
-                    storageKey = await putAttachment({
-                      blob: file,
-                      mimeType: 'application/pdf',
-                      name: file.name || undefined,
-                      size: Number.isFinite(file.size) ? file.size : undefined,
-                    });
-                  } catch {
-                    storageKey = null;
-                  }
-                  await engineRef.current?.importPdfFromFile(file, { storageKey });
-                } finally {
-                  schedulePersistSoon();
-                }
-              })();
-            }}
-          />
-          <button className="controls__btn" type="button" onClick={() => pdfInputRef.current?.click()}>
-            Import PDF
-          </button>
-          <input
-            ref={backgroundInputRef}
-            className="controls__fileInput"
-            type="file"
-            accept="image/*"
-            onChange={(e) => {
-              const file = e.currentTarget.files?.[0];
-              e.currentTarget.value = '';
-              if (!file) return;
-              const chatId = activeChatIdRef.current;
-              void (async () => {
-                try {
-                  let storageKey: string | null = null;
-                  try {
-                    storageKey = await putAttachment({
-                      blob: file,
-                      mimeType: file.type || 'image/png',
-                      name: file.name || undefined,
-                      size: Number.isFinite(file.size) ? file.size : undefined,
-                    });
-                  } catch {
-                    storageKey = null;
-                  }
-
-                  const meta = ensureChatMeta(chatId);
-                  meta.backgroundStorageKey = storageKey;
-                  if (activeChatIdRef.current === chatId) setBackgroundStorageKey(storageKey);
-                  attachmentsGcDirtyRef.current = true;
-
-                  await engineRef.current?.setBackgroundFromBlob(file);
-                } finally {
-                  schedulePersistSoon();
-                }
-              })();
-            }}
-          />
-          <button className="controls__btn" type="button" onClick={() => backgroundInputRef.current?.click()}>
-            Import Background
-          </button>
           <button
-            className="controls__btn"
+            className="toolStrip__btn"
             type="button"
-            disabled={!backgroundStorageKey}
+            title="Settings"
+            aria-label="Settings"
+            aria-expanded={settingsOpen}
             onClick={() => {
-              const chatId = activeChatIdRef.current;
-              const meta = ensureChatMeta(chatId);
-              meta.backgroundStorageKey = null;
-              setBackgroundStorageKey(null);
-              attachmentsGcDirtyRef.current = true;
-              engineRef.current?.clearBackground();
-              schedulePersistSoon();
+              setSettingsPanel('appearance');
+              setSettingsOpen(true);
             }}
           >
-            Clear Background
+            <Icons.gear className="toolStrip__icon" />
           </button>
           <button
-            className={`controls__btn ${glassNodesEnabled ? 'controls__btn--active' : ''}`}
+            className={`toolStrip__btn ${ui.tool === 'draw' ? 'toolStrip__btn--active' : ''}`}
             type="button"
-            onClick={() => {
-              const next = !glassNodesEnabledRef.current;
-              glassNodesEnabledRef.current = next;
-              setGlassNodesEnabled(next);
-              engineRef.current?.setGlassNodesEnabled(next);
-              schedulePersistSoon();
-            }}
+            title={ui.tool === 'draw' ? 'Draw mode (click for select)' : 'Select mode (click for draw)'}
+            aria-label="Toggle draw mode"
+            aria-pressed={ui.tool === 'draw'}
+            onClick={() => engineRef.current?.setTool(ui.tool === 'draw' ? 'select' : 'draw')}
           >
-            Glass Nodes
-          </button>
-          <div className="controls__slider">
-            <div className="controls__sliderLabel">
-              <span>Glass blur</span>
-              <span>{Math.round(glassNodesBlurCssPx)}px</span>
-            </div>
-            <input
-              className="controls__range"
-              type="range"
-              min={0}
-              max={30}
-              step={1}
-              value={Math.round(glassNodesBlurCssPx)}
-              onChange={(e) => {
-                const raw = Number(e.currentTarget.value);
-                const next = Number.isFinite(raw) ? Math.max(0, Math.min(30, raw)) : 0;
-                glassNodesBlurCssPxRef.current = next;
-                setGlassNodesBlurCssPx(next);
-                engineRef.current?.setGlassNodesBlurCssPx(next);
-                schedulePersistSoon();
-              }}
-            />
-          </div>
-          <div className="controls__slider">
-            <div className="controls__sliderLabel">
-              <span>Glass saturation</span>
-              <span>{Math.round(glassNodesSaturatePct)}%</span>
-            </div>
-            <input
-              className="controls__range"
-              type="range"
-              min={100}
-              max={200}
-              step={1}
-              value={Math.round(glassNodesSaturatePct)}
-              onChange={(e) => {
-                const raw = Number(e.currentTarget.value);
-                const next = Number.isFinite(raw) ? Math.max(100, Math.min(200, raw)) : 140;
-                glassNodesSaturatePctRef.current = next;
-                setGlassNodesSaturatePct(next);
-                engineRef.current?.setGlassNodesSaturatePct(next);
-                schedulePersistSoon();
-              }}
-            />
-          </div>
-          <div className="controls__slider">
-            <div className="controls__sliderLabel">
-              <span>Glass opacity</span>
-              <span>{Math.round(glassNodesUnderlayAlpha * 100)}%</span>
-            </div>
-            <input
-              className="controls__range"
-              type="range"
-              min={0}
-              max={100}
-              step={1}
-              value={Math.round(glassNodesUnderlayAlpha * 100)}
-              onChange={(e) => {
-                const raw = Number(e.currentTarget.value);
-                const pct = Number.isFinite(raw) ? Math.max(0, Math.min(100, raw)) : 0;
-                const next = pct / 100;
-                glassNodesUnderlayAlphaRef.current = next;
-                setGlassNodesUnderlayAlpha(next);
-                engineRef.current?.setGlassNodesUnderlayAlpha(next);
-                schedulePersistSoon();
-              }}
-            />
-          </div>
-          <button
-            className={`controls__btn ${ui.tool === 'select' ? 'controls__btn--active' : ''}`}
-            type="button"
-            onClick={() => engineRef.current?.setTool('select')}
-          >
-            Select
+            <Icons.pen className="toolStrip__icon" />
           </button>
           <button
-            className={`controls__btn ${ui.tool === 'draw' ? 'controls__btn--active' : ''}`}
+            className="toolStrip__btn"
             type="button"
-            onClick={() => engineRef.current?.setTool('draw')}
+            title="New ink node"
+            aria-label="New ink node"
+            onClick={() => engineRef.current?.spawnInkNode()}
           >
-            Draw
-          </button>
-          <button className="controls__btn" type="button" onClick={() => engineRef.current?.spawnInkNode()}>
-            New Ink Node
-          </button>
-          <button className="controls__btn" type="button" onClick={() => engineRef.current?.spawnLatexStressTest(50)}>
-            +50 nodes
-          </button>
-          <button
-            className="controls__btn"
-            type="button"
-            onClick={() => {
-              engineRef.current?.clearStressNodes();
-              attachmentsGcDirtyRef.current = true;
-              schedulePersistSoon();
-            }}
-          >
-            Clear
+            <Icons.inkBox className="toolStrip__icon" />
           </button>
         </div>
-        <div className="hud">
-          <div style={{ fontWeight: 650, marginBottom: 2 }}>GraphChatV1</div>
-          <div style={{ opacity: 0.9 }}>
-            {debug
-              ? `zoom ${debug.zoom.toFixed(2)} • cam ${debug.cameraX.toFixed(1)}, ${debug.cameraY.toFixed(1)} • ${
-                  debug.interacting ? 'interacting' : 'idle'
-                }`
-              : 'starting…'}
+        <SettingsModal
+          open={settingsOpen}
+          activePanel={settingsPanel}
+          onChangePanel={setSettingsPanel}
+          onClose={() => setSettingsOpen(false)}
+          backgroundEnabled={Boolean(backgroundStorageKey)}
+          onImportBackground={() => backgroundInputRef.current?.click()}
+          onClearBackground={() => {
+            const chatId = activeChatIdRef.current;
+            const meta = ensureChatMeta(chatId);
+            meta.backgroundStorageKey = null;
+            setBackgroundStorageKey(null);
+            attachmentsGcDirtyRef.current = true;
+            engineRef.current?.clearBackground();
+            schedulePersistSoon();
+          }}
+          onImportPdf={() => pdfInputRef.current?.click()}
+          glassNodesEnabled={glassNodesEnabled}
+          onToggleGlassNodes={() => {
+            const next = !glassNodesEnabledRef.current;
+            glassNodesEnabledRef.current = next;
+            setGlassNodesEnabled(next);
+            engineRef.current?.setGlassNodesEnabled(next);
+            schedulePersistSoon();
+          }}
+          glassBlurPx={glassNodesBlurCssPx}
+          onChangeGlassBlurPx={(raw) => {
+            const next = Number.isFinite(raw) ? Math.max(0, Math.min(30, raw)) : 0;
+            glassNodesBlurCssPxRef.current = next;
+            setGlassNodesBlurCssPx(next);
+            engineRef.current?.setGlassNodesBlurCssPx(next);
+            schedulePersistSoon();
+          }}
+          glassSaturationPct={glassNodesSaturatePct}
+          onChangeGlassSaturationPct={(raw) => {
+            const next = Number.isFinite(raw) ? Math.max(100, Math.min(200, raw)) : 140;
+            glassNodesSaturatePctRef.current = next;
+            setGlassNodesSaturatePct(next);
+            engineRef.current?.setGlassNodesSaturatePct(next);
+            schedulePersistSoon();
+          }}
+          glassOpacityPct={glassNodesUnderlayAlpha * 100}
+          onChangeGlassOpacityPct={(raw) => {
+            const pct = Number.isFinite(raw) ? Math.max(0, Math.min(100, raw)) : 0;
+            const next = pct / 100;
+            glassNodesUnderlayAlphaRef.current = next;
+            setGlassNodesUnderlayAlpha(next);
+            engineRef.current?.setGlassNodesUnderlayAlpha(next);
+            schedulePersistSoon();
+          }}
+          debugHudVisible={debugHudVisible}
+          onToggleDebugHudVisible={() => setDebugHudVisible((prev) => !prev)}
+          spawnCount={stressSpawnCount}
+          onChangeSpawnCount={(raw) => {
+            const next = Number.isFinite(raw) ? Math.max(1, Math.min(500, Math.round(raw))) : 50;
+            setStressSpawnCount(next);
+          }}
+          onSpawnNodes={() => engineRef.current?.spawnLatexStressTest(Math.max(1, Math.min(500, stressSpawnCount)))}
+          onClearStressNodes={() => {
+            engineRef.current?.clearStressNodes();
+            attachmentsGcDirtyRef.current = true;
+            schedulePersistSoon();
+          }}
+          onResetToDefaults={() => {
+            if (
+              !window.confirm(
+                'Reset to defaults?\n\nThis will remove the background and delete all chats (including stored attachments and payload logs).',
+              )
+            ) {
+              return;
+            }
+
+            setSettingsOpen(false);
+            setRawViewer(null);
+
+            for (const assistantNodeId of Array.from(generationJobsByAssistantIdRef.current.keys())) {
+              cancelJob(assistantNodeId);
+            }
+
+            const chatId = genId('chat');
+            const root: WorkspaceFolder = {
+              kind: 'folder',
+              id: 'root',
+              name: 'Workspace',
+              expanded: true,
+              children: [{ kind: 'chat', id: chatId, name: 'Chat 1' }],
+            };
+
+            const chatStates = new Map<string, WorldEngineChatState>();
+            const state = createEmptyChatState();
+            chatStates.set(chatId, state);
+
+            const chatMeta = new Map<string, ChatRuntimeMeta>();
+            chatMeta.set(chatId, {
+              draft: '',
+              draftAttachments: [],
+              replyTo: null,
+              selectedAttachmentKeys: [],
+              headNodeId: null,
+              turns: [],
+              llm: { modelId: DEFAULT_MODEL_ID, verbosity: 'medium', webSearchEnabled: false },
+              backgroundStorageKey: null,
+            });
+
+            chatStatesRef.current = chatStates;
+            chatMetaRef.current = chatMeta;
+            treeRootRef.current = root;
+            focusedFolderIdRef.current = root.id;
+            activeChatIdRef.current = chatId;
+
+            setTreeRoot(root);
+            setFocusedFolderId(root.id);
+            setActiveChatId(chatId);
+            setComposerDraft('');
+            setComposerDraftAttachments([]);
+            setReplySelection(null);
+            setReplyContextAttachments([]);
+            setReplySelectedAttachmentKeys([]);
+            setBackgroundStorageKey(null);
+            setComposerModelId(DEFAULT_MODEL_ID);
+            setComposerVerbosity('medium');
+            setComposerWebSearch(false);
+            setDebugHudVisible(true);
+
+            glassNodesEnabledRef.current = false;
+            glassNodesBlurCssPxRef.current = 10;
+            glassNodesSaturatePctRef.current = 140;
+            glassNodesUnderlayAlphaRef.current = 0.95;
+            setGlassNodesEnabled(false);
+            setGlassNodesBlurCssPx(10);
+            setGlassNodesSaturatePct(140);
+            setGlassNodesUnderlayAlpha(0.95);
+
+            const engine = engineRef.current;
+            if (engine) {
+              try {
+                engine.cancelEditing();
+              } catch {
+                // ignore
+              }
+              try {
+                engine.clearSelection();
+              } catch {
+                // ignore
+              }
+              engine.setTool('select');
+              engine.loadChatState(state);
+              engine.clearBackground();
+              engine.setGlassNodesEnabled(false);
+              engine.setGlassNodesBlurCssPx(10);
+              engine.setGlassNodesSaturatePct(140);
+              engine.setGlassNodesUnderlayAlpha(0.95);
+              setUi(engine.getUiState());
+            }
+
+            backgroundLoadSeqRef.current += 1;
+            attachmentsGcDirtyRef.current = false;
+
+            void (async () => {
+              try {
+                await clearAllStores();
+              } catch {
+                // ignore
+              } finally {
+                schedulePersistSoon();
+              }
+            })();
+          }}
+        />
+        {debugHudVisible ? (
+          <div className="hud">
+            <div style={{ fontWeight: 650, marginBottom: 2 }}>GraphChatV1</div>
+            <div style={{ opacity: 0.9 }}>
+              {debug
+                ? `zoom ${debug.zoom.toFixed(2)} • cam ${debug.cameraX.toFixed(1)}, ${debug.cameraY.toFixed(1)} • ${
+                    debug.interacting ? 'interacting' : 'idle'
+                  }`
+                : 'starting…'}
+            </div>
           </div>
-        </div>
+        ) : null}
       </div>
     </div>
   );

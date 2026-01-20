@@ -58,3 +58,18 @@ export function txDone(tx: IDBTransaction): Promise<void> {
     tx.onabort = () => reject(tx.error ?? new Error('IndexedDB transaction aborted.'));
   });
 }
+
+export async function clearAllStores(): Promise<void> {
+  const db = await openDb();
+  const storeNames = Array.from(db.objectStoreNames);
+  if (storeNames.length === 0) return;
+  const tx = db.transaction(storeNames, 'readwrite');
+  for (const name of storeNames) {
+    try {
+      tx.objectStore(name).clear();
+    } catch {
+      // ignore
+    }
+  }
+  await txDone(tx);
+}
