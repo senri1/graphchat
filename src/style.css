@@ -736,7 +736,56 @@ body {
   display: flex;
   flex-direction: column;
   align-items: stretch;
+  position: relative;
   overflow: hidden;
+}
+
+.composer__resizeHandle {
+  position: absolute;
+  background: transparent;
+  z-index: 50;
+  user-select: none;
+  touch-action: none;
+}
+
+.composer__resizeHandle--left {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.composer__resizeHandle--right {
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.composer__resizeHandle--top {
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 14px;
+  cursor: ns-resize;
+}
+
+.composer__resizeHandle--topLeft {
+  top: 0;
+  left: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+}
+
+.composer__resizeHandle--topRight {
+  top: 0;
+  right: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nesw-resize;
 }
 
 .composer__replyBanner {
