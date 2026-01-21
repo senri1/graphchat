@@ -23,6 +23,10 @@ type Props = {
   onChangeGlassBlurPx: (next: number) => void;
   glassSaturationPct: number;
   onChangeGlassSaturationPct: (next: number) => void;
+  uiGlassBlurPxWebgl: number;
+  onChangeUiGlassBlurPxWebgl: (next: number) => void;
+  uiGlassSaturationPctWebgl: number;
+  onChangeUiGlassSaturationPctWebgl: (next: number) => void;
   glassOpacityPct: number;
   onChangeGlassOpacityPct: (next: number) => void;
 
@@ -213,6 +217,42 @@ export default function SettingsModal(props: Props) {
                       onChange={(e) => props.onChangeGlassSaturationPct(Number(e.currentTarget.value))}
                     />
                   </div>
+
+                  {props.glassBlurBackend === 'webgl' ? (
+                    <>
+                      <div className="settingsSlider">
+                        <div className="settingsSlider__labelRow">
+                          <span>UI glass blur</span>
+                          <span>{Math.round(props.uiGlassBlurPxWebgl)}px</span>
+                        </div>
+                        <input
+                          className="settingsSlider__range"
+                          type="range"
+                          min={0}
+                          max={30}
+                          step={1}
+                          value={Math.round(props.uiGlassBlurPxWebgl)}
+                          onChange={(e) => props.onChangeUiGlassBlurPxWebgl(Number(e.currentTarget.value))}
+                        />
+                      </div>
+
+                      <div className="settingsSlider">
+                        <div className="settingsSlider__labelRow">
+                          <span>UI glass saturation</span>
+                          <span>{Math.round(props.uiGlassSaturationPctWebgl)}%</span>
+                        </div>
+                        <input
+                          className="settingsSlider__range"
+                          type="range"
+                          min={100}
+                          max={200}
+                          step={1}
+                          value={Math.round(props.uiGlassSaturationPctWebgl)}
+                          onChange={(e) => props.onChangeUiGlassSaturationPctWebgl(Number(e.currentTarget.value))}
+                        />
+                      </div>
+                    </>
+                  ) : null}
 
                   <div className={`settingsSlider ${props.glassNodesEnabled ? '' : 'settingsSlider--disabled'}`}>
                     <div className="settingsSlider__labelRow">

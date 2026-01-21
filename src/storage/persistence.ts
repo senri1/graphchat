@@ -10,9 +10,15 @@ export type PersistedWorkspaceSnapshot = {
   focusedFolderId: string;
   visual?: {
     glassNodesEnabled: boolean;
-    glassNodesBlurCssPx: number;
-    glassNodesSaturatePct: number;
     glassNodesUnderlayAlpha: number;
+    glassNodesBlurCssPx?: number;
+    glassNodesSaturatePct?: number;
+    glassNodesBlurCssPxWebgl?: number;
+    glassNodesSaturatePctWebgl?: number;
+    glassNodesBlurCssPxCanvas?: number;
+    glassNodesSaturatePctCanvas?: number;
+    uiGlassBlurCssPxWebgl?: number;
+    uiGlassSaturatePctWebgl?: number;
     glassNodesBlurBackend?: 'webgl' | 'canvas';
   };
   updatedAt: number;

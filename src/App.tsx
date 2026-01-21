@@ -278,8 +278,12 @@ export default function App() {
     focusedFolderId: string;
     visual: {
       glassNodesEnabled: boolean;
-      glassNodesBlurCssPx: number;
-      glassNodesSaturatePct: number;
+      glassNodesBlurCssPxWebgl: number;
+      glassNodesSaturatePctWebgl: number;
+      glassNodesBlurCssPxCanvas: number;
+      glassNodesSaturatePctCanvas: number;
+      uiGlassBlurCssPxWebgl: number;
+      uiGlassSaturatePctWebgl: number;
       glassNodesUnderlayAlpha: number;
       glassNodesBlurBackend: GlassBlurBackend;
     };
@@ -310,15 +314,23 @@ export default function App() {
   const [stressSpawnCount, setStressSpawnCount] = useState<number>(50);
   const [backgroundStorageKey, setBackgroundStorageKey] = useState<string | null>(() => null);
   const [glassNodesEnabled, setGlassNodesEnabled] = useState<boolean>(() => false);
-  const [glassNodesBlurCssPx, setGlassNodesBlurCssPx] = useState<number>(() => 10);
-  const [glassNodesSaturatePct, setGlassNodesSaturatePct] = useState<number>(() => 140);
+  const [glassNodesBlurCssPxWebgl, setGlassNodesBlurCssPxWebgl] = useState<number>(() => 10);
+  const [glassNodesSaturatePctWebgl, setGlassNodesSaturatePctWebgl] = useState<number>(() => 140);
+  const [glassNodesBlurCssPxCanvas, setGlassNodesBlurCssPxCanvas] = useState<number>(() => 10);
+  const [glassNodesSaturatePctCanvas, setGlassNodesSaturatePctCanvas] = useState<number>(() => 140);
   const [glassNodesUnderlayAlpha, setGlassNodesUnderlayAlpha] = useState<number>(() => 0.95);
   const [glassNodesBlurBackend, setGlassNodesBlurBackend] = useState<GlassBlurBackend>(() => 'webgl');
+  const [uiGlassBlurCssPxWebgl, setUiGlassBlurCssPxWebgl] = useState<number>(() => 10);
+  const [uiGlassSaturatePctWebgl, setUiGlassSaturatePctWebgl] = useState<number>(() => 140);
   const glassNodesEnabledRef = useRef<boolean>(glassNodesEnabled);
-  const glassNodesBlurCssPxRef = useRef<number>(glassNodesBlurCssPx);
-  const glassNodesSaturatePctRef = useRef<number>(glassNodesSaturatePct);
+  const glassNodesBlurCssPxWebglRef = useRef<number>(glassNodesBlurCssPxWebgl);
+  const glassNodesSaturatePctWebglRef = useRef<number>(glassNodesSaturatePctWebgl);
+  const glassNodesBlurCssPxCanvasRef = useRef<number>(glassNodesBlurCssPxCanvas);
+  const glassNodesSaturatePctCanvasRef = useRef<number>(glassNodesSaturatePctCanvas);
   const glassNodesUnderlayAlphaRef = useRef<number>(glassNodesUnderlayAlpha);
   const glassNodesBlurBackendRef = useRef<GlassBlurBackend>(glassNodesBlurBackend);
+  const uiGlassBlurCssPxWebglRef = useRef<number>(uiGlassBlurCssPxWebgl);
+  const uiGlassSaturatePctWebglRef = useRef<number>(uiGlassSaturatePctWebgl);
   const backgroundLoadSeqRef = useRef(0);
   const modelOptions = useMemo(() => listModels(), []);
   const [composerModelId, setComposerModelId] = useState<string>(() => DEFAULT_MODEL_ID);
@@ -382,22 +394,41 @@ export default function App() {
 
   useEffect(() => {
     glassNodesEnabledRef.current = glassNodesEnabled;
-    glassNodesBlurCssPxRef.current = glassNodesBlurCssPx;
-    glassNodesSaturatePctRef.current = glassNodesSaturatePct;
+    glassNodesBlurCssPxWebglRef.current = glassNodesBlurCssPxWebgl;
+    glassNodesSaturatePctWebglRef.current = glassNodesSaturatePctWebgl;
+    glassNodesBlurCssPxCanvasRef.current = glassNodesBlurCssPxCanvas;
+    glassNodesSaturatePctCanvasRef.current = glassNodesSaturatePctCanvas;
     glassNodesUnderlayAlphaRef.current = glassNodesUnderlayAlpha;
     glassNodesBlurBackendRef.current = glassNodesBlurBackend;
+    uiGlassBlurCssPxWebglRef.current = uiGlassBlurCssPxWebgl;
+    uiGlassSaturatePctWebglRef.current = uiGlassSaturatePctWebgl;
 
     if (typeof document === 'undefined') return;
     const root = document.documentElement;
-    root.style.setProperty('--ui-glass-blur', `${Math.round(glassNodesBlurCssPx)}px`);
-    root.style.setProperty('--ui-glass-saturate', `${Math.round(glassNodesSaturatePct)}%`);
+    const activeBlurCssPx = glassNodesBlurBackend === 'canvas' ? glassNodesBlurCssPxCanvas : glassNodesBlurCssPxWebgl;
+    const activeSaturatePct =
+      glassNodesBlurBackend === 'canvas' ? glassNodesSaturatePctCanvas : glassNodesSaturatePctWebgl;
+    const uiBlurCssPx = glassNodesBlurBackend === 'webgl' ? uiGlassBlurCssPxWebgl : activeBlurCssPx;
+    const uiSaturatePct = glassNodesBlurBackend === 'webgl' ? uiGlassSaturatePctWebgl : activeSaturatePct;
+    root.style.setProperty('--ui-glass-blur', `${Math.round(uiBlurCssPx)}px`);
+    root.style.setProperty('--ui-glass-saturate', `${Math.round(uiSaturatePct)}%`);
     const t = Math.max(0, Math.min(1, glassNodesUnderlayAlpha));
     const uiMinAlpha = 0.12;
     const uiMaxAlpha = 0.6;
     const gamma = 0.26;
     const uiAlpha = uiMinAlpha + (uiMaxAlpha - uiMinAlpha) * Math.pow(1 - t, gamma);
     root.style.setProperty('--ui-glass-bg-alpha', uiAlpha.toFixed(3));
-  }, [glassNodesEnabled, glassNodesBlurCssPx, glassNodesSaturatePct, glassNodesUnderlayAlpha, glassNodesBlurBackend]);
+  }, [
+    glassNodesEnabled,
+    glassNodesBlurCssPxWebgl,
+    glassNodesSaturatePctWebgl,
+    glassNodesBlurCssPxCanvas,
+    glassNodesSaturatePctCanvas,
+    glassNodesUnderlayAlpha,
+    glassNodesBlurBackend,
+    uiGlassBlurCssPxWebgl,
+    uiGlassSaturatePctWebgl,
+  ]);
 
   useEffect(() => {
     setRawViewer(null);
@@ -441,12 +472,20 @@ export default function App() {
             focusedFolderId: focused,
             visual: {
               glassNodesEnabled: Boolean(glassNodesEnabledRef.current),
-              glassNodesBlurCssPx: Number.isFinite(glassNodesBlurCssPxRef.current)
-                ? Math.max(0, Math.min(30, glassNodesBlurCssPxRef.current))
-                : 10,
-              glassNodesSaturatePct: Number.isFinite(glassNodesSaturatePctRef.current)
-                ? Math.max(100, Math.min(200, glassNodesSaturatePctRef.current))
-                : 140,
+              glassNodesBlurCssPx:
+                glassNodesBlurBackendRef.current === 'canvas'
+                  ? Math.max(0, Math.min(30, glassNodesBlurCssPxCanvasRef.current))
+                  : Math.max(0, Math.min(30, glassNodesBlurCssPxWebglRef.current)),
+              glassNodesSaturatePct:
+                glassNodesBlurBackendRef.current === 'canvas'
+                  ? Math.max(100, Math.min(200, glassNodesSaturatePctCanvasRef.current))
+                  : Math.max(100, Math.min(200, glassNodesSaturatePctWebglRef.current)),
+              glassNodesBlurCssPxWebgl: Math.max(0, Math.min(30, glassNodesBlurCssPxWebglRef.current)),
+              glassNodesSaturatePctWebgl: Math.max(100, Math.min(200, glassNodesSaturatePctWebglRef.current)),
+              glassNodesBlurCssPxCanvas: Math.max(0, Math.min(30, glassNodesBlurCssPxCanvasRef.current)),
+              glassNodesSaturatePctCanvas: Math.max(100, Math.min(200, glassNodesSaturatePctCanvasRef.current)),
+              uiGlassBlurCssPxWebgl: Math.max(0, Math.min(30, uiGlassBlurCssPxWebglRef.current)),
+              uiGlassSaturatePctWebgl: Math.max(100, Math.min(200, uiGlassSaturatePctWebglRef.current)),
               glassNodesUnderlayAlpha: Number.isFinite(glassNodesUnderlayAlphaRef.current)
                 ? Math.max(0, Math.min(1, glassNodesUnderlayAlphaRef.current))
                 : 0.95,
@@ -528,15 +567,18 @@ export default function App() {
     if (!engine) return;
 
     const meta = ensureChatMeta(chatId);
+    const blurBackend = glassNodesBlurBackendRef.current === 'canvas' ? 'canvas' : 'webgl';
+    const blurCssPx =
+      blurBackend === 'canvas' ? glassNodesBlurCssPxCanvasRef.current : glassNodesBlurCssPxWebglRef.current;
+    const saturatePct =
+      blurBackend === 'canvas' ? glassNodesSaturatePctCanvasRef.current : glassNodesSaturatePctWebglRef.current;
     engine.setGlassNodesEnabled(Boolean(glassNodesEnabledRef.current));
-    engine.setGlassNodesBlurCssPx(Number.isFinite(glassNodesBlurCssPxRef.current) ? glassNodesBlurCssPxRef.current : 10);
-    engine.setGlassNodesSaturatePct(
-      Number.isFinite(glassNodesSaturatePctRef.current) ? glassNodesSaturatePctRef.current : 140,
-    );
+    engine.setGlassNodesBlurBackend(blurBackend);
+    engine.setGlassNodesBlurCssPx(Number.isFinite(blurCssPx) ? Math.max(0, Math.min(30, blurCssPx)) : 10);
+    engine.setGlassNodesSaturatePct(Number.isFinite(saturatePct) ? Math.max(100, Math.min(200, saturatePct)) : 140);
     engine.setGlassNodesUnderlayAlpha(
       Number.isFinite(glassNodesUnderlayAlphaRef.current) ? glassNodesUnderlayAlphaRef.current : 0.95,
     );
-    engine.setGlassNodesBlurBackend(glassNodesBlurBackendRef.current);
 
     const key = typeof meta.backgroundStorageKey === 'string' ? meta.backgroundStorageKey : null;
     const seq = (backgroundLoadSeqRef.current += 1);
@@ -1023,26 +1065,41 @@ export default function App() {
 
     const visual = payload.visual;
     glassNodesEnabledRef.current = Boolean(visual.glassNodesEnabled);
-    glassNodesBlurCssPxRef.current = Number.isFinite(visual.glassNodesBlurCssPx) ? visual.glassNodesBlurCssPx : 10;
-    glassNodesSaturatePctRef.current = Number.isFinite(visual.glassNodesSaturatePct) ? visual.glassNodesSaturatePct : 140;
+    glassNodesBlurCssPxWebglRef.current = Number.isFinite(visual.glassNodesBlurCssPxWebgl) ? visual.glassNodesBlurCssPxWebgl : 10;
+    glassNodesSaturatePctWebglRef.current = Number.isFinite(visual.glassNodesSaturatePctWebgl) ? visual.glassNodesSaturatePctWebgl : 140;
+    glassNodesBlurCssPxCanvasRef.current = Number.isFinite(visual.glassNodesBlurCssPxCanvas) ? visual.glassNodesBlurCssPxCanvas : 10;
+    glassNodesSaturatePctCanvasRef.current = Number.isFinite(visual.glassNodesSaturatePctCanvas) ? visual.glassNodesSaturatePctCanvas : 140;
+    uiGlassBlurCssPxWebglRef.current = Number.isFinite(visual.uiGlassBlurCssPxWebgl) ? visual.uiGlassBlurCssPxWebgl : glassNodesBlurCssPxWebglRef.current;
+    uiGlassSaturatePctWebglRef.current = Number.isFinite(visual.uiGlassSaturatePctWebgl)
+      ? visual.uiGlassSaturatePctWebgl
+      : glassNodesSaturatePctWebglRef.current;
     glassNodesUnderlayAlphaRef.current = Number.isFinite(visual.glassNodesUnderlayAlpha) ? visual.glassNodesUnderlayAlpha : 0.95;
     glassNodesBlurBackendRef.current = visual.glassNodesBlurBackend === 'canvas' ? 'canvas' : 'webgl';
     setGlassNodesEnabled(glassNodesEnabledRef.current);
-    setGlassNodesBlurCssPx(glassNodesBlurCssPxRef.current);
-    setGlassNodesSaturatePct(glassNodesSaturatePctRef.current);
+    setGlassNodesBlurCssPxWebgl(glassNodesBlurCssPxWebglRef.current);
+    setGlassNodesSaturatePctWebgl(glassNodesSaturatePctWebglRef.current);
+    setGlassNodesBlurCssPxCanvas(glassNodesBlurCssPxCanvasRef.current);
+    setGlassNodesSaturatePctCanvas(glassNodesSaturatePctCanvasRef.current);
     setGlassNodesUnderlayAlpha(glassNodesUnderlayAlphaRef.current);
     setGlassNodesBlurBackend(glassNodesBlurBackendRef.current);
+    setUiGlassBlurCssPxWebgl(uiGlassBlurCssPxWebglRef.current);
+    setUiGlassSaturatePctWebgl(uiGlassSaturatePctWebglRef.current);
 
     bootedRef.current = true;
     setActiveChatId(resolvedActive);
 
     const engine = engineRef.current;
     if (engine) {
+      const blurBackend = glassNodesBlurBackendRef.current === 'canvas' ? 'canvas' : 'webgl';
+      const blurCssPx =
+        blurBackend === 'canvas' ? glassNodesBlurCssPxCanvasRef.current : glassNodesBlurCssPxWebglRef.current;
+      const saturatePct =
+        blurBackend === 'canvas' ? glassNodesSaturatePctCanvasRef.current : glassNodesSaturatePctWebglRef.current;
       engine.setGlassNodesEnabled(glassNodesEnabledRef.current);
-      engine.setGlassNodesBlurCssPx(glassNodesBlurCssPxRef.current);
-      engine.setGlassNodesSaturatePct(glassNodesSaturatePctRef.current);
+      engine.setGlassNodesBlurBackend(blurBackend);
+      engine.setGlassNodesBlurCssPx(Number.isFinite(blurCssPx) ? Math.max(0, Math.min(30, blurCssPx)) : 10);
+      engine.setGlassNodesSaturatePct(Number.isFinite(saturatePct) ? Math.max(100, Math.min(200, saturatePct)) : 140);
       engine.setGlassNodesUnderlayAlpha(glassNodesUnderlayAlphaRef.current);
-      engine.setGlassNodesBlurBackend(glassNodesBlurBackendRef.current);
       engine.cancelEditing();
       const nextState = chatStatesRef.current.get(resolvedActive) ?? createEmptyChatState();
       chatStatesRef.current.set(resolvedActive, nextState);
@@ -1179,14 +1236,46 @@ export default function App() {
             ? legacyVisualFromActive
             : null;
       const glassNodesBlurBackend: GlassBlurBackend = visualSrc?.glassNodesBlurBackend === 'canvas' ? 'canvas' : 'webgl';
+      const legacyBlurCssPxRaw = Number((visualSrc as any)?.glassNodesBlurCssPx);
+      const legacySaturatePctRaw = Number((visualSrc as any)?.glassNodesSaturatePct);
+      const fallbackBlurCssPx = Number.isFinite(legacyBlurCssPxRaw)
+        ? Math.max(0, Math.min(30, legacyBlurCssPxRaw))
+        : 10;
+      const fallbackSaturatePct = Number.isFinite(legacySaturatePctRaw)
+        ? Math.max(100, Math.min(200, legacySaturatePctRaw))
+        : 140;
+      const blurCssPxWebglRaw = Number((visualSrc as any)?.glassNodesBlurCssPxWebgl);
+      const blurCssPxCanvasRaw = Number((visualSrc as any)?.glassNodesBlurCssPxCanvas);
+      const saturatePctWebglRaw = Number((visualSrc as any)?.glassNodesSaturatePctWebgl);
+      const saturatePctCanvasRaw = Number((visualSrc as any)?.glassNodesSaturatePctCanvas);
+      const glassNodesBlurCssPxWebgl = Number.isFinite(blurCssPxWebglRaw)
+        ? Math.max(0, Math.min(30, blurCssPxWebglRaw))
+        : fallbackBlurCssPx;
+      const glassNodesBlurCssPxCanvas = Number.isFinite(blurCssPxCanvasRaw)
+        ? Math.max(0, Math.min(30, blurCssPxCanvasRaw))
+        : fallbackBlurCssPx;
+      const glassNodesSaturatePctWebgl = Number.isFinite(saturatePctWebglRaw)
+        ? Math.max(100, Math.min(200, saturatePctWebglRaw))
+        : fallbackSaturatePct;
+      const glassNodesSaturatePctCanvas = Number.isFinite(saturatePctCanvasRaw)
+        ? Math.max(100, Math.min(200, saturatePctCanvasRaw))
+        : fallbackSaturatePct;
+      const uiBlurCssPxWebglRaw = Number((visualSrc as any)?.uiGlassBlurCssPxWebgl);
+      const uiSaturatePctWebglRaw = Number((visualSrc as any)?.uiGlassSaturatePctWebgl);
+      const uiGlassBlurCssPxWebgl = Number.isFinite(uiBlurCssPxWebglRaw)
+        ? Math.max(0, Math.min(30, uiBlurCssPxWebglRaw))
+        : glassNodesBlurCssPxWebgl;
+      const uiGlassSaturatePctWebgl = Number.isFinite(uiSaturatePctWebglRaw)
+        ? Math.max(100, Math.min(200, uiSaturatePctWebglRaw))
+        : glassNodesSaturatePctWebgl;
       const visual = {
         glassNodesEnabled: Boolean(visualSrc?.glassNodesEnabled),
-        glassNodesBlurCssPx: Number.isFinite(Number(visualSrc?.glassNodesBlurCssPx))
-          ? Math.max(0, Math.min(30, Number(visualSrc.glassNodesBlurCssPx)))
-          : 10,
-        glassNodesSaturatePct: Number.isFinite(Number(visualSrc?.glassNodesSaturatePct))
-          ? Math.max(100, Math.min(200, Number(visualSrc.glassNodesSaturatePct)))
-          : 140,
+        glassNodesBlurCssPxWebgl,
+        glassNodesSaturatePctWebgl,
+        glassNodesBlurCssPxCanvas,
+        glassNodesSaturatePctCanvas,
+        uiGlassBlurCssPxWebgl,
+        uiGlassSaturatePctWebgl,
         glassNodesUnderlayAlpha: Number.isFinite(Number(visualSrc?.glassNodesUnderlayAlpha))
           ? Math.max(0, Math.min(1, Number(visualSrc.glassNodesUnderlayAlpha)))
           : 0.95,
@@ -1642,23 +1731,56 @@ export default function App() {
             const value: GlassBlurBackend = next === 'canvas' ? 'canvas' : 'webgl';
             glassNodesBlurBackendRef.current = value;
             setGlassNodesBlurBackend(value);
-            engineRef.current?.setGlassNodesBlurBackend(value);
+            const blurCssPx =
+              value === 'canvas' ? glassNodesBlurCssPxCanvasRef.current : glassNodesBlurCssPxWebglRef.current;
+            const saturatePct =
+              value === 'canvas' ? glassNodesSaturatePctCanvasRef.current : glassNodesSaturatePctWebglRef.current;
+            const engine = engineRef.current;
+            engine?.setGlassNodesBlurBackend(value);
+            engine?.setGlassNodesBlurCssPx(Number.isFinite(blurCssPx) ? Math.max(0, Math.min(30, blurCssPx)) : 10);
+            engine?.setGlassNodesSaturatePct(
+              Number.isFinite(saturatePct) ? Math.max(100, Math.min(200, saturatePct)) : 140,
+            );
             schedulePersistSoon();
           }}
-          glassBlurPx={glassNodesBlurCssPx}
+          glassBlurPx={glassNodesBlurBackend === 'canvas' ? glassNodesBlurCssPxCanvas : glassNodesBlurCssPxWebgl}
           onChangeGlassBlurPx={(raw) => {
             const next = Number.isFinite(raw) ? Math.max(0, Math.min(30, raw)) : 0;
-            glassNodesBlurCssPxRef.current = next;
-            setGlassNodesBlurCssPx(next);
+            if (glassNodesBlurBackendRef.current === 'canvas') {
+              glassNodesBlurCssPxCanvasRef.current = next;
+              setGlassNodesBlurCssPxCanvas(next);
+            } else {
+              glassNodesBlurCssPxWebglRef.current = next;
+              setGlassNodesBlurCssPxWebgl(next);
+            }
             engineRef.current?.setGlassNodesBlurCssPx(next);
             schedulePersistSoon();
           }}
-          glassSaturationPct={glassNodesSaturatePct}
+          glassSaturationPct={glassNodesBlurBackend === 'canvas' ? glassNodesSaturatePctCanvas : glassNodesSaturatePctWebgl}
           onChangeGlassSaturationPct={(raw) => {
             const next = Number.isFinite(raw) ? Math.max(100, Math.min(200, raw)) : 140;
-            glassNodesSaturatePctRef.current = next;
-            setGlassNodesSaturatePct(next);
+            if (glassNodesBlurBackendRef.current === 'canvas') {
+              glassNodesSaturatePctCanvasRef.current = next;
+              setGlassNodesSaturatePctCanvas(next);
+            } else {
+              glassNodesSaturatePctWebglRef.current = next;
+              setGlassNodesSaturatePctWebgl(next);
+            }
             engineRef.current?.setGlassNodesSaturatePct(next);
+            schedulePersistSoon();
+          }}
+          uiGlassBlurPxWebgl={uiGlassBlurCssPxWebgl}
+          onChangeUiGlassBlurPxWebgl={(raw) => {
+            const next = Number.isFinite(raw) ? Math.max(0, Math.min(30, raw)) : 10;
+            uiGlassBlurCssPxWebglRef.current = next;
+            setUiGlassBlurCssPxWebgl(next);
+            schedulePersistSoon();
+          }}
+          uiGlassSaturationPctWebgl={uiGlassSaturatePctWebgl}
+          onChangeUiGlassSaturationPctWebgl={(raw) => {
+            const next = Number.isFinite(raw) ? Math.max(100, Math.min(200, raw)) : 140;
+            uiGlassSaturatePctWebglRef.current = next;
+            setUiGlassSaturatePctWebgl(next);
             schedulePersistSoon();
           }}
           glassOpacityPct={glassNodesUnderlayAlpha * 100}
@@ -1745,15 +1867,23 @@ export default function App() {
             setDebugHudVisible(true);
 
             glassNodesEnabledRef.current = false;
-            glassNodesBlurCssPxRef.current = 10;
-            glassNodesSaturatePctRef.current = 140;
+            glassNodesBlurCssPxWebglRef.current = 10;
+            glassNodesSaturatePctWebglRef.current = 140;
+            glassNodesBlurCssPxCanvasRef.current = 10;
+            glassNodesSaturatePctCanvasRef.current = 140;
+            uiGlassBlurCssPxWebglRef.current = 10;
+            uiGlassSaturatePctWebglRef.current = 140;
             glassNodesUnderlayAlphaRef.current = 0.95;
             glassNodesBlurBackendRef.current = 'webgl';
             setGlassNodesEnabled(false);
-            setGlassNodesBlurCssPx(10);
-            setGlassNodesSaturatePct(140);
+            setGlassNodesBlurCssPxWebgl(10);
+            setGlassNodesSaturatePctWebgl(140);
+            setGlassNodesBlurCssPxCanvas(10);
+            setGlassNodesSaturatePctCanvas(140);
             setGlassNodesUnderlayAlpha(0.95);
             setGlassNodesBlurBackend('webgl');
+            setUiGlassBlurCssPxWebgl(10);
+            setUiGlassSaturatePctWebgl(140);
 
             const engine = engineRef.current;
             if (engine) {
