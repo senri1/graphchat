@@ -20,9 +20,10 @@ import {
   toggleFolder,
 } from './workspace/tree';
 import { getOpenAIApiKey, streamOpenAIResponse } from './services/openaiService';
-import type { ChatAttachment, ChatNode } from './model/chat';
+import type { ChatAttachment, ChatNode, ThinkingSummaryChunk } from './model/chat';
 import { buildOpenAIResponseRequest, type OpenAIChatSettings } from './llm/openai';
 import { DEFAULT_MODEL_ID, listModels, type TextVerbosity } from './llm/registry';
+import { extractCanonicalMessage, extractCanonicalMeta } from './llm/openaiCanonical';
 import { readFileAsDataUrl, splitDataUrl } from './utils/files';
 import { deleteAttachment, deleteAttachments, getAttachment, listAttachmentKeys, putAttachment } from './storage/attachments';
 import { clearAllStores } from './storage/db';
@@ -68,6 +69,7 @@ type GenerationJob = {
   startedAt: number;
   abortController: AbortController;
   fullText: string;
+  thinkingSummary: ThinkingSummaryChunk[];
   lastFlushedText: string;
   lastFlushAt: number;
   flushTimer: number | null;
@@ -766,6 +768,7 @@ export default function App() {
       isGenerating: false,
       modelId: job.modelId,
       llmError: result.error,
+      thinkingSummary: undefined,
     };
     if (result.apiResponse !== undefined) patch.apiResponse = result.apiResponse;
     if (result.apiResponseKey !== undefined) patch.apiResponseKey = result.apiResponseKey;
@@ -775,8 +778,15 @@ export default function App() {
 
     if (activeChatIdRef.current === job.chatId) {
       const engine = engineRef.current;
-      engine?.setTextNodeContent(job.assistantNodeId, finalText, { streaming: false });
       engine?.setTextNodeLlmState(job.assistantNodeId, { isGenerating: false, modelId: job.modelId, llmError: result.error });
+      if (result.canonicalMessage !== undefined || result.canonicalMeta !== undefined) {
+        engine?.setTextNodeCanonical(job.assistantNodeId, {
+          canonicalMessage: result.canonicalMessage,
+          canonicalMeta: result.canonicalMeta,
+        });
+      }
+      engine?.setTextNodeThinkingSummary(job.assistantNodeId, undefined);
+      engine?.setTextNodeContent(job.assistantNodeId, finalText, { streaming: false });
       if (result.apiResponse !== undefined) engine?.setTextNodeApiPayload(job.assistantNodeId, { apiResponse: result.apiResponse });
     }
 
@@ -833,6 +843,7 @@ export default function App() {
       startedAt: Date.now(),
       abortController: new AbortController(),
       fullText: '',
+      thinkingSummary: [],
       lastFlushedText: '',
       lastFlushAt: 0,
       flushTimer: null,
@@ -895,10 +906,63 @@ export default function App() {
             job.fullText = fullText;
             scheduleJobFlush(job);
           },
+          onEvent: (evt: any) => {
+            if (job.closed) return;
+            const t = typeof evt?.type === 'string' ? String(evt.type) : '';
+            if (t === 'response.reasoning_summary_text.delta') {
+              const idx = typeof evt?.summary_index === 'number' ? evt.summary_index : 0;
+              const delta = typeof evt?.delta === 'string' ? evt.delta : '';
+              if (!delta) return;
+
+              const chunks = job.thinkingSummary ?? [];
+              const existing = chunks.find((c) => c.summaryIndex === idx);
+              const nextChunks: ThinkingSummaryChunk[] = existing
+                ? chunks.map((c) => (c.summaryIndex === idx ? { ...c, text: c.text + delta } : c))
+                : [...chunks, { summaryIndex: idx, text: delta, done: false }];
+              job.thinkingSummary = nextChunks;
+
+              updateStoredTextNode(chatId, job.assistantNodeId, { thinkingSummary: nextChunks });
+              if (activeChatIdRef.current === chatId) {
+                engineRef.current?.setTextNodeThinkingSummary(job.assistantNodeId, nextChunks);
+              }
+            } else if (t === 'response.reasoning_summary_text.done') {
+              const idx = typeof evt?.summary_index === 'number' ? evt.summary_index : 0;
+              const chunks = job.thinkingSummary ?? [];
+              if (!chunks.length) return;
+              const nextChunks: ThinkingSummaryChunk[] = chunks.map((c) => (c.summaryIndex === idx ? { ...c, done: true } : c));
+              job.thinkingSummary = nextChunks;
+
+              updateStoredTextNode(chatId, job.assistantNodeId, { thinkingSummary: nextChunks });
+              if (activeChatIdRef.current === chatId) {
+                engineRef.current?.setTextNodeThinkingSummary(job.assistantNodeId, nextChunks);
+              }
+            }
+          },
         },
       });
 
       if (!generationJobsByAssistantIdRef.current.has(job.assistantNodeId)) return;
+      const usedWebSearch =
+        Array.isArray((request as any)?.tools) && (request as any).tools.some((tool: any) => tool && tool.type === 'web_search');
+      const effort = (request as any)?.reasoning?.effort;
+      const verbosity = (request as any)?.text?.verbosity;
+      const baseCanonicalMeta = extractCanonicalMeta(res.response, { usedWebSearch, effort, verbosity });
+      const canonicalMessage = extractCanonicalMessage(
+        res.response,
+        typeof res.text === 'string' ? res.text : job.fullText,
+      );
+      const finalText = (typeof res.text === 'string' ? res.text : '') || canonicalMessage?.text || job.fullText || '';
+      const streamed = job.thinkingSummary ?? [];
+      const canonicalMeta = (() => {
+        const hasBlocks = Array.isArray((baseCanonicalMeta as any)?.reasoningSummaryBlocks) && (baseCanonicalMeta as any).reasoningSummaryBlocks.length > 0;
+        if (hasBlocks || streamed.length === 0) return baseCanonicalMeta;
+        return {
+          ...(baseCanonicalMeta ?? {}),
+          reasoningSummaryBlocks: [...streamed]
+            .sort((a, b) => (a.summaryIndex ?? 0) - (b.summaryIndex ?? 0))
+            .map((c) => ({ type: 'summary_text' as const, text: c?.text ?? '' })),
+        };
+      })();
       const storedResponse = res.response !== undefined ? cloneRawPayloadForDisplay(res.response) : undefined;
       let responseKey: string | undefined = undefined;
       if (res.response !== undefined) {
@@ -911,15 +975,24 @@ export default function App() {
         }
       }
       if (res.ok) {
-        finishJob(job.assistantNodeId, { finalText: res.text, error: null, apiResponse: storedResponse, apiResponseKey: responseKey });
+        finishJob(job.assistantNodeId, {
+          finalText,
+          error: null,
+          apiResponse: storedResponse,
+          apiResponseKey: responseKey,
+          canonicalMessage,
+          canonicalMeta,
+        });
       } else {
         const error = res.cancelled ? 'Canceled' : res.error;
         finishJob(job.assistantNodeId, {
-          finalText: res.text ?? job.fullText,
+          finalText,
           error,
           cancelled: res.cancelled,
           apiResponse: storedResponse,
           apiResponseKey: responseKey,
+          canonicalMessage,
+          canonicalMeta,
         });
       }
     })();

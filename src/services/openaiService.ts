@@ -52,7 +52,10 @@ export async function streamOpenAIResponse(args: {
       }
     }
 
-    return { ok: true, text: fullText, response: rawFinal ?? { output_text: fullText } };
+    const raw = rawFinal ?? { output_text: fullText };
+    const outputText = typeof (raw as any)?.output_text === 'string' ? String((raw as any).output_text) : '';
+    const text = fullText || outputText;
+    return { ok: true, text, response: raw };
   } catch (err) {
     const isAbort =
       (err instanceof DOMException && err.name === 'AbortError') || (err && typeof err === 'object' && (err as any).name === 'AbortError');

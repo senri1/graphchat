@@ -12,6 +12,8 @@ export type CanonicalAssistantMessage = {
   text: string;
 };
 
+export type ThinkingSummaryChunk = { summaryIndex: number; text: string; done: boolean };
+
 export type ChatAttachment =
   | {
       kind: 'image';
@@ -63,6 +65,9 @@ export type ChatNode =
       apiResponseKey?: string;
       canonicalMessage?: CanonicalAssistantMessage;
       canonicalMeta?: unknown;
+      thinkingSummary?: ThinkingSummaryChunk[];
+      summaryExpanded?: boolean;
+      expandedSummaryChunks?: Record<number, boolean>;
       attachments?: ChatAttachment[];
       selectedAttachmentKeys?: string[];
     }

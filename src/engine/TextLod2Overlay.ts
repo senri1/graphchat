@@ -5,6 +5,10 @@ export type TextLod2Mode = 'resize' | 'select';
 
 export type HighlightRect = { left: number; top: number; width: number; height: number };
 
+export type TextLod2Action =
+  | { kind: 'summary_toggle'; nodeId: string }
+  | { kind: 'summary_chunk_toggle'; nodeId: string; summaryIndex: number };
+
 function clamp(v: number, min: number, max: number): number {
   if (v < min) return min;
   if (v > max) return max;
@@ -109,6 +113,7 @@ export class TextLod2Overlay {
   private nativePointerId: number | null = null;
 
   onRequestCloseSelection?: () => void;
+  onRequestAction?: (action: TextLod2Action) => void;
 
   private readonly onDocPointerDownCapture = (e: Event) => {
     if (!this.isMenuOpen()) return;
@@ -140,6 +145,31 @@ export class TextLod2Overlay {
       document.addEventListener('pointercancel', this.onNativePointerCancelCapture, true);
     } catch {
       // ignore
+    }
+  };
+
+  private readonly onRootClick = (e: MouseEvent) => {
+    const nodeId = this.visibleNodeId;
+    if (!nodeId) return;
+    const target = e.target as Element | null;
+    if (!target) return;
+
+    const chunk = target.closest?.('[data-gcv1-summary-chunk-toggle]') as HTMLElement | null;
+    if (chunk) {
+      const raw = chunk.getAttribute('data-gcv1-summary-chunk-toggle') ?? '';
+      const summaryIndex = Number(raw);
+      if (!Number.isFinite(summaryIndex)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.onRequestAction?.({ kind: 'summary_chunk_toggle', nodeId, summaryIndex });
+      return;
+    }
+
+    const sum = target.closest?.('[data-gcv1-summary-toggle]') as HTMLElement | null;
+    if (sum) {
+      e.preventDefault();
+      e.stopPropagation();
+      this.onRequestAction?.({ kind: 'summary_toggle', nodeId });
     }
   };
 
@@ -207,9 +237,15 @@ export class TextLod2Overlay {
     }
   };
 
-  constructor(opts: { host: HTMLElement; onRequestCloseSelection?: () => void }) {
+  constructor(opts: {
+    host: HTMLElement;
+    onRequestCloseSelection?: () => void;
+    onRequestAction?: (action: TextLod2Action) => void;
+    zIndex?: number;
+  }) {
     this.host = opts.host;
     this.onRequestCloseSelection = opts.onRequestCloseSelection;
+    this.onRequestAction = opts.onRequestAction;
 
     const root = document.createElement('div');
     root.className = 'gc-textLod2';
@@ -221,7 +257,7 @@ export class TextLod2Overlay {
     root.style.height = '1px';
     root.style.overflow = 'hidden';
     root.style.pointerEvents = 'none';
-    root.style.zIndex = '10';
+    root.style.zIndex = `${Math.max(0, Math.floor(opts.zIndex ?? 10))}`;
     root.style.contain = 'layout paint style';
     this.root = root;
 
@@ -268,6 +304,7 @@ export class TextLod2Overlay {
     this.host.appendChild(root);
 
     root.addEventListener('pointerdown', this.onRootPointerDown);
+    root.addEventListener('click', this.onRootClick);
 
     const menu = document.createElement('div');
     menu.className = 'gc-selectionMenu';

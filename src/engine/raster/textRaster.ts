@@ -6,7 +6,12 @@ export type TextRasterResult = {
   pixelH: number;
   bitmapBytesEstimate: number;
   hasKaTeX: boolean;
+  hitZones?: TextHitZone[];
 };
+
+export type TextHitZone =
+  | { kind: 'summary_toggle'; left: number; top: number; width: number; height: number }
+  | { kind: 'summary_chunk_toggle'; summaryIndex: number; left: number; top: number; width: number; height: number };
 
 const MDX_CSS = `
 .mdx {
@@ -290,12 +295,51 @@ function ensureMeasureRoot(): HTMLDivElement {
   return el;
 }
 
-export async function rasterizeMarkdownMathToImage(
-  source: string,
+function measureHitZones(card: HTMLDivElement): TextHitZone[] {
+  try {
+    const zones: TextHitZone[] = [];
+    const cardRect = card.getBoundingClientRect();
+
+    const sum = card.querySelector('[data-gcv1-summary-toggle]') as HTMLElement | null;
+    if (sum) {
+      const r = sum.getBoundingClientRect();
+      zones.push({
+        kind: 'summary_toggle',
+        left: r.left - cardRect.left,
+        top: r.top - cardRect.top,
+        width: r.width,
+        height: r.height,
+      });
+    }
+
+    const chunkBtns = Array.from(card.querySelectorAll('[data-gcv1-summary-chunk-toggle]')) as HTMLElement[];
+    for (const el of chunkBtns) {
+      const raw = el.getAttribute('data-gcv1-summary-chunk-toggle') ?? '';
+      const idx = Number(raw);
+      if (!Number.isFinite(idx)) continue;
+      const r = el.getBoundingClientRect();
+      zones.push({
+        kind: 'summary_chunk_toggle',
+        summaryIndex: idx,
+        left: r.left - cardRect.left,
+        top: r.top - cardRect.top,
+        width: r.width,
+        height: r.height,
+      });
+    }
+
+    return zones;
+  } catch {
+    return [];
+  }
+}
+
+export async function rasterizeHtmlToImage(
+  html: string,
   opts: { width: number; height: number; rasterScale: number },
 ): Promise<TextRasterResult> {
   if (typeof document === 'undefined') {
-    throw new Error('rasterizeMarkdownMathToImage: document is not available');
+    throw new Error('rasterizeHtmlToImage: document is not available');
   }
 
   const width = Math.max(1, Math.round(opts.width));
@@ -320,7 +364,7 @@ export async function rasterizeMarkdownMathToImage(
     card.style.fontSize = '14px';
     card.style.fontFamily =
       'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"';
-    card.innerHTML = renderMarkdownMath(source ?? '');
+    card.innerHTML = html ?? '';
     root.appendChild(card);
 
     const hasKaTeX = Boolean(card.querySelector('.katex'));
@@ -328,6 +372,8 @@ export async function rasterizeMarkdownMathToImage(
     const fontCssRaw = hasKaTeX ? stripInvalidXmlChars(katexCss.fontFaces || '') : '';
     const fontCss = hasKaTeX ? stripInvalidXmlChars(await getKaTeXFontFacesCssForSvg(fontCssRaw)) : '';
     const css = stripInvalidXmlChars([MDX_CSS, katexCss.rules].filter(Boolean).join('\n'));
+
+    const hitZones = measureHitZones(card);
 
     const cardXml = (() => {
       try {
@@ -359,9 +405,15 @@ export async function rasterizeMarkdownMathToImage(
       postDecodeWaitMs: 32,
     });
 
-    return { image, pixelW, pixelH, bitmapBytesEstimate, hasKaTeX };
+    return { image, pixelW, pixelH, bitmapBytesEstimate, hasKaTeX, hitZones };
   } finally {
     root.innerHTML = '';
   }
 }
 
+export async function rasterizeMarkdownMathToImage(
+  source: string,
+  opts: { width: number; height: number; rasterScale: number },
+): Promise<TextRasterResult> {
+  return rasterizeHtmlToImage(renderMarkdownMath(source ?? ''), opts);
+}

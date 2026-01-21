@@ -2,16 +2,25 @@ import { chooseNiceStep, clamp } from './math';
 import { Camera } from './Camera';
 import { InputController, type PointerCaptureMode } from './InputController';
 import { rectsIntersect, type Rect, type Vec2 } from './types';
-import { rasterizeMarkdownMathToImage } from './raster/textRaster';
+import { rasterizeHtmlToImage, type TextHitZone } from './raster/textRaster';
 import { renderMarkdownMath } from '../markdown/renderMarkdownMath';
 import { normalizeMathDelimitersFromCopyTex } from '../markdown/mathDelimiters';
-import { TextLod2Overlay, type HighlightRect, type TextLod2Mode } from './TextLod2Overlay';
+import { TextLod2Overlay, type HighlightRect, type TextLod2Action, type TextLod2Mode } from './TextLod2Overlay';
 import { PdfTextLod2Overlay, type HighlightRect as PdfHighlightRect } from './PdfTextLod2Overlay';
 import { WebGLPreblur } from './WebGLPreblur';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import type { PDFPageProxy, PageViewport } from 'pdfjs-dist';
 import { loadPdfDocument } from './pdf/pdfjs';
-import type { ChatAttachment, ChatAuthor, ChatLlmParams, ChatNode, InkPoint, InkStroke } from '../model/chat';
+import type {
+  CanonicalAssistantMessage,
+  ChatAttachment,
+  ChatAuthor,
+  ChatLlmParams,
+  ChatNode,
+  InkPoint,
+  InkStroke,
+  ThinkingSummaryChunk,
+} from '../model/chat';
 
 export type WorldEngineDebug = {
   cssW: number;
@@ -37,6 +46,57 @@ function fnv1a32(input: string): number {
 function fingerprintText(input: string): string {
   const s = input ?? '';
   return `${s.length.toString(36)}.${fnv1a32(s).toString(36)}`;
+}
+
+function escapeHtml(text: string): string {
+  const t = (text ?? '').toString();
+  if (!t) return '';
+  return t.replace(/[&<>"']/g, (c) => {
+    switch (c) {
+      case '&':
+        return '&amp;';
+      case '<':
+        return '&lt;';
+      case '>':
+        return '&gt;';
+      case '"':
+        return '&quot;';
+      case "'":
+        return '&#39;';
+      default:
+        return c;
+    }
+  });
+}
+
+function stripStrong(text: string): string {
+  return (text ?? '').toString().replace(/\*\*(.+?)\*\*/g, '$1');
+}
+
+function summarizeFirstLine(text: string): string {
+  const t = (text ?? '').toString();
+  if (!t) return '';
+  const firstLine = t.split('\n')[0] ?? '';
+  return stripStrong(firstLine);
+}
+
+type ReasoningSummaryBlock = { type: 'summary_text'; text: string };
+
+function readReasoningSummaryBlocks(canonicalMeta: unknown): ReasoningSummaryBlock[] {
+  try {
+    const anyMeta = canonicalMeta as any;
+    const blocks = anyMeta?.reasoningSummaryBlocks;
+    if (!Array.isArray(blocks)) return [];
+    const out: ReasoningSummaryBlock[] = [];
+    for (const b of blocks) {
+      const text = typeof b?.text === 'string' ? b.text : String(b?.text ?? '');
+      if (!text.trim()) continue;
+      out.push({ type: 'summary_text', text });
+    }
+    return out;
+  } catch {
+    return [];
+  }
 }
 
 function caretRangeFromClientPoint(doc: Document, clientX: number, clientY: number): Range | null {
@@ -122,12 +182,18 @@ type TextNode = DemoNodeBase & {
   rect: Rect;
   content: string;
   contentHash: string;
+  displayHash: string;
   isGenerating?: boolean;
   modelId?: string | null;
   llmParams?: ChatLlmParams;
   llmError?: string | null;
   apiRequest?: unknown;
   apiResponse?: unknown;
+  canonicalMessage?: CanonicalAssistantMessage;
+  canonicalMeta?: unknown;
+  thinkingSummary?: ThinkingSummaryChunk[];
+  summaryExpanded?: boolean;
+  expandedSummaryChunks?: Record<number, boolean>;
   attachments?: ChatAttachment[];
   selectedAttachmentKeys?: string[];
 };
@@ -158,7 +224,7 @@ type TextRasterJob = {
   rasterScale: number;
   width: number;
   height: number;
-  source: string;
+  html: string;
 };
 
 export type PdfPageMeta = {
@@ -322,7 +388,11 @@ export class WorldEngine {
   private textLod2: TextLod2Overlay | null = null;
   private textLod2Target: { nodeId: string; mode: TextLod2Mode } | null = null;
   private textResizeHold: { nodeId: string; sig: string; expiresAt: number } | null = null;
-  private textLod2HtmlCache: { nodeId: string; contentHash: string; html: string } | null = null;
+  private textLod2HtmlCache: { nodeId: string; displayHash: string; html: string } | null = null;
+  private textLod2HitZones: { nodeId: string; displayHash: string; zones: TextHitZone[] } | null = null;
+  private textStreamLod2: TextLod2Overlay | null = null;
+  private textStreamLod2Target: { nodeId: string; mode: TextLod2Mode } | null = null;
+  private textStreamLod2HtmlCache: { nodeId: string; displayHash: string; html: string } | null = null;
 
   private textSelectNodeId: string | null = null;
   private textSelectPointerId: number | null = null;
@@ -367,6 +437,7 @@ export class WorldEngine {
       height: number;
       image: CanvasImageSource;
       bitmapBytesEstimate: number;
+      hitZones?: TextHitZone[];
       readyAt: number;
     }
   >();
@@ -521,8 +592,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 \[
 \mathrm{Hom}(T\times \mathrm{Pol},X)\ \cong\ \mathrm{Hom}(T,X^{\mathrm{Pol}})
 \]and show that the uncurried map \((\varphi,\epsilon)\mapsto \mathrm{nnf}(\varphi,\epsilon)\) corresponds under this bijection to the fold \(k:T\to X^{\mathrm{Pol}}\)."
-`,
+      `,
       contentHash: '',
+      displayHash: '',
     },
     {
       kind: 'pdf',
@@ -580,7 +652,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     // Initialize hashes for seeded nodes.
     for (const n of this.nodes) {
-      if (n.kind === 'text') n.contentHash = fingerprintText(n.content);
+      if (n.kind === 'text') {
+        n.contentHash = fingerprintText(n.content);
+        this.recomputeTextNodeDisplayHash(n);
+      }
     }
   }
 
@@ -601,6 +676,11 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           llmError: n.llmError ?? null,
           apiRequest: n.apiRequest,
           apiResponse: n.apiResponse,
+          canonicalMessage: n.canonicalMessage,
+          canonicalMeta: n.canonicalMeta,
+          thinkingSummary: n.thinkingSummary,
+          summaryExpanded: n.summaryExpanded,
+          expandedSummaryChunks: n.expandedSummaryChunks,
           attachments: Array.isArray(n.attachments) ? n.attachments : undefined,
           selectedAttachmentKeys: Array.isArray(n.selectedAttachmentKeys) ? n.selectedAttachmentKeys : undefined,
         };
@@ -660,15 +740,18 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.activeGesture = null;
     this.textResizeHold = null;
     this.textLod2HtmlCache = null;
+    this.textStreamLod2HtmlCache = null;
     this.hoverTextNodeId = null;
     this.hoverPdfPage = null;
     this.textLod2Target = null;
+    this.textStreamLod2Target = null;
     this.pdfLod2Target = null;
 
     this.clearTextSelection({ suppressOverlayCallback: true });
     this.clearPdfTextSelection({ suppressOverlayCallback: true });
     try {
       this.textLod2?.hide();
+      this.textStreamLod2?.hide();
       this.pdfTextLod2?.hide();
     } catch {
       // ignore
@@ -702,8 +785,39 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
                 if (lt.includes('user')) return 'user';
                 if (lt.includes('assistant')) return 'assistant';
                 return 'assistant';
-              })();
-        this.nodes.push({
+                  })();
+        const thinkingSummary = (() => {
+          const raw = (n as any)?.thinkingSummary;
+          if (!Array.isArray(raw)) return undefined;
+          const out: ThinkingSummaryChunk[] = [];
+          for (const item of raw) {
+            const summaryIndex = Number((item as any)?.summaryIndex);
+            const text = typeof (item as any)?.text === 'string' ? (item as any).text : String((item as any)?.text ?? '');
+            const done = Boolean((item as any)?.done);
+            if (!Number.isFinite(summaryIndex)) continue;
+            out.push({ summaryIndex, text, done });
+          }
+          return out.length ? out : undefined;
+        })();
+        const expandedSummaryChunks = (() => {
+          const raw = (n as any)?.expandedSummaryChunks;
+          if (!raw || typeof raw !== 'object') return undefined;
+          const out: Record<number, boolean> = {};
+          for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+            const idx = Number(k);
+            if (!Number.isFinite(idx)) continue;
+            if (v) out[idx] = true;
+          }
+          return Object.keys(out).length ? out : undefined;
+        })();
+        const canonicalMessage = (() => {
+          const raw = (n as any)?.canonicalMessage;
+          if (!raw || typeof raw !== 'object') return undefined;
+          if ((raw as any).role !== 'assistant') return undefined;
+          const text = typeof (raw as any).text === 'string' ? (raw as any).text : '';
+          return text ? ({ role: 'assistant', text } as CanonicalAssistantMessage) : undefined;
+        })();
+        const node: TextNode = {
           kind: 'text',
           id: n.id,
           parentId,
@@ -712,6 +826,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           author,
           content,
           contentHash: fingerprintText(content),
+          displayHash: '',
           isGenerating: Boolean((n as any)?.isGenerating),
           modelId: typeof (n as any)?.modelId === 'string' ? ((n as any).modelId as string) : null,
           llmParams:
@@ -721,11 +836,18 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           llmError: typeof (n as any)?.llmError === 'string' ? ((n as any).llmError as string) : null,
           apiRequest: (n as any)?.apiRequest,
           apiResponse: (n as any)?.apiResponse,
+          canonicalMessage,
+          canonicalMeta: (n as any)?.canonicalMeta,
+          thinkingSummary,
+          summaryExpanded: Boolean((n as any)?.summaryExpanded),
+          expandedSummaryChunks,
           attachments: Array.isArray((n as any)?.attachments) ? ((n as any).attachments as ChatAttachment[]) : undefined,
           selectedAttachmentKeys: Array.isArray((n as any)?.selectedAttachmentKeys)
             ? ((n as any).selectedAttachmentKeys as string[])
             : undefined,
-        });
+        };
+        this.recomputeTextNodeDisplayHash(node);
+        this.nodes.push(node);
         continue;
       }
       if (n.kind === 'pdf') {
@@ -800,18 +922,20 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       const id = `t${Date.now().toString(36)}-${(this.nodeSeq++).toString(36)}`;
       const col = i % cols;
       const row = Math.floor(i / cols);
-      const node: TextNode = {
-        kind: 'text',
-        id,
-        parentId: null,
-        rect: { x: startX + col * spacingX, y: startY + row * spacingY, w: nodeW, h: nodeH },
-        title: 'Text node (Markdown + LaTeX)',
-        author: 'assistant',
-        content,
-        contentHash: fingerprintText(content),
-      };
-      this.nodes.push(node);
-    }
+	      const node: TextNode = {
+	        kind: 'text',
+	        id,
+	        parentId: null,
+	        rect: { x: startX + col * spacingX, y: startY + row * spacingY, w: nodeW, h: nodeH },
+	        title: 'Text node (Markdown + LaTeX)',
+	        author: 'assistant',
+	        content,
+	        contentHash: fingerprintText(content),
+	        displayHash: '',
+	      };
+	      this.recomputeTextNodeDisplayHash(node);
+	      this.nodes.push(node);
+	    }
 
     // Close editor so the canvas is the thing being tested.
     this.selectedNodeId = null;
@@ -1037,6 +1161,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       author: 'user',
       content: userText,
       contentHash: fingerprintText(userText),
+      displayHash: '',
       attachments: userAttachments.length ? userAttachments : undefined,
       selectedAttachmentKeys: selectedAttachmentKeys.length ? selectedAttachmentKeys : undefined,
     };
@@ -1050,7 +1175,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       author: 'assistant',
       content: '',
       contentHash: fingerprintText(''),
+      displayHash: '',
+      summaryExpanded: false,
     };
+
+    this.recomputeTextNodeDisplayHash(userNode);
+    this.recomputeTextNodeDisplayHash(assistantNode);
 
     this.nodes.push(userNode, assistantNode);
     this.bringNodeToFront(assistantNodeId);
@@ -1295,30 +1425,31 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         const [nodeId, job] = next.value;
         this.textRasterQueueByNodeId.delete(nodeId);
 
-        if (this.textRasterCache.has(job.key)) continue;
+	        if (this.textRasterCache.has(job.key)) continue;
 
-        try {
-          const res = await rasterizeMarkdownMathToImage(job.source, {
-            width: job.width,
-            height: job.height,
-            rasterScale: job.rasterScale,
-          });
-          if (this.textRasterGeneration !== gen) {
+	        try {
+	          const res = await rasterizeHtmlToImage(job.html, {
+	            width: job.width,
+	            height: job.height,
+	            rasterScale: job.rasterScale,
+	          });
+	          if (this.textRasterGeneration !== gen) {
             this.closeImage(res.image);
             return;
           }
 
           const readyAt = performance.now();
-          this.textRasterCache.set(job.key, {
-            key: job.key,
-            sig: job.sig,
-            rasterScale: job.rasterScale,
-            width: job.width,
-            height: job.height,
-            image: res.image,
-            bitmapBytesEstimate: res.bitmapBytesEstimate,
-            readyAt,
-          });
+	          this.textRasterCache.set(job.key, {
+	            key: job.key,
+	            sig: job.sig,
+	            rasterScale: job.rasterScale,
+	            width: job.width,
+	            height: job.height,
+	            image: res.image,
+	            bitmapBytesEstimate: res.bitmapBytesEstimate,
+	            hitZones: res.hitZones,
+	            readyAt,
+	          });
           this.textRasterCacheBytes += res.bitmapBytesEstimate || 0;
 
           const prevBest = this.bestTextRasterKeyBySig.get(job.sig);
@@ -1513,10 +1644,15 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.clearPdfTextSelection({ suppressOverlayCallback: true });
     this.textResizeHold = null;
     this.textLod2Target = null;
+    this.textStreamLod2Target = null;
     this.pdfLod2Target = null;
     if (this.textLod2) {
       this.textLod2.dispose();
       this.textLod2 = null;
+    }
+    if (this.textStreamLod2) {
+      this.textStreamLod2.dispose();
+      this.textStreamLod2 = null;
     }
     if (this.pdfTextLod2) {
       this.pdfTextLod2.dispose();
@@ -1714,12 +1850,13 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       return;
     }
 
-    const text = typeof next === 'string' ? next : String(next ?? '');
-    if (node.content !== text) {
-      node.content = text;
-      node.contentHash = fingerprintText(text);
-      this.textRasterGeneration += 1;
-    }
+	    const text = typeof next === 'string' ? next : String(next ?? '');
+	    if (node.content !== text) {
+	      node.content = text;
+	      node.contentHash = fingerprintText(text);
+	      this.recomputeTextNodeDisplayHash(node);
+	      this.textRasterGeneration += 1;
+	    }
 
     this.editingNodeId = null;
     this.requestRender();
@@ -1739,12 +1876,13 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const node = this.nodes.find((n) => n.id === nodeId);
     if (!node || node.kind !== 'text') return;
     const text = typeof next === 'string' ? next : String(next ?? '');
-    if (node.content === text) return;
-    node.content = text;
-    node.contentHash = fingerprintText(text);
-    this.textRasterGeneration += 1;
-    this.requestRender();
-    this.emitUiState();
+	    if (node.content === text) return;
+	    node.content = text;
+	    node.contentHash = fingerprintText(text);
+	    this.recomputeTextNodeDisplayHash(node);
+	    this.textRasterGeneration += 1;
+	    this.requestRender();
+	    this.emitUiState();
   }
 
   setTextNodeContent(nodeId: string, next: string, opts?: { streaming?: boolean }): void {
@@ -1753,18 +1891,19 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const node = this.nodes.find((n): n is TextNode => n.id === id && n.kind === 'text');
     if (!node) return;
 
-    const text = typeof next === 'string' ? next : String(next ?? '');
-    if (node.content === text) return;
-    node.content = text;
-    node.contentHash = fingerprintText(text);
+	    const text = typeof next === 'string' ? next : String(next ?? '');
+	    if (node.content === text) return;
+	    node.content = text;
+	    node.contentHash = fingerprintText(text);
+	    this.recomputeTextNodeDisplayHash(node);
 
-    // Avoid churn while streaming; finalize with a re-raster + short LOD2 hold.
-    if (!opts?.streaming) {
-      this.textRasterGeneration += 1;
-      const contentRect = this.textContentRect(node.rect);
-      const sig = `${node.contentHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
-      this.textResizeHold = { nodeId: node.id, sig, expiresAt: performance.now() + 2200 };
-    }
+	    // Avoid churn while streaming; finalize with a re-raster + short LOD2 hold.
+	    if (!opts?.streaming) {
+	      this.textRasterGeneration += 1;
+	      const contentRect = this.textContentRect(node.rect);
+	      const sig = `${node.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
+	      this.textResizeHold = { nodeId: node.id, sig, expiresAt: performance.now() + 2200 };
+	    }
 
     this.requestRender();
   }
@@ -1799,7 +1938,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       changed = true;
     }
 
-    if (changed) this.requestRender();
+    if (!changed) return;
+    this.recomputeTextNodeDisplayHash(node);
+    this.requestRender();
   }
 
   setTextNodeApiPayload(nodeId: string, patch: { apiRequest?: unknown; apiResponse?: unknown }): void {
@@ -1819,6 +1960,59 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     }
 
     if (changed) this.requestRender();
+  }
+
+  setTextNodeThinkingSummary(nodeId: string, next: ThinkingSummaryChunk[] | null | undefined): void {
+    const id = nodeId;
+    if (!id) return;
+    const node = this.nodes.find((n): n is TextNode => n.id === id && n.kind === 'text');
+    if (!node) return;
+
+    const normalized = Array.isArray(next) ? next : undefined;
+    node.thinkingSummary = normalized && normalized.length ? normalized : undefined;
+    this.recomputeTextNodeDisplayHash(node);
+    this.requestRender();
+  }
+
+  setTextNodeCanonical(nodeId: string, patch: { canonicalMessage?: unknown; canonicalMeta?: unknown }): void {
+    const id = nodeId;
+    if (!id) return;
+    const node = this.nodes.find((n): n is TextNode => n.id === id && n.kind === 'text');
+    if (!node) return;
+
+    const nextCanonicalMessage = (() => {
+      if (patch.canonicalMessage === undefined) return node.canonicalMessage;
+      if (patch.canonicalMessage == null) return undefined;
+      const raw = patch.canonicalMessage as any;
+      if (!raw || typeof raw !== 'object') return undefined;
+      if (raw.role !== 'assistant') return undefined;
+      const text = typeof raw.text === 'string' ? raw.text : '';
+      return text ? ({ role: 'assistant', text } as CanonicalAssistantMessage) : undefined;
+    })();
+
+    let changed = false;
+    if (patch.canonicalMessage !== undefined && node.canonicalMessage !== nextCanonicalMessage) {
+      node.canonicalMessage = nextCanonicalMessage;
+      changed = true;
+    }
+    if (patch.canonicalMeta !== undefined && node.canonicalMeta !== patch.canonicalMeta) {
+      node.canonicalMeta = patch.canonicalMeta;
+      changed = true;
+    }
+
+    if (!changed) return;
+
+    this.recomputeTextNodeDisplayHash(node);
+
+    // Ensure a fresh raster for non-streaming nodes since summary visibility can change.
+    if (!node.isGenerating && node.id !== this.editingNodeId) {
+      this.textRasterGeneration += 1;
+      const contentRect = this.textContentRect(node.rect);
+      const sig = `${node.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
+      this.textResizeHold = { nodeId: node.id, sig, expiresAt: performance.now() + 2200 };
+    }
+
+    this.requestRender();
   }
 
   clearSelection(): void {
@@ -1878,6 +2072,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (this.hoverTextNodeId === id) this.hoverTextNodeId = null;
     if (this.hoverPdfPage?.nodeId === id) this.hoverPdfPage = null;
     if (this.textLod2Target?.nodeId === id) this.textLod2Target = null;
+    if (this.textStreamLod2Target?.nodeId === id) this.textStreamLod2Target = null;
     if (this.pdfLod2Target?.nodeId === id) this.pdfLod2Target = null;
     if (this.textSelectNodeId === id) this.clearTextSelection({ suppressOverlayCallback: true });
     if (this.pdfSelectTarget?.nodeId === id) this.clearPdfTextSelection({ suppressOverlayCallback: true });
@@ -1900,6 +2095,205 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return { x, y, w, h };
   }
 
+  private buildTextNodeDisplaySig(node: TextNode): string {
+    const parts: string[] = [];
+    parts.push(node.contentHash);
+    parts.push(node.author);
+    parts.push(node.isGenerating ? 'gen:1' : 'gen:0');
+
+    if (node.author === 'assistant') {
+      const expanded = node.expandedSummaryChunks ?? {};
+      const expandedKeys = Object.keys(expanded)
+        .map((k) => Number(k))
+        .filter((n) => Number.isFinite(n) && expanded[n])
+        .sort((a, b) => a - b)
+        .join(',');
+      parts.push(node.summaryExpanded ? 'sumexp:1' : 'sumexp:0');
+      parts.push(`sumchunks:${expandedKeys}`);
+
+	      if (node.isGenerating) {
+	        const chunks = Array.isArray(node.thinkingSummary) ? node.thinkingSummary : [];
+	        const sorted = chunks.slice().sort((a, b) => (a.summaryIndex ?? 0) - (b.summaryIndex ?? 0));
+	        for (const c of sorted) parts.push(`s:${c.summaryIndex}:${c.done ? 1 : 0}:${c.text ?? ''}`);
+	      } else {
+	        const blocks = this.getFinalReasoningBlocks(node);
+	        for (const b of blocks) parts.push(`b:${b.text ?? ''}`);
+	      }
+	    }
+
+    return parts.join('\n');
+  }
+
+  private recomputeTextNodeDisplayHash(node: TextNode): void {
+    node.displayHash = fingerprintText(this.buildTextNodeDisplaySig(node));
+  }
+
+  private getFinalReasoningBlocks(node: TextNode): Array<{ id: number; text: string }> {
+    const blocks = readReasoningSummaryBlocks(node.canonicalMeta);
+    if (blocks.length > 0) return blocks.map((b, i) => ({ id: i, text: b.text }));
+    const chunks = Array.isArray(node.thinkingSummary) ? node.thinkingSummary : [];
+    if (chunks.length > 0) return chunks.map((c) => ({ id: c.summaryIndex ?? 0, text: c.text ?? '' }));
+    return [];
+  }
+
+  private renderTextNodeHtml(node: TextNode): string {
+    const isUser = node.author === 'user';
+    const isAssistant = node.author === 'assistant';
+    const content = typeof node.content === 'string' ? node.content : String(node.content ?? '');
+    const hasContent = Boolean(content.trim());
+    const parts: string[] = [];
+
+    if (node.isGenerating && !hasContent) {
+      parts.push('<div style="margin:8px 0 6px;color:rgba(255,255,255,0.55);font-size:13px;">Thinking...</div>');
+    }
+
+    if (isAssistant) {
+      const streaming = Array.isArray(node.thinkingSummary) ? node.thinkingSummary : [];
+      const finalBlocks = this.getFinalReasoningBlocks(node);
+      const showSection = (streaming.length > 0) || (finalBlocks.length > 0);
+      const showToggle = !node.isGenerating && finalBlocks.length > 0;
+      const showBody =
+        (node.isGenerating && streaming.length > 0) ||
+        (!node.isGenerating && Boolean(node.summaryExpanded) && finalBlocks.length > 0);
+
+      if (showSection) {
+        if (showToggle) {
+          const chevron = node.summaryExpanded ? '▾' : '▸';
+          parts.push(
+            `<div data-gcv1-summary-toggle="1" style="margin:8px 0 4px;display:inline-flex;align-items:center;gap:6px;` +
+              `color:rgba(255,255,255,0.55);font-size:13px;cursor:pointer;user-select:none;">` +
+              `<span aria-hidden="true" style="width:14px;display:inline-flex;justify-content:center;">${chevron}</span>` +
+              `<span>Thinking summary</span>` +
+              `</div>`,
+          );
+        }
+
+        if (showBody) {
+          parts.push('<div style="margin:0 0 8px;color:rgba(255,255,255,0.55);font-size:13px;">');
+          const rows: Array<{ summaryIndex: number; text: string; done: boolean }> = node.isGenerating
+            ? streaming.map((c) => ({ summaryIndex: c.summaryIndex ?? 0, text: c.text ?? '', done: Boolean(c.done) }))
+            : finalBlocks.map((b) => ({ summaryIndex: b.id ?? 0, text: b.text ?? '', done: true }));
+
+          for (const row of rows) {
+            const idx = row.summaryIndex ?? 0;
+            const rawText = row.text ?? '';
+            if (node.isGenerating && !row.done) {
+              parts.push(
+                `<div style="display:flex;align-items:flex-start;gap:6px;margin:2px 0;">` +
+                  `<span aria-hidden="true" style="width:14px;flex:0 0 14px;margin-top:2px;"></span>` +
+                  `<div style="white-space:pre-wrap;flex:1;min-width:0;">${escapeHtml(stripStrong(rawText))}</div>` +
+                  `</div>`,
+              );
+              continue;
+            }
+
+            const expanded = Boolean(node.expandedSummaryChunks?.[idx]);
+            const chevron = expanded ? '▾' : '▸';
+            const display = expanded ? stripStrong(rawText) : summarizeFirstLine(rawText);
+            const textStyle = expanded
+              ? 'white-space:pre-wrap;'
+              : 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+            parts.push(
+              `<div style="display:flex;align-items:flex-start;gap:6px;margin:2px 0;">` +
+                `<span data-gcv1-summary-chunk-toggle="${idx}" aria-hidden="true" ` +
+                `style="width:14px;flex:0 0 14px;margin-top:2px;display:inline-flex;justify-content:center;` +
+                `color:rgba(255,255,255,0.55);cursor:pointer;user-select:none;">${chevron}</span>` +
+                `<div style="${textStyle}flex:1;min-width:0;">${escapeHtml(display)}</div>` +
+                `</div>`,
+            );
+          }
+          parts.push('</div>');
+        }
+      }
+    }
+
+    if (hasContent) {
+      if (node.isGenerating && !isUser) {
+        parts.push('<div style="font-size:11px;color:rgba(255,255,255,0.45);margin:0 0 4px;">Streaming…</div>');
+      }
+      parts.push(renderMarkdownMath(content));
+    }
+
+    return parts.join('');
+  }
+
+  private updateTextLod2HitZonesFromOverlay(nodeId: string, displayHash: string, overlay: TextLod2Overlay): void {
+    try {
+      const z = Math.max(0.001, overlay.getZoom() || 1);
+      const contentEl = overlay.getContentElement();
+      const base = contentEl.getBoundingClientRect();
+      const zones: TextHitZone[] = [];
+
+      const sum = contentEl.querySelector('[data-gcv1-summary-toggle]') as HTMLElement | null;
+      if (sum) {
+        const r = sum.getBoundingClientRect();
+        zones.push({
+          kind: 'summary_toggle',
+          left: (r.left - base.left) / z,
+          top: (r.top - base.top) / z,
+          width: r.width / z,
+          height: r.height / z,
+        });
+      }
+
+      const chunkBtns = Array.from(contentEl.querySelectorAll('[data-gcv1-summary-chunk-toggle]')) as HTMLElement[];
+      for (const el of chunkBtns) {
+        const raw = el.getAttribute('data-gcv1-summary-chunk-toggle') ?? '';
+        const idx = Number(raw);
+        if (!Number.isFinite(idx)) continue;
+        const r = el.getBoundingClientRect();
+        zones.push({
+          kind: 'summary_chunk_toggle',
+          summaryIndex: idx,
+          left: (r.left - base.left) / z,
+          top: (r.top - base.top) / z,
+          width: r.width / z,
+          height: r.height / z,
+        });
+      }
+
+      this.textLod2HitZones = { nodeId, displayHash, zones };
+    } catch {
+      this.textLod2HitZones = null;
+    }
+  }
+
+  private getTextNodeHitZoneAtWorld(node: TextNode, world: Vec2): TextHitZone | null {
+    const contentRect = this.textContentRect(node.rect);
+    const localX = world.x - contentRect.x;
+    const localY = world.y - contentRect.y;
+    if (localX < 0 || localY < 0 || localX > contentRect.w || localY > contentRect.h) return null;
+
+    // Prefer DOM overlay hit zones if the overlay is currently showing this node.
+    const overlayZones =
+      this.textLod2Target?.nodeId === node.id &&
+      this.textLod2 &&
+      this.textLod2HitZones &&
+      this.textLod2HitZones.nodeId === node.id &&
+      this.textLod2HitZones.displayHash === node.displayHash
+        ? this.textLod2HitZones.zones
+        : null;
+
+    const zones = overlayZones ?? (() => {
+      const sig = `${node.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
+      const best = this.getBestTextRaster(sig);
+      return best?.hitZones ?? null;
+    })();
+
+    if (!zones || zones.length === 0) return null;
+    for (const z of zones) {
+      if (
+        localX >= z.left &&
+        localX <= z.left + z.width &&
+        localY >= z.top &&
+        localY <= z.top + z.height
+      ) {
+        return z;
+      }
+    }
+    return null;
+  }
+
   private ensureTextLod2Overlay(): TextLod2Overlay | null {
     if (this.textLod2) return this.textLod2;
     if (typeof document === 'undefined') return null;
@@ -1911,8 +2305,55 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         this.clearTextSelection({ suppressOverlayCallback: true });
         this.requestRender();
       },
+      onRequestAction: (action: TextLod2Action) => {
+        const nodeId = action?.nodeId;
+        if (!nodeId) return;
+        const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === nodeId) ?? null;
+        if (!node || node.author !== 'assistant') return;
+
+        if (action.kind === 'summary_toggle') {
+          const blocks = this.getFinalReasoningBlocks(node);
+          if (node.isGenerating || blocks.length === 0) return;
+          node.summaryExpanded = !node.summaryExpanded;
+          this.recomputeTextNodeDisplayHash(node);
+          this.textRasterGeneration += 1;
+          const contentRect = this.textContentRect(node.rect);
+          const sig = `${node.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
+          this.textResizeHold = { nodeId: node.id, sig, expiresAt: performance.now() + 2200 };
+          this.requestRender();
+          return;
+        }
+
+        if (action.kind === 'summary_chunk_toggle') {
+          const idx = Number(action.summaryIndex);
+          if (!Number.isFinite(idx)) return;
+          const prev = node.expandedSummaryChunks ?? {};
+          const next: Record<number, boolean> = { ...prev };
+          if (next[idx]) delete next[idx];
+          else next[idx] = true;
+          node.expandedSummaryChunks = Object.keys(next).length ? next : undefined;
+
+          this.recomputeTextNodeDisplayHash(node);
+          if (!node.isGenerating) {
+            this.textRasterGeneration += 1;
+            const contentRect = this.textContentRect(node.rect);
+            const sig = `${node.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
+            this.textResizeHold = { nodeId: node.id, sig, expiresAt: performance.now() + 2200 };
+          }
+          this.requestRender();
+        }
+      },
     });
     return this.textLod2;
+  }
+
+  private ensureTextStreamLod2Overlay(): TextLod2Overlay | null {
+    if (this.textStreamLod2) return this.textStreamLod2;
+    if (typeof document === 'undefined') return null;
+    const host = this.overlayHost;
+    if (!host) return null;
+    this.textStreamLod2 = new TextLod2Overlay({ host, zIndex: 9 });
+    return this.textStreamLod2;
   }
 
   private ensurePdfTextLod2Overlay(): PdfTextLod2Overlay | null {
@@ -2036,6 +2477,33 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return null;
   }
 
+  private computeTextStreamLod2Target(
+    interactiveTarget: { nodeId: string; mode: TextLod2Mode } | null,
+  ): { nodeId: string; mode: TextLod2Mode } | null {
+    const editingId = this.editingNodeId;
+    const view = this.worldViewportRect({ overscan: 280 });
+    const selected = this.selectedNodeId
+      ? (this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === this.selectedNodeId) ?? null)
+      : null;
+
+    if (selected?.isGenerating && selected.id !== editingId && rectsIntersect(selected.rect, view)) {
+      if (interactiveTarget?.nodeId === selected.id) return null;
+      return { nodeId: selected.id, mode: 'select' };
+    }
+
+    for (let i = this.nodes.length - 1; i >= 0; i -= 1) {
+      const n = this.nodes[i];
+      if (n.kind !== 'text') continue;
+      if (n.id === editingId) continue;
+      if (!n.isGenerating) continue;
+      if (!rectsIntersect(n.rect, view)) continue;
+      if (interactiveTarget?.nodeId === n.id) return null;
+      return { nodeId: n.id, mode: 'select' };
+    }
+
+    return null;
+  }
+
   private computePdfLod2Target(): { nodeId: string; token: number; pageNumber: number } | null {
     if (this.editingNodeId) return null;
 
@@ -2061,12 +2529,14 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const overlay = this.textLod2;
     if (!target) {
       if (overlay) overlay.hide();
+      this.textLod2HitZones = null;
       return;
     }
 
     const node = this.nodes.find((n): n is TextNode => n.id === target.nodeId && n.kind === 'text');
     if (!node) {
       if (overlay) overlay.hide();
+      this.textLod2HitZones = null;
       return;
     }
 
@@ -2079,11 +2549,11 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const screenRect: Rect = { x: tl.x, y: tl.y, w: contentRect.w * z, h: contentRect.h * z };
     const cached = this.textLod2HtmlCache;
     const html =
-      cached && cached.nodeId === node.id && cached.contentHash === node.contentHash
+      cached && cached.nodeId === node.id && cached.displayHash === node.displayHash
         ? cached.html
         : (() => {
-            const nextHtml = renderMarkdownMath(node.content ?? '');
-            this.textLod2HtmlCache = { nodeId: node.id, contentHash: node.contentHash, html: nextHtml };
+            const nextHtml = this.renderTextNodeHtml(node);
+            this.textLod2HtmlCache = { nodeId: node.id, displayHash: node.displayHash, html: nextHtml };
             return nextHtml;
           })();
     const interactive = target.mode === 'select' && this.textSelectNodeId !== node.id && !node.isGenerating;
@@ -2095,7 +2565,52 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       worldW: contentRect.w,
       worldH: contentRect.h,
       zoom: z,
-      contentHash: node.contentHash,
+      contentHash: node.displayHash,
+      html,
+    });
+    this.updateTextLod2HitZonesFromOverlay(node.id, node.displayHash, lod2);
+  }
+
+  private renderTextStreamLod2Target(target: { nodeId: string; mode: TextLod2Mode } | null): void {
+    const overlay = this.textStreamLod2;
+    if (!target) {
+      if (overlay) overlay.hide();
+      return;
+    }
+
+    const node = this.nodes.find((n): n is TextNode => n.id === target.nodeId && n.kind === 'text');
+    if (!node) {
+      if (overlay) overlay.hide();
+      return;
+    }
+
+    const lod2 = this.ensureTextStreamLod2Overlay();
+    if (!lod2) return;
+
+    const contentRect = this.textContentRect(node.rect);
+    const tl = this.camera.worldToScreen({ x: contentRect.x, y: contentRect.y });
+    const z = Math.max(0.001, this.camera.zoom || 1);
+    const screenRect: Rect = { x: tl.x, y: tl.y, w: contentRect.w * z, h: contentRect.h * z };
+
+    const cached = this.textStreamLod2HtmlCache;
+    const html =
+      cached && cached.nodeId === node.id && cached.displayHash === node.displayHash
+        ? cached.html
+        : (() => {
+            const nextHtml = this.renderTextNodeHtml(node);
+            this.textStreamLod2HtmlCache = { nodeId: node.id, displayHash: node.displayHash, html: nextHtml };
+            return nextHtml;
+          })();
+
+    lod2.show({
+      nodeId: node.id,
+      mode: target.mode,
+      interactive: false,
+      screenRect,
+      worldW: contentRect.w,
+      worldH: contentRect.h,
+      zoom: z,
+      contentHash: node.displayHash,
       html,
     });
   }
@@ -2555,7 +3070,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return chosen;
   }
 
-  private getBestTextRaster(sig: string): { key: string; image: CanvasImageSource } | null {
+  private getBestTextRaster(sig: string): { key: string; image: CanvasImageSource; hitZones?: TextHitZone[] } | null {
     const best = this.bestTextRasterKeyBySig.get(sig);
     if (!best) return null;
     const entry = this.textRasterCache.get(best.key);
@@ -2564,7 +3079,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       return null;
     }
     this.touchTextRaster(best.key);
-    return { key: best.key, image: entry.image };
+    return { key: best.key, image: entry.image, hitZones: entry.hitZones };
   }
 
   private updateTextRastersForViewport(): void {
@@ -2579,7 +3094,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       if (!rectsIntersect(n.rect, view)) continue;
 
       const contentRect = this.textContentRect(n.rect);
-      const sig = `${n.contentHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
+      const sig = `${n.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
       const best = this.bestTextRasterKeyBySig.get(sig);
       const hasBest = !!best && this.textRasterCache.has(best.key);
       if (hasBest && best!.rasterScale >= desiredScale) continue;
@@ -2598,7 +3113,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         rasterScale: desiredScale,
         width: contentRect.w,
         height: contentRect.h,
-        source: n.content,
+        html: this.renderTextNodeHtml(n),
       });
     }
 
@@ -2949,23 +3464,32 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       }
     }
 
-    if (hit.kind === 'text' && hit.isGenerating) {
-      const stopBtn = this.stopButtonRect(hit);
-      const inStop =
-        world.x >= stopBtn.x &&
-        world.x <= stopBtn.x + stopBtn.w &&
-        world.y >= stopBtn.y &&
-        world.y <= stopBtn.y + stopBtn.h;
-      if (inStop) {
-        this.requestRender();
-        if (selectionChanged) this.emitUiState();
-        return 'node';
-      }
-    }
+	    if (hit.kind === 'text' && hit.isGenerating) {
+	      const stopBtn = this.stopButtonRect(hit);
+	      const inStop =
+	        world.x >= stopBtn.x &&
+	        world.x <= stopBtn.x + stopBtn.w &&
+	        world.y >= stopBtn.y &&
+	        world.y <= stopBtn.y + stopBtn.h;
+	      if (inStop) {
+	        this.requestRender();
+	        if (selectionChanged) this.emitUiState();
+	        return 'node';
+	      }
+	    }
 
-    const corner = hit.kind === 'text' ? this.hitResizeHandle(world, hit.rect) : null;
-    const startRect: Rect = { ...hit.rect };
-    if (corner) {
+	    if (hit.kind === 'text' && hit.author === 'assistant') {
+	      const zone = this.getTextNodeHitZoneAtWorld(hit, world);
+	      if (zone && (zone.kind === 'summary_toggle' || zone.kind === 'summary_chunk_toggle')) {
+	        this.requestRender();
+	        if (selectionChanged) this.emitUiState();
+	        return 'node';
+	      }
+	    }
+
+	    const corner = hit.kind === 'text' ? this.hitResizeHandle(world, hit.rect) : null;
+	    const startRect: Rect = { ...hit.rect };
+	    if (corner) {
       this.activeGesture = {
         kind: 'resize',
         pointerId: info.pointerId,
@@ -3246,14 +3770,14 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       return;
     }
 
-    if (g.kind === 'resize') {
-      const node = this.nodes.find((n): n is TextNode => n.id === g.nodeId && n.kind === 'text');
-      if (node) {
-        const contentRect = this.textContentRect(node.rect);
-        const sig = `${node.contentHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
-        this.textResizeHold = { nodeId: node.id, sig, expiresAt: performance.now() + 2200 };
-      }
-    }
+	    if (g.kind === 'resize') {
+	      const node = this.nodes.find((n): n is TextNode => n.id === g.nodeId && n.kind === 'text');
+	      if (node) {
+	        const contentRect = this.textContentRect(node.rect);
+	        const sig = `${node.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
+	        this.textResizeHold = { nodeId: node.id, sig, expiresAt: performance.now() + 2200 };
+	      }
+	    }
 
     this.activeGesture = null;
     if (info.wasDrag) this.suppressTapPointerIds.delete(info.pointerId);
@@ -3283,8 +3807,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (hit) {
       if (hit.kind === 'text' && hit.isGenerating) {
         const btn = this.stopButtonRect(hit);
-        const inStop =
-          world.x >= btn.x && world.x <= btn.x + btn.w && world.y >= btn.y && world.y <= btn.y + btn.h;
+        const inStop = world.x >= btn.x && world.x <= btn.x + btn.w && world.y >= btn.y && world.y <= btn.y + btn.h;
         if (inStop) {
           const changed = this.selectedNodeId !== hit.id || this.editingNodeId !== null;
           this.selectedNodeId = hit.id;
@@ -3294,6 +3817,56 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           if (changed) this.emitUiState();
           this.onRequestCancelGeneration?.(hit.id);
           return;
+        }
+      }
+
+      if (hit.kind === 'text' && hit.author === 'assistant') {
+        const zone = this.getTextNodeHitZoneAtWorld(hit, world);
+        if (zone) {
+          const selectionChanged = this.selectedNodeId !== hit.id || this.editingNodeId !== null;
+          this.selectedNodeId = hit.id;
+          this.editingNodeId = null;
+          this.bringNodeToFront(hit.id);
+
+          if (zone.kind === 'summary_toggle') {
+            const blocks = this.getFinalReasoningBlocks(hit);
+            if (!hit.isGenerating && blocks.length > 0) {
+              hit.summaryExpanded = !hit.summaryExpanded;
+              this.recomputeTextNodeDisplayHash(hit);
+              this.textRasterGeneration += 1;
+              const contentRect = this.textContentRect(hit.rect);
+              const sig = `${hit.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
+              this.textResizeHold = { nodeId: hit.id, sig, expiresAt: performance.now() + 2200 };
+              this.requestRender();
+              if (selectionChanged) this.emitUiState();
+              return;
+            }
+            if (selectionChanged) {
+              this.requestRender();
+              this.emitUiState();
+            }
+            return;
+          }
+
+          if (zone.kind === 'summary_chunk_toggle') {
+            const idx = zone.summaryIndex ?? 0;
+            const prev = hit.expandedSummaryChunks ?? {};
+            const next: Record<number, boolean> = { ...prev };
+            if (next[idx]) delete next[idx];
+            else next[idx] = true;
+            hit.expandedSummaryChunks = Object.keys(next).length ? next : undefined;
+
+            this.recomputeTextNodeDisplayHash(hit);
+            if (!hit.isGenerating) {
+              this.textRasterGeneration += 1;
+              const contentRect = this.textContentRect(hit.rect);
+              const sig = `${hit.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
+              this.textResizeHold = { nodeId: hit.id, sig, expiresAt: performance.now() + 2200 };
+            }
+            this.requestRender();
+            if (selectionChanged) this.emitUiState();
+            return;
+          }
         }
       }
 
@@ -3867,24 +4440,26 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       if (node.kind === 'text') {
         const contentRect = this.textContentRect(node.rect);
 
-        // When LOD2 is active for this node, the DOM overlay is responsible for the content.
-        if (this.textLod2Target?.nodeId !== node.id) {
-          const sig = `${node.contentHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
-          const raster = this.getBestTextRaster(sig);
-          if (raster) {
-            try {
-              ctx.drawImage(raster.image, contentRect.x, contentRect.y, contentRect.w, contentRect.h);
-            } catch {
-              // ignore; fall back to placeholder
-            }
-          } else {
-            const line = node.content.split('\n').find((s) => s.trim()) ?? '';
-            const preview = line.replace(/^#+\s*/, '').slice(0, 120);
-            ctx.fillText(preview ? preview : '…', x + 14, y + 34);
-            ctx.fillStyle = 'rgba(255,255,255,0.45)';
-            ctx.fillText('Rendering…', contentRect.x, contentRect.y);
-          }
-        }
+        // When a text node is covered by a LOD2 DOM overlay, the overlay is responsible for the content.
+        const hasLod2 =
+          this.textLod2Target?.nodeId === node.id || this.textStreamLod2Target?.nodeId === node.id;
+        if (!hasLod2) {
+	          const sig = `${node.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
+	          const raster = this.getBestTextRaster(sig);
+	          if (raster) {
+	            try {
+	              ctx.drawImage(raster.image, contentRect.x, contentRect.y, contentRect.w, contentRect.h);
+	            } catch {
+	              // ignore; fall back to placeholder
+	            }
+	          } else {
+	            const line = node.content.split('\n').find((s) => s.trim()) ?? '';
+	            const preview = line.replace(/^#+\s*/, '').slice(0, 120);
+	            ctx.fillText(preview ? preview : '…', x + 14, y + 34);
+	            ctx.fillStyle = 'rgba(255,255,255,0.45)';
+	            ctx.fillText('Rendering…', contentRect.x, contentRect.y);
+	          }
+	        }
       } else if (node.kind === 'pdf') {
         const contentRect = this.textContentRect(node.rect);
         if (node.status === 'empty') {
@@ -4070,6 +4645,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   draw(): void {
     const nextTextLod2Target = this.computeTextLod2Target();
     this.textLod2Target = nextTextLod2Target;
+    const nextTextStreamLod2Target = this.computeTextStreamLod2Target(nextTextLod2Target);
+    this.textStreamLod2Target = nextTextStreamLod2Target;
     const nextPdfLod2Target = this.computePdfLod2Target();
     this.pdfLod2Target = nextPdfLod2Target;
 
@@ -4086,6 +4663,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.updatePdfPageRendersForViewport();
     this.drawDemoNodes();
     this.drawWorldInk();
+    this.renderTextStreamLod2Target(nextTextStreamLod2Target);
     this.renderTextLod2Target(nextTextLod2Target);
     this.renderPdfTextLod2Target(nextPdfLod2Target);
     this.drawScreenHud();
