@@ -33,6 +33,27 @@ async function attachmentToOpenAIContent(att: any): Promise<any | null> {
     }
   };
 
+  const materializeBase64 = async (fallbackMimeType: string): Promise<string | null> => {
+    if (typeof att.data === 'string' && att.data) return att.data;
+    const storageKey = typeof att.storageKey === 'string' ? (att.storageKey as string) : '';
+    if (!storageKey) return null;
+    try {
+      const rec = await getStoredAttachment(storageKey);
+      if (!rec?.blob) return null;
+      const mimeType =
+        (typeof rec.mimeType === 'string' && rec.mimeType) ||
+        (typeof att.mimeType === 'string' && att.mimeType) ||
+        fallbackMimeType;
+      const dataUrl = await blobToDataUrl(rec.blob, mimeType);
+      const comma = dataUrl.indexOf(',');
+      if (comma === -1) return null;
+      const base64 = dataUrl.slice(comma + 1);
+      return base64 ? base64 : null;
+    } catch {
+      return null;
+    }
+  };
+
   if (att.kind === 'image') {
     const dataUrl = await materializeDataUrl('image/png');
     if (!dataUrl) return null;
@@ -41,9 +62,9 @@ async function attachmentToOpenAIContent(att: any): Promise<any | null> {
   }
 
   if (att.kind === 'pdf' || att.mimeType === 'application/pdf') {
-    const dataUrl = await materializeDataUrl('application/pdf');
-    if (!dataUrl) return null;
-    const fileBlock: any = { type: 'input_file', file_data: dataUrl };
+    const base64 = await materializeBase64('application/pdf');
+    if (!base64) return null;
+    const fileBlock: any = { type: 'input_file', file_data: base64 };
     if (typeof att.name === 'string' && att.name.trim()) fileBlock.filename = att.name.trim();
     return fileBlock;
   }

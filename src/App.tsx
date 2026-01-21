@@ -74,6 +74,48 @@ type GenerationJob = {
   closed: boolean;
 };
 
+type DraftAttachmentDedupeState = {
+  inFlight: Set<string>;
+  attached: Set<string>;
+  byStorageKey: Map<string, string>;
+};
+
+function fileSignature(file: File): string {
+  const name = typeof (file as any)?.name === 'string' ? String((file as any).name) : '';
+  const size = Number.isFinite((file as any)?.size) ? Number((file as any).size) : 0;
+  const type = typeof (file as any)?.type === 'string' ? String((file as any).type) : '';
+  const lastModified = Number.isFinite((file as any)?.lastModified) ? Number((file as any).lastModified) : 0;
+  return `${name}|${size}|${type}|${lastModified}`;
+}
+
+function comparableAttachmentKey(att: ChatAttachment | null | undefined): string {
+  if (!att) return '';
+  if (att.kind !== 'image' && att.kind !== 'pdf') return '';
+  const name = typeof att.name === 'string' ? att.name.trim() : '';
+  const size = Number.isFinite(att.size) ? att.size : 0;
+  const mimeType = typeof (att as any)?.mimeType === 'string' ? String((att as any).mimeType).trim() : '';
+  return `${att.kind}|${name}|${size}|${mimeType}`;
+}
+
+function comparableFileKey(file: File): string {
+  const name = typeof (file as any)?.name === 'string' ? String((file as any).name).trim() : '';
+  const size = Number.isFinite((file as any)?.size) ? Number((file as any).size) : 0;
+  const type = typeof (file as any)?.type === 'string' ? String((file as any).type).toLowerCase() : '';
+  const lowerName = name.toLowerCase();
+  const isPdf = type === 'application/pdf' || lowerName.endsWith('.pdf');
+  const isImage =
+    type.startsWith('image/') ||
+    lowerName.endsWith('.png') ||
+    lowerName.endsWith('.jpg') ||
+    lowerName.endsWith('.jpeg') ||
+    lowerName.endsWith('.gif') ||
+    lowerName.endsWith('.webp');
+  if (!isPdf && !isImage) return '';
+  const kind = isPdf ? 'pdf' : 'image';
+  const mimeType = isPdf ? 'application/pdf' : type.startsWith('image/') ? type : 'image/png';
+  return `${kind}|${name}|${size}|${mimeType}`;
+}
+
 type RawViewerState = {
   nodeId: string;
   title: string;
@@ -305,6 +347,8 @@ export default function App() {
   const [viewport, setViewport] = useState(() => ({ w: 1, h: 1 }));
   const [composerDraft, setComposerDraft] = useState('');
   const [composerDraftAttachments, setComposerDraftAttachments] = useState<ChatAttachment[]>(() => []);
+  const lastAddAttachmentFilesRef = useRef<{ sig: string; at: number }>({ sig: '', at: 0 });
+  const draftAttachmentDedupeRef = useRef<Map<string, DraftAttachmentDedupeState>>(new Map());
   const [replySelection, setReplySelection] = useState<ReplySelection | null>(null);
   const [replyContextAttachments, setReplyContextAttachments] = useState<ContextAttachmentItem[]>(() => []);
   const [replySelectedAttachmentKeys, setReplySelectedAttachmentKeys] = useState<string[]>(() => []);
@@ -386,6 +430,14 @@ export default function App() {
     };
     chatMetaRef.current.set(chatId, meta);
     return meta;
+  };
+
+  const ensureDraftAttachmentDedupe = (chatId: string): DraftAttachmentDedupeState => {
+    const existing = draftAttachmentDedupeRef.current.get(chatId);
+    if (existing) return existing;
+    const created: DraftAttachmentDedupeState = { inFlight: new Set(), attached: new Set(), byStorageKey: new Map() };
+    draftAttachmentDedupeRef.current.set(chatId, created);
+    return created;
   };
 
   useEffect(() => {
@@ -1000,7 +1052,7 @@ export default function App() {
       const existingMeta = chatMetaRef.current.get(prevChatId);
       if (existingMeta) {
         existingMeta.draft = composerDraft;
-        existingMeta.draftAttachments = composerDraftAttachments;
+        existingMeta.draftAttachments = composerDraftAttachments.slice();
         existingMeta.replyTo = replySelection;
         existingMeta.selectedAttachmentKeys = replySelectedAttachmentKeys;
         existingMeta.llm = {
@@ -1027,7 +1079,7 @@ export default function App() {
 
     const meta = ensureChatMeta(nextChatId);
     setComposerDraft(meta.draft);
-    setComposerDraftAttachments(Array.isArray(meta.draftAttachments) ? meta.draftAttachments : []);
+    setComposerDraftAttachments(Array.isArray(meta.draftAttachments) ? meta.draftAttachments.slice() : []);
     setReplySelection(meta.replyTo);
     setReplySelectedAttachmentKeys(Array.isArray(meta.selectedAttachmentKeys) ? meta.selectedAttachmentKeys : []);
     setBackgroundStorageKey(typeof meta.backgroundStorageKey === 'string' ? meta.backgroundStorageKey : null);
@@ -1110,10 +1162,10 @@ export default function App() {
       }
     }
 
-    const meta = ensureChatMeta(resolvedActive);
-    setComposerDraft(meta.draft);
-    setComposerDraftAttachments(Array.isArray(meta.draftAttachments) ? meta.draftAttachments : []);
-    setReplySelection(meta.replyTo);
+	    const meta = ensureChatMeta(resolvedActive);
+	    setComposerDraft(meta.draft);
+	    setComposerDraftAttachments(Array.isArray(meta.draftAttachments) ? meta.draftAttachments.slice() : []);
+	    setReplySelection(meta.replyTo);
     setReplySelectedAttachmentKeys(Array.isArray(meta.selectedAttachmentKeys) ? meta.selectedAttachmentKeys : []);
     setBackgroundStorageKey(typeof meta.backgroundStorageKey === 'string' ? meta.backgroundStorageKey : null);
     if (meta.replyTo?.nodeId) {
@@ -1482,19 +1534,72 @@ export default function App() {
           draftAttachments={composerDraftAttachments}
           onAddAttachmentFiles={(files) => {
             const chatId = activeChatIdRef.current;
-            const list = Array.from(files ?? []);
+            const rawList = Array.from(files ?? []);
+            const dedupe = ensureDraftAttachmentDedupe(chatId);
+
+            const sigParts = rawList
+              .map((f) => fileSignature(f))
+              .sort();
+            const sig = sigParts.join(',');
+            const now = Date.now();
+            if (sig) {
+              const prev = lastAddAttachmentFilesRef.current;
+              if (prev.sig === sig && now - prev.at < 1500) return;
+              lastAddAttachmentFilesRef.current = { sig, at: now };
+            }
+
+            const seen = new Set<string>();
+            const list = rawList.filter((f) => {
+              const key = fileSignature(f);
+              if (!key) return true;
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            });
+
             void (async () => {
               for (const f of list) {
+                const fileSig = fileSignature(f);
+                const compKey = comparableFileKey(f);
+                if (fileSig && (dedupe.inFlight.has(fileSig) || dedupe.attached.has(fileSig))) continue;
+
+                if (compKey) {
+                  const meta = ensureChatMeta(chatId);
+                  const exists = meta.draftAttachments.some((att) => comparableAttachmentKey(att) === compKey);
+                  if (exists) continue;
+                }
+
+                if (fileSig) dedupe.inFlight.add(fileSig);
                 try {
                   const att = await fileToChatAttachment(f);
                   if (!att) continue;
+
+                  if (compKey) {
+                    const meta = ensureChatMeta(chatId);
+                    const exists = meta.draftAttachments.some((it) => comparableAttachmentKey(it) === compKey);
+                    if (exists) {
+                      const storageKey =
+                        att && (att.kind === 'image' || att.kind === 'pdf') ? (att.storageKey as string | undefined) : undefined;
+                      if (storageKey) void deleteAttachment(storageKey);
+                      continue;
+                    }
+                  }
+
                   const meta = ensureChatMeta(chatId);
-                  meta.draftAttachments.push(att);
+                  meta.draftAttachments = [...meta.draftAttachments, att];
+                  if (fileSig) {
+                    dedupe.attached.add(fileSig);
+                    const storageKey =
+                      att && (att.kind === 'image' || att.kind === 'pdf') ? (att.storageKey as string | undefined) : undefined;
+                    if (storageKey) dedupe.byStorageKey.set(storageKey, fileSig);
+                  }
                   if (activeChatIdRef.current === chatId) {
-                    setComposerDraftAttachments((prev) => [...prev, att]);
+                    setComposerDraftAttachments(meta.draftAttachments.slice());
                   }
                 } catch {
                   // ignore
+                } finally {
+                  if (fileSig) dedupe.inFlight.delete(fileSig);
                 }
               }
             })();
@@ -1507,7 +1612,16 @@ export default function App() {
             const storageKey =
               removed && (removed.kind === 'image' || removed.kind === 'pdf') ? (removed.storageKey as string | undefined) : undefined;
             if (storageKey) void deleteAttachment(storageKey);
-            setComposerDraftAttachments(meta.draftAttachments);
+            if (storageKey) {
+              const dedupe = ensureDraftAttachmentDedupe(activeChatId);
+              const fileSig = dedupe.byStorageKey.get(storageKey);
+              if (fileSig) {
+                dedupe.attached.delete(fileSig);
+                dedupe.inFlight.delete(fileSig);
+              }
+              dedupe.byStorageKey.delete(storageKey);
+            }
+            setComposerDraftAttachments(meta.draftAttachments.slice());
           }}
           contextAttachments={replyContextAttachments}
           selectedContextAttachmentKeys={replySelectedAttachmentKeys}
@@ -1570,13 +1684,15 @@ export default function App() {
               attachmentNodeIds: [],
             });
             meta.headNodeId = res.assistantNodeId;
-            meta.replyTo = null;
-            meta.draft = '';
-            meta.draftAttachments = [];
-            meta.selectedAttachmentKeys = [];
-            setReplySelection(null);
-            setReplyContextAttachments([]);
-            setReplySelectedAttachmentKeys([]);
+	            meta.replyTo = null;
+	            meta.draft = '';
+	            meta.draftAttachments = [];
+	            meta.selectedAttachmentKeys = [];
+	            draftAttachmentDedupeRef.current.delete(activeChatId);
+	            lastAddAttachmentFilesRef.current = { sig: '', at: 0 };
+	            setReplySelection(null);
+	            setReplyContextAttachments([]);
+	            setReplySelectedAttachmentKeys([]);
             setComposerDraft('');
             setComposerDraftAttachments([]);
 

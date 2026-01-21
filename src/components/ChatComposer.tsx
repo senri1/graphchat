@@ -2,6 +2,7 @@ import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useSt
 import MarkdownMath from './MarkdownMath';
 import type { ModelInfo, TextVerbosity } from '../llm/registry';
 import type { ChatAttachment } from '../model/chat';
+import { getAttachment as getStoredAttachment } from '../storage/attachments';
 
 type ResizeMode =
   | { kind: 'height' }
@@ -72,15 +73,24 @@ export default function ChatComposer(props: Props) {
   const DEFAULT_PANEL_H = 180;
   const MIN_PANEL_H = 130;
   const AUTO_MAX_PANEL_H = 360;
+  const ATTACHMENTS_STRIP_MAX_H = DEFAULT_PANEL_H;
+  const ATTACHMENTS_STRIP_W = 74;
+  const ATTACHMENTS_STRIP_GAP = 10;
 
   const [composerWidth, setComposerWidth] = useState<number>(() => {
     if (typeof window === 'undefined') return DEFAULT_COMPOSER_W;
     const maxW = Math.max(0, Math.min(MAX_W, Math.floor(window.innerWidth - VIEWPORT_MARGIN_X)));
     return Math.min(DEFAULT_COMPOSER_W, maxW);
   });
+  const [viewportW, setViewportW] = useState<number>(() => {
+    if (typeof window === 'undefined') return DEFAULT_COMPOSER_W + VIEWPORT_MARGIN_X;
+    return window.innerWidth;
+  });
   const [manualWidthEnabled, setManualWidthEnabled] = useState(false);
   const [manualHeightEnabled, setManualHeightEnabled] = useState(false);
   const [panelHeight, setPanelHeight] = useState<number>(DEFAULT_PANEL_H);
+  const manualHeightRef = useRef<number>(DEFAULT_PANEL_H);
+  const [draftThumbUrls, setDraftThumbUrls] = useState<Array<string | null>>([]);
 
   const startXRef = useRef<number>(0);
   const startWRef = useRef<number>(0);
@@ -126,6 +136,7 @@ export default function ChatComposer(props: Props) {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const clampWidth = () => {
+      setViewportW(window.innerWidth);
       const maxW = Math.max(0, Math.min(MAX_W, Math.floor(window.innerWidth - VIEWPORT_MARGIN_X)));
       const minW = Math.min(MIN_W, maxW);
       const nextDefault = Math.min(DEFAULT_COMPOSER_W, maxW);
@@ -143,16 +154,62 @@ export default function ChatComposer(props: Props) {
   useEffect(() => {
     const ta = taRef.current;
     if (!ta) return;
-    if (manualHeightEnabled) return;
 
     const prevH = ta.style.height;
     ta.style.height = 'auto';
     const sh = ta.scrollHeight;
     ta.style.height = prevH;
 
-    const nextAuto = Math.min(AUTO_MAX_PANEL_H, Math.max(DEFAULT_PANEL_H, sh));
-    setPanelHeight((prev) => (Math.abs(prev - nextAuto) <= 1 ? prev : nextAuto));
+    const nextAuto = Math.min(AUTO_MAX_PANEL_H, Math.max(MIN_PANEL_H, sh));
+    const baseline = manualHeightEnabled ? manualHeightRef.current : DEFAULT_PANEL_H;
+    const next = Math.max(baseline, nextAuto);
+    setPanelHeight((prev) => (Math.abs(prev - next) <= 1 ? prev : next));
   }, [value, manualHeightEnabled, previewEnabled, composerWidth]);
+
+  useEffect(() => {
+    const atts = Array.isArray(draftAttachments) ? draftAttachments : [];
+    let cancelled = false;
+    const objectUrls: string[] = [];
+
+    setDraftThumbUrls([]);
+
+    void (async () => {
+      const next: Array<string | null> = new Array(atts.length).fill(null);
+      for (let i = 0; i < atts.length; i += 1) {
+        const att = atts[i];
+        if (!att || att.kind !== 'image') continue;
+        if (typeof att.data === 'string' && att.data) {
+          const mimeType = typeof att.mimeType === 'string' && att.mimeType ? att.mimeType : 'image/png';
+          next[i] = `data:${mimeType};base64,${att.data}`;
+          continue;
+        }
+
+        const storageKey = typeof att.storageKey === 'string' ? att.storageKey : '';
+        if (!storageKey) continue;
+        try {
+          const rec = await getStoredAttachment(storageKey);
+          if (!rec?.blob) continue;
+          const url = URL.createObjectURL(rec.blob);
+          objectUrls.push(url);
+          next[i] = url;
+        } catch {
+          // ignore
+        }
+      }
+      if (!cancelled) setDraftThumbUrls(next);
+    })();
+
+    return () => {
+      cancelled = true;
+      for (const url of objectUrls) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          // ignore
+        }
+      }
+    };
+  }, [draftAttachments]);
 
   const applyResize = (clientX: number, clientY: number) => {
     const mode = resizeModeRef.current;
@@ -160,6 +217,7 @@ export default function ChatComposer(props: Props) {
     if (mode.kind === 'height' || mode.kind === 'corner') {
       const deltaY = startYRef.current - clientY;
       const nextH = Math.min(maxHRef.current, Math.max(MIN_PANEL_H, startHRef.current + deltaY));
+      manualHeightRef.current = nextH;
       setPanelHeight(nextH);
     }
 
@@ -264,16 +322,79 @@ export default function ChatComposer(props: Props) {
     [selectedContextAttachmentKeys],
   );
 
+  const hasDraftAttachments = Array.isArray(draftAttachments) && draftAttachments.length > 0;
+  const composerDockOffsetX = useMemo(() => {
+    if (!hasDraftAttachments) return 0;
+    const baseMargin = Math.max(0, (viewportW - composerWidth) / 2);
+    const need = ATTACHMENTS_STRIP_W + ATTACHMENTS_STRIP_GAP - baseMargin;
+    if (need <= 0) return 0;
+    const minRightMargin = VIEWPORT_MARGIN_X / 2;
+    const maxShift = baseMargin - minRightMargin;
+    if (maxShift <= 0) return 0;
+    return Math.min(need, maxShift);
+  }, [hasDraftAttachments, viewportW, composerWidth]);
+
   return (
     <div
       className="composerDock"
       ref={containerRef}
-      style={{ width: composerWidth, maxWidth: `calc(100% - ${VIEWPORT_MARGIN_X}px)` }}
+      style={{
+        width: composerWidth,
+        maxWidth: `calc(100% - ${VIEWPORT_MARGIN_X}px)`,
+        ['--composer-dock-offset-x' as any]: `${composerDockOffsetX}px`,
+      }}
       onPointerDown={(e) => e.stopPropagation()}
       onPointerMove={(e) => e.stopPropagation()}
       onPointerUp={(e) => e.stopPropagation()}
       onWheel={(e) => e.stopPropagation()}
     >
+      {hasDraftAttachments ? (
+        <div className="composerDock__attachmentStrip" style={{ maxHeight: ATTACHMENTS_STRIP_MAX_H }}>
+          {draftAttachments.map((att, idx) => {
+            const thumbUrl = draftThumbUrls[idx] ?? null;
+            const isImage = att.kind === 'image';
+            const isPdf = att.kind === 'pdf';
+            const label = labelForAttachment(att);
+            const pdfThumbName = (() => {
+              if (!isPdf) return '';
+              const raw = typeof att.name === 'string' ? att.name.trim() : '';
+              const withoutExt = raw.replace(/\.pdf$/i, '').trim();
+              return withoutExt || raw || 'PDF';
+            })();
+            return (
+              <div className="composerDock__attachmentThumb" key={`${att.kind}-${idx}`} title={label}>
+                {isImage && thumbUrl ? (
+                  <img className="composerDock__attachmentThumbImg" src={thumbUrl} alt={att.name?.trim() || 'Attachment'} />
+                ) : isPdf ? (
+                  <div className="composerDock__attachmentThumbPdf" aria-hidden="true">
+                    <div className="composerDock__attachmentThumbPdfIcon">
+                      <span className="composerDock__attachmentThumbPdfBadge">PDF</span>
+                      <span className="composerDock__attachmentThumbPdfName">{pdfThumbName}</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    className={`composerDock__attachmentThumbFallback ${isPdf ? 'composerDock__attachmentThumbFallback--pdf' : ''}`}
+                  >
+                    <span className="composerDock__attachmentThumbLabel">{isPdf ? 'PDF' : att.kind}</span>
+                  </div>
+                )}
+                {onRemoveDraftAttachment ? (
+                  <button
+                    className="composerDock__attachmentThumbRemove"
+                    type="button"
+                    onClick={() => onRemoveDraftAttachment(idx)}
+                    disabled={disabled}
+                    aria-label="Remove attachment"
+                  >
+                    ✕
+                  </button>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
       {replyPreview ? (
         <div className="composerSurface composer__replyBanner">
           <div className="composer__replyText">
@@ -369,28 +490,6 @@ export default function ChatComposer(props: Props) {
           ) : null}
         </div>
 
-        {Array.isArray(draftAttachments) && draftAttachments.length > 0 ? (
-          <div className="composer__attachments">
-            {draftAttachments.map((att, idx) => (
-              <div className="composer__attachmentChip" key={`${att.kind}-${idx}`}>
-                <span className={`composer__attachmentKind composer__attachmentKind--${att.kind}`}>{att.kind}</span>
-                <span className="composer__attachmentLabel">{labelForAttachment(att)}</span>
-                {onRemoveDraftAttachment ? (
-                  <button
-                    className="composer__attachmentRemove"
-                    type="button"
-                    onClick={() => onRemoveDraftAttachment(idx)}
-                    disabled={disabled}
-                    aria-label="Remove attachment"
-                  >
-                    ✕
-                  </button>
-                ) : null}
-              </div>
-            ))}
-          </div>
-        ) : null}
-
         <div className="composer__footer">
           <div className="composer__footerLeft">
             <input
@@ -402,9 +501,9 @@ export default function ChatComposer(props: Props) {
               disabled={disabled}
               onChange={(e) => {
                 const files = e.currentTarget.files;
-                e.currentTarget.value = '';
                 if (!files || files.length === 0) return;
                 onAddAttachmentFiles?.(files);
+                e.currentTarget.value = '';
               }}
             />
             <button className="composer__attach" type="button" onClick={openAttachments} disabled={disabled}>
