@@ -13,6 +13,7 @@ export type PersistedWorkspaceSnapshot = {
     glassNodesBlurCssPx: number;
     glassNodesSaturatePct: number;
     glassNodesUnderlayAlpha: number;
+    glassNodesBlurBackend?: 'webgl' | 'canvas';
   };
   updatedAt: number;
 };

@@ -17,6 +17,8 @@ type Props = {
 
   glassNodesEnabled: boolean;
   onToggleGlassNodes: () => void;
+  glassBlurBackend: 'webgl' | 'canvas';
+  onChangeGlassBlurBackend: (next: 'webgl' | 'canvas') => void;
   glassBlurPx: number;
   onChangeGlassBlurPx: (next: number) => void;
   glassSaturationPct: number;
@@ -149,6 +151,31 @@ export default function SettingsModal(props: Props) {
                         onClick={props.onToggleGlassNodes}
                       >
                         {props.glassNodesEnabled ? 'On' : 'Off'}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="settingsRow">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Glass blur renderer</div>
+                      <div className="settingsRow__desc">Switch between WebGL (faster on mobile) and Canvas filter.</div>
+                    </div>
+                    <div className="settingsRow__actions">
+                      <button
+                        className={`settingsToggle ${props.glassBlurBackend === 'webgl' ? 'settingsToggle--on' : ''}`}
+                        type="button"
+                        aria-pressed={props.glassBlurBackend === 'webgl'}
+                        onClick={() => props.onChangeGlassBlurBackend('webgl')}
+                      >
+                        WebGL
+                      </button>
+                      <button
+                        className={`settingsToggle ${props.glassBlurBackend === 'canvas' ? 'settingsToggle--on' : ''}`}
+                        type="button"
+                        aria-pressed={props.glassBlurBackend === 'canvas'}
+                        onClick={() => props.onChangeGlassBlurBackend('canvas')}
+                      >
+                        Canvas
                       </button>
                     </div>
                   </div>

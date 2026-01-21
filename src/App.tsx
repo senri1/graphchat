@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { WorldEngine, type WorldEngineDebug } from './engine/WorldEngine';
+import { WorldEngine, type GlassBlurBackend, type WorldEngineDebug } from './engine/WorldEngine';
 import ChatComposer from './components/ChatComposer';
 import RawPayloadViewer from './components/RawPayloadViewer';
 import TextNodeEditor from './components/TextNodeEditor';
@@ -281,6 +281,7 @@ export default function App() {
       glassNodesBlurCssPx: number;
       glassNodesSaturatePct: number;
       glassNodesUnderlayAlpha: number;
+      glassNodesBlurBackend: GlassBlurBackend;
     };
     chatStates: Map<string, WorldEngineChatState>;
     chatMeta: Map<string, ChatRuntimeMeta>;
@@ -312,10 +313,12 @@ export default function App() {
   const [glassNodesBlurCssPx, setGlassNodesBlurCssPx] = useState<number>(() => 10);
   const [glassNodesSaturatePct, setGlassNodesSaturatePct] = useState<number>(() => 140);
   const [glassNodesUnderlayAlpha, setGlassNodesUnderlayAlpha] = useState<number>(() => 0.95);
+  const [glassNodesBlurBackend, setGlassNodesBlurBackend] = useState<GlassBlurBackend>(() => 'webgl');
   const glassNodesEnabledRef = useRef<boolean>(glassNodesEnabled);
   const glassNodesBlurCssPxRef = useRef<number>(glassNodesBlurCssPx);
   const glassNodesSaturatePctRef = useRef<number>(glassNodesSaturatePct);
   const glassNodesUnderlayAlphaRef = useRef<number>(glassNodesUnderlayAlpha);
+  const glassNodesBlurBackendRef = useRef<GlassBlurBackend>(glassNodesBlurBackend);
   const backgroundLoadSeqRef = useRef(0);
   const modelOptions = useMemo(() => listModels(), []);
   const [composerModelId, setComposerModelId] = useState<string>(() => DEFAULT_MODEL_ID);
@@ -382,6 +385,7 @@ export default function App() {
     glassNodesBlurCssPxRef.current = glassNodesBlurCssPx;
     glassNodesSaturatePctRef.current = glassNodesSaturatePct;
     glassNodesUnderlayAlphaRef.current = glassNodesUnderlayAlpha;
+    glassNodesBlurBackendRef.current = glassNodesBlurBackend;
 
     if (typeof document === 'undefined') return;
     const root = document.documentElement;
@@ -393,7 +397,7 @@ export default function App() {
     const gamma = 0.26;
     const uiAlpha = uiMinAlpha + (uiMaxAlpha - uiMinAlpha) * Math.pow(1 - t, gamma);
     root.style.setProperty('--ui-glass-bg-alpha', uiAlpha.toFixed(3));
-  }, [glassNodesEnabled, glassNodesBlurCssPx, glassNodesSaturatePct, glassNodesUnderlayAlpha]);
+  }, [glassNodesEnabled, glassNodesBlurCssPx, glassNodesSaturatePct, glassNodesUnderlayAlpha, glassNodesBlurBackend]);
 
   useEffect(() => {
     setRawViewer(null);
@@ -446,6 +450,7 @@ export default function App() {
               glassNodesUnderlayAlpha: Number.isFinite(glassNodesUnderlayAlphaRef.current)
                 ? Math.max(0, Math.min(1, glassNodesUnderlayAlphaRef.current))
                 : 0.95,
+              glassNodesBlurBackend: glassNodesBlurBackendRef.current === 'canvas' ? 'canvas' : 'webgl',
             },
           });
         } catch {
@@ -531,6 +536,7 @@ export default function App() {
     engine.setGlassNodesUnderlayAlpha(
       Number.isFinite(glassNodesUnderlayAlphaRef.current) ? glassNodesUnderlayAlphaRef.current : 0.95,
     );
+    engine.setGlassNodesBlurBackend(glassNodesBlurBackendRef.current);
 
     const key = typeof meta.backgroundStorageKey === 'string' ? meta.backgroundStorageKey : null;
     const seq = (backgroundLoadSeqRef.current += 1);
@@ -1020,10 +1026,12 @@ export default function App() {
     glassNodesBlurCssPxRef.current = Number.isFinite(visual.glassNodesBlurCssPx) ? visual.glassNodesBlurCssPx : 10;
     glassNodesSaturatePctRef.current = Number.isFinite(visual.glassNodesSaturatePct) ? visual.glassNodesSaturatePct : 140;
     glassNodesUnderlayAlphaRef.current = Number.isFinite(visual.glassNodesUnderlayAlpha) ? visual.glassNodesUnderlayAlpha : 0.95;
+    glassNodesBlurBackendRef.current = visual.glassNodesBlurBackend === 'canvas' ? 'canvas' : 'webgl';
     setGlassNodesEnabled(glassNodesEnabledRef.current);
     setGlassNodesBlurCssPx(glassNodesBlurCssPxRef.current);
     setGlassNodesSaturatePct(glassNodesSaturatePctRef.current);
     setGlassNodesUnderlayAlpha(glassNodesUnderlayAlphaRef.current);
+    setGlassNodesBlurBackend(glassNodesBlurBackendRef.current);
 
     bootedRef.current = true;
     setActiveChatId(resolvedActive);
@@ -1034,6 +1042,7 @@ export default function App() {
       engine.setGlassNodesBlurCssPx(glassNodesBlurCssPxRef.current);
       engine.setGlassNodesSaturatePct(glassNodesSaturatePctRef.current);
       engine.setGlassNodesUnderlayAlpha(glassNodesUnderlayAlphaRef.current);
+      engine.setGlassNodesBlurBackend(glassNodesBlurBackendRef.current);
       engine.cancelEditing();
       const nextState = chatStatesRef.current.get(resolvedActive) ?? createEmptyChatState();
       chatStatesRef.current.set(resolvedActive, nextState);
@@ -1093,6 +1102,7 @@ export default function App() {
         glassNodesBlurCssPx: number;
         glassNodesSaturatePct: number;
         glassNodesUnderlayAlpha: number;
+        glassNodesBlurBackend?: GlassBlurBackend;
       } | null = null;
 
       const chatStates = new Map<string, WorldEngineChatState>();
@@ -1168,6 +1178,7 @@ export default function App() {
           : legacyVisualFromActive && typeof legacyVisualFromActive === 'object'
             ? legacyVisualFromActive
             : null;
+      const glassNodesBlurBackend: GlassBlurBackend = visualSrc?.glassNodesBlurBackend === 'canvas' ? 'canvas' : 'webgl';
       const visual = {
         glassNodesEnabled: Boolean(visualSrc?.glassNodesEnabled),
         glassNodesBlurCssPx: Number.isFinite(Number(visualSrc?.glassNodesBlurCssPx))
@@ -1179,6 +1190,7 @@ export default function App() {
         glassNodesUnderlayAlpha: Number.isFinite(Number(visualSrc?.glassNodesUnderlayAlpha))
           ? Math.max(0, Math.min(1, Number(visualSrc.glassNodesUnderlayAlpha)))
           : 0.95,
+        glassNodesBlurBackend,
       };
 
       const payload = {
@@ -1625,6 +1637,14 @@ export default function App() {
             engineRef.current?.setGlassNodesEnabled(next);
             schedulePersistSoon();
           }}
+          glassBlurBackend={glassNodesBlurBackend}
+          onChangeGlassBlurBackend={(next) => {
+            const value: GlassBlurBackend = next === 'canvas' ? 'canvas' : 'webgl';
+            glassNodesBlurBackendRef.current = value;
+            setGlassNodesBlurBackend(value);
+            engineRef.current?.setGlassNodesBlurBackend(value);
+            schedulePersistSoon();
+          }}
           glassBlurPx={glassNodesBlurCssPx}
           onChangeGlassBlurPx={(raw) => {
             const next = Number.isFinite(raw) ? Math.max(0, Math.min(30, raw)) : 0;
@@ -1728,10 +1748,12 @@ export default function App() {
             glassNodesBlurCssPxRef.current = 10;
             glassNodesSaturatePctRef.current = 140;
             glassNodesUnderlayAlphaRef.current = 0.95;
+            glassNodesBlurBackendRef.current = 'webgl';
             setGlassNodesEnabled(false);
             setGlassNodesBlurCssPx(10);
             setGlassNodesSaturatePct(140);
             setGlassNodesUnderlayAlpha(0.95);
+            setGlassNodesBlurBackend('webgl');
 
             const engine = engineRef.current;
             if (engine) {
@@ -1752,6 +1774,7 @@ export default function App() {
               engine.setGlassNodesBlurCssPx(10);
               engine.setGlassNodesSaturatePct(140);
               engine.setGlassNodesUnderlayAlpha(0.95);
+              engine.setGlassNodesBlurBackend('webgl');
               setUi(engine.getUiState());
             }
 

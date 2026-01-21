@@ -7,6 +7,7 @@ import { renderMarkdownMath } from '../markdown/renderMarkdownMath';
 import { normalizeMathDelimitersFromCopyTex } from '../markdown/mathDelimiters';
 import { TextLod2Overlay, type HighlightRect, type TextLod2Mode } from './TextLod2Overlay';
 import { PdfTextLod2Overlay, type HighlightRect as PdfHighlightRect } from './PdfTextLod2Overlay';
+import { WebGLPreblur } from './WebGLPreblur';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import type { PDFPageProxy, PageViewport } from 'pdfjs-dist';
 import { loadPdfDocument } from './pdf/pdfjs';
@@ -21,6 +22,8 @@ export type WorldEngineDebug = {
   zoom: number;
   interacting: boolean;
 };
+
+export type GlassBlurBackend = 'webgl' | 'canvas';
 
 function fnv1a32(input: string): number {
   let h = 0x811c9dc5;
@@ -278,6 +281,9 @@ export class WorldEngine {
   private glassBlurCssPx = 10;
   private glassSaturatePct = 140;
   private glassUnderlayAlpha = 0.95;
+  private glassBlurBackend: GlassBlurBackend = 'webgl';
+  private webglPreblur: WebGLPreblur | null = null;
+  private webglPreblurDisabled = false;
 
   private backgroundImage: CanvasImageSource | null = null;
   private backgroundImageW = 0;
@@ -290,6 +296,7 @@ export class WorldEngine {
     pxH: number;
     blurPx: number;
     saturatePct: number;
+    blurBackend: GlassBlurBackend;
     sharp: HTMLCanvasElement;
     blurred: HTMLCanvasElement;
   } | null = null;
@@ -862,6 +869,15 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const next = clamp(Number.isFinite(raw) ? raw : 0, 0, 1);
     if (Math.abs(next - this.glassUnderlayAlpha) < 0.001) return;
     this.glassUnderlayAlpha = next;
+    this.requestRender();
+  }
+
+  setGlassNodesBlurBackend(backend: GlassBlurBackend): void {
+    const next: GlassBlurBackend = backend === 'canvas' ? 'canvas' : 'webgl';
+    if (this.glassBlurBackend === next) return;
+    this.glassBlurBackend = next;
+    if (next === 'webgl') this.webglPreblurDisabled = false;
+    this.backgroundCache = null;
     this.requestRender();
   }
 
@@ -1525,6 +1541,14 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.backgroundImageW = 0;
     this.backgroundImageH = 0;
     this.backgroundCache = null;
+    if (this.webglPreblur) {
+      try {
+        this.webglPreblur.dispose();
+      } catch {
+        // ignore
+      }
+      this.webglPreblur = null;
+    }
 
     if (this.raf != null) {
       try {
@@ -3410,12 +3434,15 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const cur = this.backgroundCache;
     const blurPx = Math.max(0, this.glassBlurCssPx * this.dpr);
     const saturatePct = Math.max(0, this.glassSaturatePct);
+    const desiredBackend: GlassBlurBackend =
+      this.glassBlurBackend === 'webgl' && !this.webglPreblurDisabled ? 'webgl' : 'canvas';
     const needsResize = !cur || cur.pxW !== pxW || cur.pxH !== pxH;
     const needsSharp = !cur || needsResize || cur.version !== this.backgroundVersion;
     const needsBlur =
       !cur ||
       needsResize ||
       cur.version !== this.backgroundVersion ||
+      cur.blurBackend !== desiredBackend ||
       Math.abs(cur.blurPx - blurPx) > 0.01 ||
       Math.abs(cur.saturatePct - saturatePct) > 0.01;
     if (cur && !needsSharp && !needsBlur) return cur;
@@ -3448,22 +3475,53 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       }
     }
 
+    let blurBackendUsed: GlassBlurBackend = desiredBackend;
     if (needsBlur) {
       bctx.clearRect(0, 0, pxW, pxH);
-      try {
-        bctx.save();
-        const filters: string[] = [];
-        if (blurPx > 0.01) filters.push(`blur(${blurPx.toFixed(2)}px)`);
-        if (Math.abs(saturatePct - 100) > 0.01) filters.push(`saturate(${saturatePct.toFixed(0)}%)`);
-        bctx.filter = filters.length ? filters.join(' ') : 'none';
-        bctx.drawImage(sharp, 0, 0);
-        bctx.restore();
-      } catch {
-        // ignore; leave blank
+      if (desiredBackend === 'webgl') {
+        try {
+          if (!this.webglPreblur) this.webglPreblur = new WebGLPreblur();
+          const res = this.webglPreblur.render({
+            source: sharp,
+            dstW: pxW,
+            dstH: pxH,
+            blurPx,
+            saturatePct,
+          });
+          bctx.save();
+          bctx.filter = 'none';
+          bctx.imageSmoothingEnabled = true;
+          bctx.drawImage(res.canvas, 0, 0, res.canvas.width, res.canvas.height, 0, 0, pxW, pxH);
+          bctx.restore();
+          blurBackendUsed = 'webgl';
+        } catch {
+          this.webglPreblurDisabled = true;
+          try {
+            this.webglPreblur?.dispose();
+          } catch {
+            // ignore
+          }
+          this.webglPreblur = null;
+          blurBackendUsed = 'canvas';
+        }
+      }
+
+      if (blurBackendUsed === 'canvas') {
+        try {
+          bctx.save();
+          const filters: string[] = [];
+          if (blurPx > 0.01) filters.push(`blur(${blurPx.toFixed(2)}px)`);
+          if (Math.abs(saturatePct - 100) > 0.01) filters.push(`saturate(${saturatePct.toFixed(0)}%)`);
+          bctx.filter = filters.length ? filters.join(' ') : 'none';
+          bctx.drawImage(sharp, 0, 0);
+          bctx.restore();
+        } catch {
+          // ignore; leave blank
+        }
       }
     }
 
-    const next = { version: this.backgroundVersion, pxW, pxH, blurPx, saturatePct, sharp, blurred };
+    const next = { version: this.backgroundVersion, pxW, pxH, blurPx, saturatePct, blurBackend: blurBackendUsed, sharp, blurred };
     this.backgroundCache = next;
     return next;
   }
