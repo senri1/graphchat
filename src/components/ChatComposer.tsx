@@ -91,7 +91,8 @@ export default function ChatComposer(props: Props) {
   const maxWRef = useRef<number>(0);
   const resizeModeRef = useRef<ResizeMode>({ kind: 'height' });
   const activeMoveListenerRef = useRef<((e: PointerEvent) => void) | null>(null);
-  const activeEndListenerRef = useRef<(() => void) | null>(null);
+  const activeEndListenerRef = useRef<((e: PointerEvent) => void) | null>(null);
+  const activePointerIdRef = useRef<number | null>(null);
 
   const selectedModelLabel = useMemo(() => {
     const match = modelOptions.find((m) => m.id === modelId);
@@ -171,15 +172,18 @@ export default function ChatComposer(props: Props) {
     }
   };
 
-  const endResize = () => {
+  const endResize = (ev?: PointerEvent) => {
+    const activePointerId = activePointerIdRef.current;
+    if (typeof activePointerId === 'number' && ev && ev.pointerId !== activePointerId) return;
     resizingRef.current = false;
     const move = activeMoveListenerRef.current ?? onPointerMove;
-    const end = activeEndListenerRef.current ?? endResize;
-    window.removeEventListener('pointermove', move as any);
-    window.removeEventListener('pointerup', end as any);
-    window.removeEventListener('pointercancel', end as any);
+    const end = activeEndListenerRef.current ?? (endResize as any);
+    window.removeEventListener('pointermove', move as any, true);
+    window.removeEventListener('pointerup', end as any, true);
+    window.removeEventListener('pointercancel', end as any, true);
     activeMoveListenerRef.current = null;
     activeEndListenerRef.current = null;
+    activePointerIdRef.current = null;
     if (document && document.body) {
       (document.body as HTMLBodyElement).style.userSelect = '';
     }
@@ -187,6 +191,8 @@ export default function ChatComposer(props: Props) {
 
   const onPointerMove = (e: PointerEvent) => {
     if (!resizingRef.current) return;
+    const activePointerId = activePointerIdRef.current;
+    if (typeof activePointerId === 'number' && e.pointerId !== activePointerId) return;
     e.preventDefault();
     applyResize(e.clientX, e.clientY);
   };
@@ -201,6 +207,7 @@ export default function ChatComposer(props: Props) {
     if (mode.kind !== 'width') setManualHeightEnabled(true);
     if (mode.kind === 'width' || mode.kind === 'corner') setManualWidthEnabled(true);
 
+    activePointerIdRef.current = e.pointerId;
     startXRef.current = e.clientX;
     startWRef.current = composerWidth;
     startYRef.current = e.clientY;
@@ -217,10 +224,10 @@ export default function ChatComposer(props: Props) {
     maxWRef.current = Math.max(0, Math.min(MAX_W, Math.floor(window.innerWidth - VIEWPORT_MARGIN_X)));
 
     activeMoveListenerRef.current = onPointerMove;
-    activeEndListenerRef.current = endResize;
-    window.addEventListener('pointermove', onPointerMove, { passive: false });
-    window.addEventListener('pointerup', endResize, { passive: false });
-    window.addEventListener('pointercancel', endResize, { passive: false });
+    activeEndListenerRef.current = endResize as any;
+    window.addEventListener('pointermove', onPointerMove, { passive: false, capture: true });
+    window.addEventListener('pointerup', endResize as any, { passive: false, capture: true });
+    window.addEventListener('pointercancel', endResize as any, { passive: false, capture: true });
     if (document && document.body) {
       (document.body as HTMLBodyElement).style.userSelect = 'none';
     }
@@ -231,9 +238,9 @@ export default function ChatComposer(props: Props) {
       const move = activeMoveListenerRef.current;
       const end = activeEndListenerRef.current;
       if (move && end) {
-        window.removeEventListener('pointermove', move as any);
-        window.removeEventListener('pointerup', end as any);
-        window.removeEventListener('pointercancel', end as any);
+        window.removeEventListener('pointermove', move as any, true);
+        window.removeEventListener('pointerup', end as any, true);
+        window.removeEventListener('pointercancel', end as any, true);
       }
       if (document && document.body) {
         (document.body as HTMLBodyElement).style.userSelect = '';
