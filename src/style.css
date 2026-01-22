@@ -71,6 +71,7 @@ body {
 .sidebarWrap--collapsed {
   width: 0;
   pointer-events: none;
+  overflow: hidden;
 }
 
 .sidebar {
@@ -94,8 +95,9 @@ body {
 }
 
 .sidebarWrap--collapsed .sidebar {
-  transform: translateX(-18px);
+  transform: translateX(calc(-100% - 24px));
   opacity: 0;
+  pointer-events: none;
 }
 
 .sidebarToggle {
