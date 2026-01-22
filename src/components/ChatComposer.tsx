@@ -297,6 +297,7 @@ export default function ChatComposer(props: Props) {
   useEffect(() => {
     const ta = taRef.current;
     if (!ta) return;
+    if (resizingRef.current && resizeModeRef.current.kind !== 'width') return;
 
     const prevH = ta.style.height;
     ta.style.height = 'auto';
