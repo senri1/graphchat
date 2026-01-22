@@ -73,15 +73,21 @@ export function renameItem(root: WorkspaceFolder, itemId: string, nextName: stri
 }
 
 export function insertItem(root: WorkspaceFolder, folderId: string, item: WorkspaceItem): WorkspaceFolder {
+  const target = folderId ? findItem(root, folderId) : null;
+  const effectiveFolderId = target && target.kind === 'folder' ? folderId : root.id;
+  return insertItemInto(root, effectiveFolderId, item);
+}
+
+function insertItemInto(root: WorkspaceFolder, folderId: string, item: WorkspaceItem): WorkspaceFolder {
   if (root.id === folderId) return { ...root, expanded: true, children: [...root.children, item] };
   let changed = false;
   const nextChildren = root.children.map((child) => {
     if (child.kind !== 'folder') return child;
-    const next = insertItem(child, folderId, item);
+    const next = insertItemInto(child, folderId, item);
     if (next !== child) changed = true;
     return next;
   });
-  return changed ? { ...root, children: nextChildren } : root;
+  return changed ? { ...root, expanded: true, children: nextChildren } : root;
 }
 
 function containsId(item: WorkspaceItem, maybeId: string): boolean {
@@ -147,4 +153,3 @@ export function moveItem(root: WorkspaceFolder, itemId: string, targetFolderId: 
   const folderId = target && target.kind === 'folder' ? targetFolderId : without.id;
   return insertItem(without, folderId, detached);
 }
-

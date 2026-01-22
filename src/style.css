@@ -61,6 +61,7 @@ body {
 
 .sidebarWrap {
   width: 200px;
+  height: 100%;
   overflow: hidden;
   pointer-events: auto;
   will-change: width;
@@ -74,9 +75,9 @@ body {
 
 .sidebar {
   width: 200px;
-  height: 100%;
   display: flex;
   flex-direction: column;
+  max-height: 100%;
   border-radius: 14px;
   background: rgba(0, 0, 0, var(--ui-glass-bg-alpha));
   border: 1px solid rgba(255, 255, 255, 0.12);
@@ -182,6 +183,7 @@ body {
 
 .sidebar__tree {
   flex: 1;
+  min-height: 0;
   overflow: auto;
   padding: 6px 8px 16px 8px;
 }
@@ -224,14 +226,6 @@ body {
   background: rgba(255, 255, 255, 0.06);
 }
 
-.treeRow__dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: rgba(147, 197, 253, 0.85);
-  box-shadow: 0 0 0 3px rgba(147, 197, 253, 0.12);
-}
-
 .treeRow__label {
   appearance: none;
   border: none;
@@ -245,10 +239,6 @@ body {
   font-size: 12px;
 }
 
-.treeRow__label:hover {
-  background: rgba(255, 255, 255, 0.06);
-}
-
 .treeRow__actions {
   display: none;
   align-items: center;
@@ -257,6 +247,76 @@ body {
 
 .treeRow:hover .treeRow__actions {
   display: flex;
+}
+
+.treeRow__menuWrap {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.treeRow__menuBtn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.82);
+  border-radius: 9px;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  line-height: 1;
+  font-size: 16px;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.treeRow:hover .treeRow__menuBtn,
+.treeRow[data-chat-menu-open="true"] .treeRow__menuBtn {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.treeRow__menuBtn:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.treeRow__menu {
+  position: fixed;
+  min-width: 120px;
+  padding: 6px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, var(--ui-glass-bg-alpha));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
+  box-shadow: 0 24px 65px rgba(0, 0, 0, 0.45);
+  z-index: 80;
+}
+
+.treeRow__menuItem {
+  width: 100%;
+  text-align: left;
+  appearance: none;
+  border: 0;
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.treeRow__menuItem:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.treeRow__menuItem--danger {
+  color: rgba(255, 120, 120, 0.92);
 }
 
 .treeRow__iconBtn {
