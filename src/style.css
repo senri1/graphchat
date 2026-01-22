@@ -210,10 +210,6 @@ body {
   padding-left: 4px;
 }
 
-.treeRow:hover {
-  background: rgba(255, 255, 255, 0.06);
-}
-
 .treeRow--active {
   background: rgba(147, 197, 253, 0.16);
   box-shadow: inset 0 0 0 1px rgba(147, 197, 253, 0.35);
@@ -237,10 +233,8 @@ body {
   align-items: center;
   justify-content: center;
   line-height: 1;
-}
-
-.treeRow__chev:hover {
-  background: rgba(255, 255, 255, 0.06);
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
 
 .treeRow__label {
@@ -258,16 +252,14 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
 
 .treeRow__actions {
   display: none;
   align-items: center;
   gap: 6px;
-}
-
-.treeRow:hover .treeRow__actions {
-  display: flex;
 }
 
 .treeRow__menuWrap {
@@ -293,17 +285,14 @@ body {
   visibility: hidden;
   pointer-events: none;
   transition: opacity 120ms ease;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
 
-.treeRow:hover .treeRow__menuBtn,
 .treeRow[data-item-menu-open="true"] .treeRow__menuBtn {
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
-}
-
-.treeRow__menuBtn:hover {
-  background: rgba(255, 255, 255, 0.06);
 }
 
 .treeRow__menu {
@@ -332,10 +321,6 @@ body {
   cursor: pointer;
 }
 
-.treeRow__menuItem:hover {
-  background: rgba(255, 255, 255, 0.08);
-}
-
 .treeRow__menuItem--danger {
   color: rgba(255, 120, 120, 0.92);
 }
@@ -351,13 +336,49 @@ body {
   cursor: pointer;
 }
 
-.treeRow__iconBtn:hover {
-  background: rgba(255, 255, 255, 0.06);
-}
-
 .treeRow__iconBtn--danger {
   color: rgba(255, 120, 120, 0.92);
   border-color: rgba(255, 120, 120, 0.22);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .treeRow:hover {
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  .treeRow__chev:hover {
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  .treeRow:hover .treeRow__actions {
+    display: flex;
+  }
+
+  .treeRow:hover .treeRow__menuBtn {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+  }
+
+  .treeRow__menuBtn:hover {
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  .treeRow__menuItem:hover {
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .treeRow__iconBtn:hover {
+    background: rgba(255, 255, 255, 0.06);
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .treeRow__menuBtn {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+  }
 }
 
 .treeRow__rename {
