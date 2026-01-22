@@ -1,4 +1,5 @@
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import MarkdownMath from './MarkdownMath';
 import type { ModelInfo, TextVerbosity } from '../llm/registry';
 import type { ChatAttachment } from '../model/chat';
@@ -123,9 +124,141 @@ export default function ChatComposer(props: Props) {
     }
   }, [verbosity]);
 
+  const modelMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const verbosityMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [verbosityMenuOpen, setVerbosityMenuOpen] = useState(false);
+  const [modelMenuPos, setModelMenuPos] = useState<{ top: number; left: number } | null>(null);
+  const [verbosityMenuPos, setVerbosityMenuPos] = useState<{ top: number; left: number } | null>(null);
+
   useEffect(() => {
     onSendRef.current = onSend;
   }, [onSend]);
+
+  const closeMenus = useCallback(() => {
+    setModelMenuOpen(false);
+    setVerbosityMenuOpen(false);
+  }, []);
+
+  const updateModelMenuPosition = useCallback(() => {
+    const btn = modelMenuButtonRef.current;
+    if (!btn) return;
+    const rect = btn.getBoundingClientRect();
+
+    const gap = 8;
+    const viewportPadding = 8;
+    const estimatedWidth = 224;
+    const itemH = 34;
+    const paddingY = 14;
+    const estimatedHeight = Math.min(256, Math.max(56, modelOptions.length * itemH + paddingY));
+
+    let top = rect.top - estimatedHeight - gap;
+    if (top < viewportPadding) {
+      top = Math.min(window.innerHeight - viewportPadding - estimatedHeight, rect.bottom + gap);
+    }
+    const left = Math.min(
+      window.innerWidth - viewportPadding - estimatedWidth,
+      Math.max(viewportPadding, rect.left),
+    );
+
+    setModelMenuPos({ top, left });
+  }, [modelOptions.length]);
+
+  const updateVerbosityMenuPosition = useCallback(() => {
+    const btn = verbosityMenuButtonRef.current;
+    if (!btn) return;
+    const rect = btn.getBoundingClientRect();
+
+    const gap = 8;
+    const viewportPadding = 8;
+    const estimatedWidth = 160;
+    const estimatedHeight = 132;
+
+    let top = rect.top - estimatedHeight - gap;
+    if (top < viewportPadding) {
+      top = Math.min(window.innerHeight - viewportPadding - estimatedHeight, rect.bottom + gap);
+    }
+    const left = Math.min(
+      window.innerWidth - viewportPadding - estimatedWidth,
+      Math.max(viewportPadding, rect.left),
+    );
+
+    setVerbosityMenuPos({ top, left });
+  }, []);
+
+  const openModelMenu = useCallback(() => {
+    if (disabled || modelOptions.length === 0) return;
+    setVerbosityMenuOpen(false);
+    updateModelMenuPosition();
+    setModelMenuOpen(true);
+  }, [disabled, modelOptions.length, updateModelMenuPosition]);
+
+  const openVerbosityMenu = useCallback(() => {
+    if (disabled) return;
+    setModelMenuOpen(false);
+    updateVerbosityMenuPosition();
+    setVerbosityMenuOpen(true);
+  }, [disabled, updateVerbosityMenuPosition]);
+
+  const selectModel = useCallback(
+    (next: string) => {
+      onChangeModelId(next);
+      setModelMenuOpen(false);
+    },
+    [onChangeModelId],
+  );
+
+  const selectVerbosity = useCallback(
+    (next: TextVerbosity) => {
+      onChangeVerbosity(next);
+      setVerbosityMenuOpen(false);
+    },
+    [onChangeVerbosity],
+  );
+
+  useEffect(() => {
+    if (!disabled) return;
+    closeMenus();
+  }, [closeMenus, disabled]);
+
+  useEffect(() => {
+    if (!modelMenuOpen && !verbosityMenuOpen) return;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeMenus();
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [closeMenus, modelMenuOpen, verbosityMenuOpen]);
+
+  useEffect(() => {
+    if (!modelMenuOpen && !verbosityMenuOpen) return;
+
+    const onReposition = () => {
+      if (modelMenuOpen) updateModelMenuPosition();
+      if (verbosityMenuOpen) updateVerbosityMenuPosition();
+    };
+
+    window.addEventListener('resize', onReposition);
+    window.addEventListener('scroll', onReposition, true);
+    const vv = window.visualViewport;
+    vv?.addEventListener('resize', onReposition);
+    vv?.addEventListener('scroll', onReposition);
+
+    onReposition();
+    return () => {
+      window.removeEventListener('resize', onReposition);
+      window.removeEventListener('scroll', onReposition, true);
+      vv?.removeEventListener('resize', onReposition);
+      vv?.removeEventListener('scroll', onReposition);
+    };
+  }, [
+    modelMenuOpen,
+    updateModelMenuPosition,
+    verbosityMenuOpen,
+    updateVerbosityMenuPosition,
+  ]);
 
   useEffect(() => {
     if (!replyPreview) return;
@@ -522,34 +655,46 @@ export default function ChatComposer(props: Props) {
             <label className="composer__setting">
               <span className="composer__settingLabel">Model</span>
               <span className="composer__selectWrap" data-value={selectedModelLabel}>
-                <select
-                  className="composer__select"
-                  value={modelId}
-                  onChange={(e) => onChangeModelId(e.currentTarget.value)}
-                  disabled={disabled}
+                <button
+                  ref={modelMenuButtonRef}
+                  className="composer__menuButton"
+                  type="button"
+                  onClick={() => {
+                    if (modelMenuOpen) {
+                      setModelMenuOpen(false);
+                      return;
+                    }
+                    openModelMenu();
+                  }}
+                  disabled={Boolean(disabled || modelOptions.length === 0)}
+                  aria-haspopup="menu"
+                  aria-expanded={modelMenuOpen ? 'true' : 'false'}
                 >
-                  {modelOptions.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {(m.shortLabel ?? m.label).trim()}
-                    </option>
-                  ))}
-                </select>
+                  {selectedModelLabel}
+                </button>
               </span>
             </label>
 
             <label className="composer__setting">
               <span className="composer__settingLabel">Verbosity</span>
               <span className="composer__selectWrap" data-value={selectedVerbosityLabel}>
-                <select
-                  className="composer__select"
-                  value={verbosity}
-                  onChange={(e) => onChangeVerbosity(e.currentTarget.value as TextVerbosity)}
+                <button
+                  ref={verbosityMenuButtonRef}
+                  className="composer__menuButton"
+                  type="button"
+                  onClick={() => {
+                    if (verbosityMenuOpen) {
+                      setVerbosityMenuOpen(false);
+                      return;
+                    }
+                    openVerbosityMenu();
+                  }}
                   disabled={disabled}
+                  aria-haspopup="menu"
+                  aria-expanded={verbosityMenuOpen ? 'true' : 'false'}
                 >
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                </select>
+                  {selectedVerbosityLabel}
+                </button>
               </span>
             </label>
 
@@ -568,6 +713,59 @@ export default function ChatComposer(props: Props) {
           </button>
         </div>
       </div>
+
+      {typeof document !== 'undefined' && modelMenuOpen && modelMenuPos
+        ? createPortal(
+            <>
+              <div className="composerMenuBackdrop" onPointerDown={closeMenus} aria-hidden="true" />
+              <div
+                className="composerMenu"
+                style={{ top: modelMenuPos.top, left: modelMenuPos.left, width: 224 }}
+                role="menu"
+              >
+                {modelOptions.map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    className={`composerMenu__item ${m.id === modelId ? 'composerMenu__item--active' : ''}`}
+                    onClick={() => selectModel(m.id)}
+                    role="menuitem"
+                    title={m.label}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+            </>,
+            document.body,
+          )
+        : null}
+
+      {typeof document !== 'undefined' && verbosityMenuOpen && verbosityMenuPos
+        ? createPortal(
+            <>
+              <div className="composerMenuBackdrop" onPointerDown={closeMenus} aria-hidden="true" />
+              <div
+                className="composerMenu"
+                style={{ top: verbosityMenuPos.top, left: verbosityMenuPos.left, width: 160 }}
+                role="menu"
+              >
+                {(['low', 'medium', 'high'] as const).map((v) => (
+                  <button
+                    key={v}
+                    type="button"
+                    className={`composerMenu__item ${v === verbosity ? 'composerMenu__item--active' : ''}`}
+                    onClick={() => selectVerbosity(v)}
+                    role="menuitem"
+                  >
+                    {v === 'low' ? 'Low' : v === 'medium' ? 'Medium' : 'High'}
+                  </button>
+                ))}
+              </div>
+            </>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

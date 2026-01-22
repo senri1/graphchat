@@ -3,6 +3,10 @@
   --ui-glass-blur: 10px;
   --ui-glass-saturate: 140%;
   --ui-glass-bg-alpha: 0.34;
+  --ui-control-bg: rgba(255, 255, 255, 0.05);
+  --ui-control-bg-hover: rgba(255, 255, 255, 0.1);
+  --ui-control-ring: rgba(255, 255, 255, 0.1);
+  --ui-control-radius: 6px;
 }
 
 html,
@@ -22,8 +26,10 @@ body {
 }
 
 .app {
-  position: fixed;
-  inset: 0;
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
   display: flex;
   background: radial-gradient(circle at 25px 25px, rgba(255, 255, 255, 0.12) 1px, transparent 1px) 0 0 /
       20px 20px,
@@ -171,17 +177,19 @@ body {
 
 .sidebar__btn {
   appearance: none;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(0, 0, 0, 0.25);
+  border: 0;
+  background: var(--ui-control-bg);
   color: rgba(255, 255, 255, 0.9);
-  border-radius: 10px;
-  padding: 6px 10px;
+  border-radius: var(--ui-control-radius);
+  padding: 4px 8px;
   font-size: 12px;
   cursor: pointer;
+  outline: none;
+  box-shadow: 0 0 0 1px var(--ui-control-ring);
 }
 
 .sidebar__btn:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--ui-control-bg-hover);
 }
 
 .sidebar__tree {
@@ -1205,17 +1213,19 @@ body {
 
 .composer__attach {
   appearance: none;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(0, 0, 0, 0.25);
+  border: 0;
+  background: var(--ui-control-bg);
   color: rgba(255, 255, 255, 0.92);
-  border-radius: 10px;
-  padding: 6px 10px;
+  border-radius: var(--ui-control-radius);
+  padding: 4px 8px;
   font-size: 12px;
   cursor: pointer;
+  outline: none;
+  box-shadow: 0 0 0 1px var(--ui-control-ring);
 }
 
 .composer__attach:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--ui-control-bg-hover);
 }
 
 .composer__attachments {
@@ -1312,17 +1322,32 @@ body {
   opacity: 0.9;
 }
 
-.composer__select {
+.composer__select,
+.composer__menuButton {
   appearance: none;
+  -webkit-appearance: none;
   box-sizing: border-box;
   min-width: 0;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(0, 0, 0, 0.25);
+  border: 0;
+  background: var(--ui-control-bg);
   color: rgba(255, 255, 255, 0.92);
-  border-radius: 10px;
-  padding: 6px 10px;
+  border-radius: var(--ui-control-radius);
+  padding: 4px 26px 4px 8px;
   font-size: 12px;
   outline: none;
+  box-shadow: 0 0 0 1px var(--ui-control-ring);
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 20 20' fill='none'%3E%3Cpath d='M5 7.5L10 12.5L15 7.5' stroke='rgba(255,255,255,0.8)' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 12px 12px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.composer__select:hover,
+.composer__menuButton:hover {
+  background: var(--ui-control-bg-hover);
 }
 
 .composer__selectWrap {
@@ -1338,19 +1363,67 @@ body {
   white-space: pre;
   font: inherit;
   box-sizing: border-box;
-  padding: 6px 10px;
+  padding: 4px 26px 4px 8px;
   border: 1px solid transparent;
 }
 
-.composer__selectWrap > .composer__select {
+.composer__selectWrap > .composer__select,
+.composer__selectWrap > .composer__menuButton {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
 }
 
-.composer__select:disabled {
+.composer__select:disabled,
+.composer__menuButton:disabled {
   opacity: 0.65;
+  cursor: default;
+}
+
+.composerMenuBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 89;
+}
+
+.composerMenu {
+  position: fixed;
+  z-index: 90;
+  max-height: 256px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, var(--ui-glass-bg-alpha));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
+  box-shadow: 0 24px 65px rgba(0, 0, 0, 0.45);
+}
+
+.composerMenu__item {
+  width: 100%;
+  text-align: left;
+  appearance: none;
+  border: 0;
+  border-radius: 10px;
+  padding: 6px 10px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.composerMenu__item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.composerMenu__item--active {
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .composer__send {
