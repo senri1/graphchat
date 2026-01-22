@@ -184,7 +184,8 @@ body {
 .sidebar__tree {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 6px 8px 16px 8px;
 }
 
@@ -197,6 +198,7 @@ body {
   border-radius: 10px;
   padding-right: 8px;
   color: rgba(255, 255, 255, 0.86);
+  min-width: 0;
 }
 
 .treeRow:hover {
@@ -233,11 +235,15 @@ body {
   background: transparent;
   color: inherit;
   flex: 1;
+  min-width: 0;
   text-align: left;
   cursor: pointer;
   padding: 6px 8px;
   border-radius: 10px;
   font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .treeRow__actions {
@@ -276,7 +282,7 @@ body {
 }
 
 .treeRow:hover .treeRow__menuBtn,
-.treeRow[data-chat-menu-open="true"] .treeRow__menuBtn {
+.treeRow[data-item-menu-open="true"] .treeRow__menuBtn {
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
@@ -342,6 +348,7 @@ body {
 
 .treeRow__rename {
   flex: 1;
+  min-width: 0;
   appearance: none;
   border: 1px solid rgba(147, 197, 253, 0.4);
   background: rgba(0, 0, 0, 0.25);

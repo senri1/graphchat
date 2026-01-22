@@ -49,13 +49,13 @@ export default function WorkspaceSidebar(props: Props) {
   const [collapsed, setCollapsed] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
-  const [openChatMenuId, setOpenChatMenuId] = useState<string | null>(null);
-  const [chatMenuPos, setChatMenuPos] = useState<{ left: number; top: number } | null>(null);
-  const chatMenuButtonRefs = React.useRef(new Map<string, HTMLButtonElement | null>());
-  const chatMenuRef = React.useRef<HTMLDivElement | null>(null);
+  const [openItemMenuId, setOpenItemMenuId] = useState<string | null>(null);
+  const [itemMenuPos, setItemMenuPos] = useState<{ left: number; top: number } | null>(null);
+  const itemMenuButtonRefs = React.useRef(new Map<string, HTMLButtonElement | null>());
+  const itemMenuRef = React.useRef<HTMLDivElement | null>(null);
 
   const beginRename = (item: WorkspaceItem) => {
-    setOpenChatMenuId(null);
+    setOpenItemMenuId(null);
     setRenamingId(item.id);
     setRenameDraft(item.name);
   };
@@ -73,8 +73,8 @@ export default function WorkspaceSidebar(props: Props) {
     setRenamingId(null);
   };
 
-  const updateChatMenuPosition = React.useCallback((chatId: string) => {
-    const btn = chatMenuButtonRefs.current.get(chatId);
+  const updateItemMenuPosition = React.useCallback((itemId: string) => {
+    const btn = itemMenuButtonRefs.current.get(itemId);
     if (!btn) return;
     const rect = btn.getBoundingClientRect();
 
@@ -93,41 +93,41 @@ export default function WorkspaceSidebar(props: Props) {
       top = Math.max(viewportPadding, window.innerHeight - viewportPadding - estimatedHeight);
     }
 
-    setChatMenuPos({ left, top });
+    setItemMenuPos({ left, top });
   }, []);
 
   React.useEffect(() => {
-    if (!openChatMenuId) return;
+    if (!openItemMenuId) return;
 
     const onPointerDownCapture = (e: PointerEvent) => {
       const target = e.target as Node | null;
       if (!target) return;
-      const btn = chatMenuButtonRefs.current.get(openChatMenuId);
-      const menu = chatMenuRef.current;
+      const btn = itemMenuButtonRefs.current.get(openItemMenuId);
+      const menu = itemMenuRef.current;
       if (btn && btn.contains(target)) return;
       if (menu && menu.contains(target)) return;
-      setOpenChatMenuId(null);
+      setOpenItemMenuId(null);
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpenChatMenuId(null);
+      if (e.key === 'Escape') setOpenItemMenuId(null);
     };
 
-    const onReposition = () => updateChatMenuPosition(openChatMenuId);
+    const onReposition = () => updateItemMenuPosition(openItemMenuId);
 
     window.addEventListener('pointerdown', onPointerDownCapture, true);
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('resize', onReposition);
     window.addEventListener('scroll', onReposition, true);
 
-    updateChatMenuPosition(openChatMenuId);
+    updateItemMenuPosition(openItemMenuId);
     return () => {
       window.removeEventListener('pointerdown', onPointerDownCapture, true);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('resize', onReposition);
       window.removeEventListener('scroll', onReposition, true);
     };
-  }, [openChatMenuId, updateChatMenuPosition]);
+  }, [openItemMenuId, updateItemMenuPosition]);
 
   const rowCommonHandlers = useMemo(
     () => ({
@@ -181,11 +181,13 @@ export default function WorkspaceSidebar(props: Props) {
             onDragOver={onDragOverFolder}
             onDrop={onDropFolder}
             {...rowCommonHandlers}
+            data-item-menu-open={openItemMenuId === item.id ? 'true' : 'false'}
           >
             <button
               className="treeRow__chev"
               type="button"
               onClick={() => {
+                setOpenItemMenuId(null);
                 onToggleFolder(item.id);
                 onFocusFolder(item.id);
               }}
@@ -214,28 +216,80 @@ export default function WorkspaceSidebar(props: Props) {
               <button
                 className="treeRow__label"
                 type="button"
-                onClick={() => onFocusFolder(item.id)}
+                onClick={() => {
+                  setOpenItemMenuId(null);
+                  onFocusFolder(item.id);
+                }}
                 title="Focus folder"
               >
                 {item.name}
               </button>
             )}
 
-            <div className="treeRow__actions">
-              <button className="treeRow__iconBtn" type="button" onClick={() => beginRename(item)} title="Rename">
-                Rename
-              </button>
-              {item.id !== rootId ? (
+            {!isRenaming ? (
+              <div className="treeRow__menuWrap">
                 <button
-                  className="treeRow__iconBtn treeRow__iconBtn--danger"
+                  className="treeRow__menuBtn"
                   type="button"
-                  onClick={() => onDeleteItem(item.id)}
-                  title="Delete folder"
+                  aria-haspopup="menu"
+                  aria-expanded={openItemMenuId === item.id}
+                  aria-label="Folder menu"
+                  title="Menu"
+                  ref={(el) => {
+                    itemMenuButtonRefs.current.set(item.id, el);
+                  }}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const nextId = openItemMenuId === item.id ? null : item.id;
+                    setOpenItemMenuId(nextId);
+                    if (nextId) updateItemMenuPosition(nextId);
+                  }}
                 >
-                  Delete
+                  ⋮
                 </button>
-              ) : null}
-            </div>
+                {openItemMenuId === item.id && itemMenuPos && typeof document !== 'undefined'
+                  ? createPortal(
+                      <div
+                        className="treeRow__menu"
+                        role="menu"
+                        aria-label="Folder actions"
+                        ref={itemMenuRef}
+                        style={{ left: itemMenuPos.left, top: itemMenuPos.top }}
+                      >
+                        <button
+                          className="treeRow__menuItem"
+                          type="button"
+                          role="menuitem"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            beginRename(item);
+                          }}
+                        >
+                          Rename
+                        </button>
+                        {item.id !== rootId ? (
+                          <button
+                            className="treeRow__menuItem treeRow__menuItem--danger"
+                            type="button"
+                            role="menuitem"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setOpenItemMenuId(null);
+                              onDeleteItem(item.id);
+                            }}
+                          >
+                            Delete
+                          </button>
+                        ) : null}
+                      </div>,
+                      document.body,
+                    )
+                  : null}
+              </div>
+            ) : null}
           </div>
 
           {item.expanded ? (
@@ -253,7 +307,7 @@ export default function WorkspaceSidebar(props: Props) {
         draggable
         onDragStart={onDragStart}
         {...rowCommonHandlers}
-        data-chat-menu-open={openChatMenuId === item.id ? 'true' : 'false'}
+        data-item-menu-open={openItemMenuId === item.id ? 'true' : 'false'}
       >
         {isRenaming ? (
           <input
@@ -277,7 +331,7 @@ export default function WorkspaceSidebar(props: Props) {
             className="treeRow__label"
             type="button"
             onClick={() => {
-              setOpenChatMenuId(null);
+              setOpenItemMenuId(null);
               onSelectChat(item.id);
             }}
           >
@@ -290,30 +344,30 @@ export default function WorkspaceSidebar(props: Props) {
               className="treeRow__menuBtn"
               type="button"
               aria-haspopup="menu"
-              aria-expanded={openChatMenuId === item.id}
+              aria-expanded={openItemMenuId === item.id}
               aria-label="Chat menu"
               title="Menu"
               ref={(el) => {
-                chatMenuButtonRefs.current.set(item.id, el);
+                itemMenuButtonRefs.current.set(item.id, el);
               }}
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                const nextId = openChatMenuId === item.id ? null : item.id;
-                setOpenChatMenuId(nextId);
-                if (nextId) updateChatMenuPosition(nextId);
+                const nextId = openItemMenuId === item.id ? null : item.id;
+                setOpenItemMenuId(nextId);
+                if (nextId) updateItemMenuPosition(nextId);
               }}
             >
               ⋮
             </button>
-            {openChatMenuId === item.id && chatMenuPos && typeof document !== 'undefined'
+            {openItemMenuId === item.id && itemMenuPos && typeof document !== 'undefined'
               ? createPortal(
                   <div
                     className="treeRow__menu"
                     role="menu"
                     aria-label="Chat actions"
-                    ref={chatMenuRef}
-                    style={{ left: chatMenuPos.left, top: chatMenuPos.top }}
+                    ref={itemMenuRef}
+                    style={{ left: itemMenuPos.left, top: itemMenuPos.top }}
                   >
                     <button
                       className="treeRow__menuItem"
@@ -334,7 +388,7 @@ export default function WorkspaceSidebar(props: Props) {
                       onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        setOpenChatMenuId(null);
+                        setOpenItemMenuId(null);
                         onDeleteItem(item.id);
                       }}
                     >
