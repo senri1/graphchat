@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo } from 'react';
+import { FONT_FAMILY_OPTIONS, type FontFamilyKey } from '../ui/typography';
 
 export type SettingsPanelId = 'appearance' | 'debug' | 'reset';
 
@@ -14,6 +15,19 @@ type Props = {
   onImportBackground: () => void;
   onClearBackground: () => void;
   onImportPdf: () => void;
+
+  composerFontFamily: FontFamilyKey;
+  onChangeComposerFontFamily: (next: FontFamilyKey) => void;
+  composerFontSizePx: number;
+  onChangeComposerFontSizePx: (next: number) => void;
+  nodeFontFamily: FontFamilyKey;
+  onChangeNodeFontFamily: (next: FontFamilyKey) => void;
+  nodeFontSizePx: number;
+  onChangeNodeFontSizePx: (next: number) => void;
+  sidebarFontFamily: FontFamilyKey;
+  onChangeSidebarFontFamily: (next: FontFamilyKey) => void;
+  sidebarFontSizePx: number;
+  onChangeSidebarFontSizePx: (next: number) => void;
 
   glassNodesEnabled: boolean;
   onToggleGlassNodes: () => void;
@@ -49,7 +63,7 @@ export default function SettingsModal(props: Props) {
       {
         id: 'appearance',
         title: 'Appearance & Personalization',
-        description: 'Background and glass node settings',
+        description: 'Background, typography, and glass nodes',
       },
       {
         id: 'debug',
@@ -99,10 +113,10 @@ export default function SettingsModal(props: Props) {
           </div>
           <div className="settingsModal__content">
             {props.activePanel === 'appearance' ? (
-              <div className="settingsPanel">
+                <div className="settingsPanel">
                 <div className="settingsPanel__header">
                   <div className="settingsPanel__title">Appearance &amp; Personalization</div>
-                  <div className="settingsPanel__subtitle">Import backgrounds and tune glass nodes.</div>
+                  <div className="settingsPanel__subtitle">Import backgrounds and tune typography and glass nodes.</div>
                 </div>
 
                 <div className="settingsCard">
@@ -138,6 +152,126 @@ export default function SettingsModal(props: Props) {
                         Import PDF
                       </button>
                     </div>
+                  </div>
+                </div>
+
+                <div className="settingsCard">
+                  <div className="settingsRow settingsRow--stack">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Typography</div>
+                      <div className="settingsRow__desc">Adjust fonts and sizes for composer, nodes, and sidebar.</div>
+                    </div>
+                  </div>
+
+                  <div className="settingsRow">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Message composer</div>
+                      <div className="settingsRow__desc">Applies to the input box and preview.</div>
+                    </div>
+                    <div className="settingsRow__actions">
+                      <select
+                        className="settingsSelect"
+                        value={props.composerFontFamily}
+                        onChange={(e) => props.onChangeComposerFontFamily(e.currentTarget.value as FontFamilyKey)}
+                        aria-label="Composer font family"
+                      >
+                        {FONT_FAMILY_OPTIONS.map((opt) => (
+                          <option key={opt.key} value={opt.key}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="settingsSlider">
+                    <div className="settingsSlider__labelRow">
+                      <span>Composer font size</span>
+                      <span>{Math.round(props.composerFontSizePx)}px</span>
+                    </div>
+                    <input
+                      className="settingsSlider__range"
+                      type="range"
+                      min={10}
+                      max={30}
+                      step={1}
+                      value={Math.round(props.composerFontSizePx)}
+                      onChange={(e) => props.onChangeComposerFontSizePx(Number(e.currentTarget.value))}
+                    />
+                  </div>
+
+                  <div className="settingsRow">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Node text</div>
+                      <div className="settingsRow__desc">Text inside message nodes on the canvas.</div>
+                    </div>
+                    <div className="settingsRow__actions">
+                      <select
+                        className="settingsSelect"
+                        value={props.nodeFontFamily}
+                        onChange={(e) => props.onChangeNodeFontFamily(e.currentTarget.value as FontFamilyKey)}
+                        aria-label="Node font family"
+                      >
+                        {FONT_FAMILY_OPTIONS.map((opt) => (
+                          <option key={opt.key} value={opt.key}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="settingsSlider">
+                    <div className="settingsSlider__labelRow">
+                      <span>Node font size</span>
+                      <span>{Math.round(props.nodeFontSizePx)}px</span>
+                    </div>
+                    <input
+                      className="settingsSlider__range"
+                      type="range"
+                      min={10}
+                      max={30}
+                      step={1}
+                      value={Math.round(props.nodeFontSizePx)}
+                      onChange={(e) => props.onChangeNodeFontSizePx(Number(e.currentTarget.value))}
+                    />
+                  </div>
+
+                  <div className="settingsRow">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Sidebar chat list</div>
+                      <div className="settingsRow__desc">Chat names in the left sidebar.</div>
+                    </div>
+                    <div className="settingsRow__actions">
+                      <select
+                        className="settingsSelect"
+                        value={props.sidebarFontFamily}
+                        onChange={(e) => props.onChangeSidebarFontFamily(e.currentTarget.value as FontFamilyKey)}
+                        aria-label="Sidebar font family"
+                      >
+                        {FONT_FAMILY_OPTIONS.map((opt) => (
+                          <option key={opt.key} value={opt.key}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="settingsSlider">
+                    <div className="settingsSlider__labelRow">
+                      <span>Sidebar font size</span>
+                      <span>{Math.round(props.sidebarFontSizePx)}px</span>
+                    </div>
+                    <input
+                      className="settingsSlider__range"
+                      type="range"
+                      min={8}
+                      max={24}
+                      step={1}
+                      value={Math.round(props.sidebarFontSizePx)}
+                      onChange={(e) => props.onChangeSidebarFontSizePx(Number(e.currentTarget.value))}
+                    />
                   </div>
                 </div>
 
@@ -271,6 +405,7 @@ export default function SettingsModal(props: Props) {
                     />
                   </div>
                 </div>
+
               </div>
             ) : null}
 

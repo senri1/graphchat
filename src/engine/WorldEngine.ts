@@ -393,6 +393,11 @@ export class WorldEngine {
   private textStreamLod2: TextLod2Overlay | null = null;
   private textStreamLod2Target: { nodeId: string; mode: TextLod2Mode } | null = null;
   private textStreamLod2HtmlCache: { nodeId: string; displayHash: string; html: string } | null = null;
+  private nodeTextFontFamily =
+    'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"';
+  private nodeTextFontSizePx = 14;
+  private nodeTextColor = 'rgba(255,255,255,0.92)';
+  private nodeTextLineHeight = 1.55;
 
   private textSelectNodeId: string | null = null;
   private textSelectPointerId: number | null = null;
@@ -1005,6 +1010,46 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.requestRender();
   }
 
+  private nodeTextStyle(): { fontFamily: string; fontSizePx: number; lineHeight: number; color: string } {
+    return {
+      fontFamily: this.nodeTextFontFamily,
+      fontSizePx: this.nodeTextFontSizePx,
+      lineHeight: this.nodeTextLineHeight,
+      color: this.nodeTextColor,
+    };
+  }
+
+  private invalidateNodeTextRendering(): void {
+    this.textRasterGeneration += 1;
+    this.textRasterQueueByNodeId.clear();
+    this.clearTextRasters();
+    this.textResizeHold = null;
+    this.textLod2HitZones = null;
+    try {
+      const style = this.nodeTextStyle();
+      this.textLod2?.setBaseTextStyle(style);
+      this.textStreamLod2?.setBaseTextStyle(style);
+    } catch {
+      // ignore
+    }
+    this.requestRender();
+  }
+
+  setNodeTextFontFamily(fontFamily: string): void {
+    const next = typeof fontFamily === 'string' && fontFamily.trim() ? fontFamily.trim() : this.nodeTextFontFamily;
+    if (next === this.nodeTextFontFamily) return;
+    this.nodeTextFontFamily = next;
+    this.invalidateNodeTextRendering();
+  }
+
+  setNodeTextFontSizePx(fontSizePx: number): void {
+    const raw = Number(fontSizePx);
+    const next = clamp(Number.isFinite(raw) ? raw : this.nodeTextFontSizePx, 6, 40);
+    if (Math.abs(next - this.nodeTextFontSizePx) < 0.001) return;
+    this.nodeTextFontSizePx = next;
+    this.invalidateNodeTextRendering();
+  }
+
   clearBackground(): void {
     this.backgroundLoadToken += 1;
     if (this.backgroundImage) this.closeImage(this.backgroundImage);
@@ -1338,6 +1383,15 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     }
   }
 
+  private clearTextRasters(): void {
+    if (this.textRasterCache.size > 0) {
+      for (const entry of this.textRasterCache.values()) this.closeImage(entry.image);
+    }
+    this.textRasterCache.clear();
+    this.bestTextRasterKeyBySig.clear();
+    this.textRasterCacheBytes = 0;
+  }
+
   private evictOldTextRasters(): void {
     while (
       this.textRasterCache.size > this.textRasterCacheMaxEntries ||
@@ -1432,6 +1486,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 	            width: job.width,
 	            height: job.height,
 	            rasterScale: job.rasterScale,
+              fontFamily: this.nodeTextFontFamily,
+              fontSizePx: this.nodeTextFontSizePx,
+              color: this.nodeTextColor,
 	          });
 	          if (this.textRasterGeneration !== gen) {
             this.closeImage(res.image);
@@ -2144,7 +2201,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const parts: string[] = [];
 
     if (node.isGenerating && !hasContent) {
-      parts.push('<div style="margin:8px 0 6px;color:rgba(255,255,255,0.55);font-size:13px;">Thinking...</div>');
+      parts.push('<div style="margin:8px 0 6px;color:rgba(255,255,255,0.55);font-size:0.93em;">Thinking...</div>');
     }
 
     if (isAssistant) {
@@ -2161,15 +2218,15 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           const chevron = node.summaryExpanded ? '▾' : '▸';
           parts.push(
             `<div data-gcv1-summary-toggle="1" style="margin:8px 0 4px;display:inline-flex;align-items:center;gap:6px;` +
-              `color:rgba(255,255,255,0.55);font-size:13px;cursor:pointer;user-select:none;">` +
-              `<span aria-hidden="true" style="width:14px;display:inline-flex;justify-content:center;">${chevron}</span>` +
+              `color:rgba(255,255,255,0.55);font-size:0.93em;cursor:pointer;user-select:none;">` +
+              `<span aria-hidden="true" style="width:1em;display:inline-flex;justify-content:center;">${chevron}</span>` +
               `<span>Thinking summary</span>` +
               `</div>`,
           );
         }
 
         if (showBody) {
-          parts.push('<div style="margin:0 0 8px;color:rgba(255,255,255,0.55);font-size:13px;">');
+          parts.push('<div style="margin:0 0 8px;color:rgba(255,255,255,0.55);font-size:0.93em;">');
           const rows: Array<{ summaryIndex: number; text: string; done: boolean }> = node.isGenerating
             ? streaming.map((c) => ({ summaryIndex: c.summaryIndex ?? 0, text: c.text ?? '', done: Boolean(c.done) }))
             : finalBlocks.map((b) => ({ summaryIndex: b.id ?? 0, text: b.text ?? '', done: true }));
@@ -2180,7 +2237,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
             if (node.isGenerating && !row.done) {
               parts.push(
                 `<div style="display:flex;align-items:flex-start;gap:6px;margin:2px 0;">` +
-                  `<span aria-hidden="true" style="width:14px;flex:0 0 14px;margin-top:2px;"></span>` +
+                  `<span aria-hidden="true" style="width:1em;flex:0 0 1em;margin-top:0.15em;"></span>` +
                   `<div style="white-space:pre-wrap;flex:1;min-width:0;">${escapeHtml(stripStrong(rawText))}</div>` +
                   `</div>`,
               );
@@ -2196,7 +2253,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
             parts.push(
               `<div style="display:flex;align-items:flex-start;gap:6px;margin:2px 0;">` +
                 `<span data-gcv1-summary-chunk-toggle="${idx}" aria-hidden="true" ` +
-                `style="width:14px;flex:0 0 14px;margin-top:2px;display:inline-flex;justify-content:center;` +
+                `style="width:1em;flex:0 0 1em;margin-top:0.15em;display:inline-flex;justify-content:center;` +
                 `color:rgba(255,255,255,0.55);cursor:pointer;user-select:none;">${chevron}</span>` +
                 `<div style="${textStyle}flex:1;min-width:0;">${escapeHtml(display)}</div>` +
                 `</div>`,
@@ -2209,7 +2266,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     if (hasContent) {
       if (node.isGenerating && !isUser) {
-        parts.push('<div style="font-size:11px;color:rgba(255,255,255,0.45);margin:0 0 4px;">Streaming…</div>');
+        parts.push('<div style="font-size:0.79em;color:rgba(255,255,255,0.45);margin:0 0 4px;">Streaming…</div>');
       }
       parts.push(renderMarkdownMath(content));
     }
@@ -2301,6 +2358,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (!host) return null;
     this.textLod2 = new TextLod2Overlay({
       host,
+      textStyle: this.nodeTextStyle(),
       onRequestCloseSelection: () => {
         this.clearTextSelection({ suppressOverlayCallback: true });
         this.requestRender();
@@ -2352,7 +2410,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (typeof document === 'undefined') return null;
     const host = this.overlayHost;
     if (!host) return null;
-    this.textStreamLod2 = new TextLod2Overlay({ host, zIndex: 9 });
+    this.textStreamLod2 = new TextLod2Overlay({ host, zIndex: 9, textStyle: this.nodeTextStyle() });
     return this.textStreamLod2;
   }
 

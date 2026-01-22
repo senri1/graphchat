@@ -115,6 +115,21 @@ export class TextLod2Overlay {
   onRequestCloseSelection?: () => void;
   onRequestAction?: (action: TextLod2Action) => void;
 
+  setBaseTextStyle(style: { fontFamily?: string; fontSizePx?: number; lineHeight?: number; color?: string }): void {
+    try {
+      if (typeof style.color === 'string' && style.color.trim()) this.content.style.color = style.color;
+      if (typeof style.fontFamily === 'string' && style.fontFamily.trim()) this.content.style.fontFamily = style.fontFamily;
+      if (Number.isFinite(style.fontSizePx as number)) {
+        this.content.style.fontSize = `${Math.max(1, Math.round(Number(style.fontSizePx)))}px`;
+      }
+      if (Number.isFinite(style.lineHeight as number)) {
+        this.content.style.lineHeight = `${Math.max(0.1, Number(style.lineHeight))}`;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   private readonly onDocPointerDownCapture = (e: Event) => {
     if (!this.isMenuOpen()) return;
     const target = e.target as Node | null;
@@ -242,6 +257,7 @@ export class TextLod2Overlay {
     onRequestCloseSelection?: () => void;
     onRequestAction?: (action: TextLod2Action) => void;
     zIndex?: number;
+    textStyle?: { fontFamily?: string; fontSizePx?: number; lineHeight?: number; color?: string };
   }) {
     this.host = opts.host;
     this.onRequestCloseSelection = opts.onRequestCloseSelection;
@@ -287,6 +303,7 @@ export class TextLod2Overlay {
     content.style.fontFamily =
       'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"';
     this.content = content;
+    if (opts.textStyle) this.setBaseTextStyle(opts.textStyle);
 
     const highlights = document.createElement('div');
     highlights.className = 'gc-textLod2__highlights';

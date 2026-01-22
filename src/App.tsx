@@ -38,6 +38,7 @@ import {
   putWorkspaceSnapshot,
 } from './storage/persistence';
 import { putPayload } from './storage/payloads';
+import { fontFamilyCss, normalizeFontFamilyKey, type FontFamilyKey } from './ui/typography';
 
 type ChatTurnMeta = {
   id: string;
@@ -81,6 +82,21 @@ type DraftAttachmentDedupeState = {
   attached: Set<string>;
   byStorageKey: Map<string, string>;
 };
+
+const DEFAULT_COMPOSER_FONT_FAMILY: FontFamilyKey = 'ui-monospace';
+const DEFAULT_COMPOSER_FONT_SIZE_PX = 13;
+
+const DEFAULT_NODE_FONT_FAMILY: FontFamilyKey = 'ui-sans-serif';
+const DEFAULT_NODE_FONT_SIZE_PX = 14;
+
+const DEFAULT_SIDEBAR_FONT_FAMILY: FontFamilyKey = 'ui-sans-serif';
+const DEFAULT_SIDEBAR_FONT_SIZE_PX = 12;
+
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
 
 function fileSignature(file: File): string {
   const name = typeof (file as any)?.name === 'string' ? String((file as any).name) : '';
@@ -330,6 +346,12 @@ export default function App() {
       uiGlassSaturatePctWebgl: number;
       glassNodesUnderlayAlpha: number;
       glassNodesBlurBackend: GlassBlurBackend;
+      composerFontFamily: FontFamilyKey;
+      composerFontSizePx: number;
+      nodeFontFamily: FontFamilyKey;
+      nodeFontSizePx: number;
+      sidebarFontFamily: FontFamilyKey;
+      sidebarFontSizePx: number;
     };
     chatStates: Map<string, WorldEngineChatState>;
     chatMeta: Map<string, ChatRuntimeMeta>;
@@ -368,6 +390,12 @@ export default function App() {
   const [glassNodesBlurBackend, setGlassNodesBlurBackend] = useState<GlassBlurBackend>(() => 'webgl');
   const [uiGlassBlurCssPxWebgl, setUiGlassBlurCssPxWebgl] = useState<number>(() => 10);
   const [uiGlassSaturatePctWebgl, setUiGlassSaturatePctWebgl] = useState<number>(() => 140);
+  const [composerFontFamily, setComposerFontFamily] = useState<FontFamilyKey>(() => DEFAULT_COMPOSER_FONT_FAMILY);
+  const [composerFontSizePx, setComposerFontSizePx] = useState<number>(() => DEFAULT_COMPOSER_FONT_SIZE_PX);
+  const [nodeFontFamily, setNodeFontFamily] = useState<FontFamilyKey>(() => DEFAULT_NODE_FONT_FAMILY);
+  const [nodeFontSizePx, setNodeFontSizePx] = useState<number>(() => DEFAULT_NODE_FONT_SIZE_PX);
+  const [sidebarFontFamily, setSidebarFontFamily] = useState<FontFamilyKey>(() => DEFAULT_SIDEBAR_FONT_FAMILY);
+  const [sidebarFontSizePx, setSidebarFontSizePx] = useState<number>(() => DEFAULT_SIDEBAR_FONT_SIZE_PX);
   const glassNodesEnabledRef = useRef<boolean>(glassNodesEnabled);
   const glassNodesBlurCssPxWebglRef = useRef<number>(glassNodesBlurCssPxWebgl);
   const glassNodesSaturatePctWebglRef = useRef<number>(glassNodesSaturatePctWebgl);
@@ -377,6 +405,12 @@ export default function App() {
   const glassNodesBlurBackendRef = useRef<GlassBlurBackend>(glassNodesBlurBackend);
   const uiGlassBlurCssPxWebglRef = useRef<number>(uiGlassBlurCssPxWebgl);
   const uiGlassSaturatePctWebglRef = useRef<number>(uiGlassSaturatePctWebgl);
+  const composerFontFamilyRef = useRef<FontFamilyKey>(composerFontFamily);
+  const composerFontSizePxRef = useRef<number>(composerFontSizePx);
+  const nodeFontFamilyRef = useRef<FontFamilyKey>(nodeFontFamily);
+  const nodeFontSizePxRef = useRef<number>(nodeFontSizePx);
+  const sidebarFontFamilyRef = useRef<FontFamilyKey>(sidebarFontFamily);
+  const sidebarFontSizePxRef = useRef<number>(sidebarFontSizePx);
   const backgroundLoadSeqRef = useRef(0);
   const modelOptions = useMemo(() => listModels(), []);
   const [composerModelId, setComposerModelId] = useState<string>(() => DEFAULT_MODEL_ID);
@@ -485,6 +519,43 @@ export default function App() {
   ]);
 
   useEffect(() => {
+    composerFontFamilyRef.current = composerFontFamily;
+    composerFontSizePxRef.current = composerFontSizePx;
+    nodeFontFamilyRef.current = nodeFontFamily;
+    nodeFontSizePxRef.current = nodeFontSizePx;
+    sidebarFontFamilyRef.current = sidebarFontFamily;
+    sidebarFontSizePxRef.current = sidebarFontSizePx;
+
+    if (typeof document === 'undefined') return;
+    const root = document.documentElement;
+    root.style.setProperty('--composer-font-family', fontFamilyCss(composerFontFamily));
+    root.style.setProperty(
+      '--composer-font-size',
+      `${Math.round(clampNumber(composerFontSizePx, 10, 30, DEFAULT_COMPOSER_FONT_SIZE_PX))}px`,
+    );
+    root.style.setProperty('--node-font-family', fontFamilyCss(nodeFontFamily));
+    root.style.setProperty(
+      '--node-font-size',
+      `${Math.round(clampNumber(nodeFontSizePx, 10, 30, DEFAULT_NODE_FONT_SIZE_PX))}px`,
+    );
+    root.style.setProperty('--sidebar-font-family', fontFamilyCss(sidebarFontFamily));
+    root.style.setProperty(
+      '--sidebar-font-size',
+      `${Math.round(clampNumber(sidebarFontSizePx, 8, 24, DEFAULT_SIDEBAR_FONT_SIZE_PX))}px`,
+    );
+  }, [composerFontFamily, composerFontSizePx, nodeFontFamily, nodeFontSizePx, sidebarFontFamily, sidebarFontSizePx]);
+
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const handle = window.setTimeout(() => {
+      engine.setNodeTextFontFamily(fontFamilyCss(nodeFontFamilyRef.current));
+      engine.setNodeTextFontSizePx(nodeFontSizePxRef.current);
+    }, 200);
+    return () => window.clearTimeout(handle);
+  }, [nodeFontFamily, nodeFontSizePx]);
+
+  useEffect(() => {
     setRawViewer(null);
   }, [activeChatId]);
 
@@ -544,6 +615,12 @@ export default function App() {
                 ? Math.max(0, Math.min(1, glassNodesUnderlayAlphaRef.current))
                 : 0.95,
               glassNodesBlurBackend: glassNodesBlurBackendRef.current === 'canvas' ? 'canvas' : 'webgl',
+              composerFontFamily: composerFontFamilyRef.current,
+              composerFontSizePx: Math.round(clampNumber(composerFontSizePxRef.current, 10, 30, DEFAULT_COMPOSER_FONT_SIZE_PX)),
+              nodeFontFamily: nodeFontFamilyRef.current,
+              nodeFontSizePx: Math.round(clampNumber(nodeFontSizePxRef.current, 10, 30, DEFAULT_NODE_FONT_SIZE_PX)),
+              sidebarFontFamily: sidebarFontFamilyRef.current,
+              sidebarFontSizePx: Math.round(clampNumber(sidebarFontSizePxRef.current, 8, 24, DEFAULT_SIDEBAR_FONT_SIZE_PX)),
             },
           });
         } catch {
@@ -1021,6 +1098,8 @@ export default function App() {
     if (!container || !canvas) return;
 
     const engine = new WorldEngine({ canvas });
+    engine.setNodeTextFontFamily(fontFamilyCss(nodeFontFamilyRef.current));
+    engine.setNodeTextFontSizePx(nodeFontSizePxRef.current);
     engine.onDebug = setDebug;
     engine.onUiState = setUi;
     engine.onRequestReply = (nodeId) => {
@@ -1209,6 +1288,18 @@ export default function App() {
     setGlassNodesBlurBackend(glassNodesBlurBackendRef.current);
     setUiGlassBlurCssPxWebgl(uiGlassBlurCssPxWebglRef.current);
     setUiGlassSaturatePctWebgl(uiGlassSaturatePctWebglRef.current);
+    composerFontFamilyRef.current = visual.composerFontFamily;
+    composerFontSizePxRef.current = visual.composerFontSizePx;
+    nodeFontFamilyRef.current = visual.nodeFontFamily;
+    nodeFontSizePxRef.current = visual.nodeFontSizePx;
+    sidebarFontFamilyRef.current = visual.sidebarFontFamily;
+    sidebarFontSizePxRef.current = visual.sidebarFontSizePx;
+    setComposerFontFamily(composerFontFamilyRef.current);
+    setComposerFontSizePx(composerFontSizePxRef.current);
+    setNodeFontFamily(nodeFontFamilyRef.current);
+    setNodeFontSizePx(nodeFontSizePxRef.current);
+    setSidebarFontFamily(sidebarFontFamilyRef.current);
+    setSidebarFontSizePx(sidebarFontSizePxRef.current);
 
     bootedRef.current = true;
     setActiveChatId(resolvedActive);
@@ -1225,6 +1316,8 @@ export default function App() {
       engine.setGlassNodesBlurCssPx(Number.isFinite(blurCssPx) ? Math.max(0, Math.min(30, blurCssPx)) : 10);
       engine.setGlassNodesSaturatePct(Number.isFinite(saturatePct) ? Math.max(100, Math.min(200, saturatePct)) : 140);
       engine.setGlassNodesUnderlayAlpha(glassNodesUnderlayAlphaRef.current);
+      engine.setNodeTextFontFamily(fontFamilyCss(nodeFontFamilyRef.current));
+      engine.setNodeTextFontSizePx(nodeFontSizePxRef.current);
       engine.cancelEditing();
       const nextState = chatStatesRef.current.get(resolvedActive) ?? createEmptyChatState();
       chatStatesRef.current.set(resolvedActive, nextState);
@@ -1405,6 +1498,28 @@ export default function App() {
           ? Math.max(0, Math.min(1, Number(visualSrc.glassNodesUnderlayAlpha)))
           : 0.95,
         glassNodesBlurBackend,
+        composerFontFamily: normalizeFontFamilyKey(
+          (visualSrc as any)?.composerFontFamily,
+          DEFAULT_COMPOSER_FONT_FAMILY,
+        ),
+        composerFontSizePx: clampNumber(
+          (visualSrc as any)?.composerFontSizePx,
+          10,
+          30,
+          DEFAULT_COMPOSER_FONT_SIZE_PX,
+        ),
+        nodeFontFamily: normalizeFontFamilyKey((visualSrc as any)?.nodeFontFamily, DEFAULT_NODE_FONT_FAMILY),
+        nodeFontSizePx: clampNumber((visualSrc as any)?.nodeFontSizePx, 10, 30, DEFAULT_NODE_FONT_SIZE_PX),
+        sidebarFontFamily: normalizeFontFamilyKey(
+          (visualSrc as any)?.sidebarFontFamily,
+          DEFAULT_SIDEBAR_FONT_FAMILY,
+        ),
+        sidebarFontSizePx: clampNumber(
+          (visualSrc as any)?.sidebarFontSizePx,
+          8,
+          24,
+          DEFAULT_SIDEBAR_FONT_SIZE_PX,
+        ),
       };
 
       const payload = {
@@ -1567,23 +1682,24 @@ export default function App() {
         }}
       />
 
-      <div className="workspace" ref={workspaceRef}>
-        <canvas className="stage" ref={canvasRef} />
-        {ui.editingNodeId ? (
-          <TextNodeEditor
-            nodeId={ui.editingNodeId}
-            title={editorTitle}
-            initialValue={ui.editingText}
-            anchorRect={editorAnchor}
-            viewport={viewport}
-            zoom={editorZoom}
-            onCommit={(next) => {
-              engineRef.current?.commitEditing(next);
-              schedulePersistSoon();
-            }}
-            onCancel={() => engineRef.current?.cancelEditing()}
-          />
-        ) : null}
+	      <div className="workspace" ref={workspaceRef}>
+	        <canvas className="stage" ref={canvasRef} />
+	        {ui.editingNodeId ? (
+	          <TextNodeEditor
+	            nodeId={ui.editingNodeId}
+	            title={editorTitle}
+	            initialValue={ui.editingText}
+	            anchorRect={editorAnchor}
+	            viewport={viewport}
+	            zoom={editorZoom}
+	            baseFontSizePx={nodeFontSizePx}
+	            onCommit={(next) => {
+	              engineRef.current?.commitEditing(next);
+	              schedulePersistSoon();
+	            }}
+	            onCancel={() => engineRef.current?.cancelEditing()}
+	          />
+	        ) : null}
         {rawViewer ? (
           <RawPayloadViewer
             nodeId={rawViewer.nodeId}
@@ -1907,6 +2023,36 @@ export default function App() {
             schedulePersistSoon();
           }}
           onImportPdf={() => pdfInputRef.current?.click()}
+          composerFontFamily={composerFontFamily}
+          onChangeComposerFontFamily={(next) => {
+            setComposerFontFamily(next);
+            schedulePersistSoon();
+          }}
+          composerFontSizePx={composerFontSizePx}
+          onChangeComposerFontSizePx={(raw) => {
+            setComposerFontSizePx(Math.round(clampNumber(raw, 10, 30, DEFAULT_COMPOSER_FONT_SIZE_PX)));
+            schedulePersistSoon();
+          }}
+          nodeFontFamily={nodeFontFamily}
+          onChangeNodeFontFamily={(next) => {
+            setNodeFontFamily(next);
+            schedulePersistSoon();
+          }}
+          nodeFontSizePx={nodeFontSizePx}
+          onChangeNodeFontSizePx={(raw) => {
+            setNodeFontSizePx(Math.round(clampNumber(raw, 10, 30, DEFAULT_NODE_FONT_SIZE_PX)));
+            schedulePersistSoon();
+          }}
+          sidebarFontFamily={sidebarFontFamily}
+          onChangeSidebarFontFamily={(next) => {
+            setSidebarFontFamily(next);
+            schedulePersistSoon();
+          }}
+          sidebarFontSizePx={sidebarFontSizePx}
+          onChangeSidebarFontSizePx={(raw) => {
+            setSidebarFontSizePx(Math.round(clampNumber(raw, 8, 24, DEFAULT_SIDEBAR_FONT_SIZE_PX)));
+            schedulePersistSoon();
+          }}
           glassNodesEnabled={glassNodesEnabled}
           onToggleGlassNodes={() => {
             const next = !glassNodesEnabledRef.current;
@@ -2074,6 +2220,19 @@ export default function App() {
             setUiGlassBlurCssPxWebgl(10);
             setUiGlassSaturatePctWebgl(140);
 
+            composerFontFamilyRef.current = DEFAULT_COMPOSER_FONT_FAMILY;
+            composerFontSizePxRef.current = DEFAULT_COMPOSER_FONT_SIZE_PX;
+            nodeFontFamilyRef.current = DEFAULT_NODE_FONT_FAMILY;
+            nodeFontSizePxRef.current = DEFAULT_NODE_FONT_SIZE_PX;
+            sidebarFontFamilyRef.current = DEFAULT_SIDEBAR_FONT_FAMILY;
+            sidebarFontSizePxRef.current = DEFAULT_SIDEBAR_FONT_SIZE_PX;
+            setComposerFontFamily(DEFAULT_COMPOSER_FONT_FAMILY);
+            setComposerFontSizePx(DEFAULT_COMPOSER_FONT_SIZE_PX);
+            setNodeFontFamily(DEFAULT_NODE_FONT_FAMILY);
+            setNodeFontSizePx(DEFAULT_NODE_FONT_SIZE_PX);
+            setSidebarFontFamily(DEFAULT_SIDEBAR_FONT_FAMILY);
+            setSidebarFontSizePx(DEFAULT_SIDEBAR_FONT_SIZE_PX);
+
             const engine = engineRef.current;
             if (engine) {
               try {
@@ -2094,6 +2253,8 @@ export default function App() {
               engine.setGlassNodesSaturatePct(140);
               engine.setGlassNodesUnderlayAlpha(0.95);
               engine.setGlassNodesBlurBackend('webgl');
+              engine.setNodeTextFontFamily(fontFamilyCss(DEFAULT_NODE_FONT_FAMILY));
+              engine.setNodeTextFontSizePx(DEFAULT_NODE_FONT_SIZE_PX);
               setUi(engine.getUiState());
             }
 

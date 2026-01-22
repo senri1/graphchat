@@ -13,6 +13,11 @@ export type TextHitZone =
   | { kind: 'summary_toggle'; left: number; top: number; width: number; height: number }
   | { kind: 'summary_chunk_toggle'; summaryIndex: number; left: number; top: number; width: number; height: number };
 
+const DEFAULT_TEXT_COLOR = 'rgba(255,255,255,0.92)';
+const DEFAULT_TEXT_FONT_SIZE_PX = 14;
+const DEFAULT_TEXT_FONT_FAMILY =
+  'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"';
+
 const MDX_CSS = `
 .mdx {
   line-height: 1.55;
@@ -336,7 +341,14 @@ function measureHitZones(card: HTMLDivElement): TextHitZone[] {
 
 export async function rasterizeHtmlToImage(
   html: string,
-  opts: { width: number; height: number; rasterScale: number },
+  opts: {
+    width: number;
+    height: number;
+    rasterScale: number;
+    fontFamily?: string;
+    fontSizePx?: number;
+    color?: string;
+  },
 ): Promise<TextRasterResult> {
   if (typeof document === 'undefined') {
     throw new Error('rasterizeHtmlToImage: document is not available');
@@ -360,10 +372,12 @@ export async function rasterizeHtmlToImage(
     card.style.padding = '0';
     card.style.margin = '0';
     card.style.background = 'transparent';
-    card.style.color = 'rgba(255,255,255,0.92)';
-    card.style.fontSize = '14px';
+    card.style.setProperty('-webkit-font-smoothing', 'antialiased');
+    card.style.setProperty('-moz-osx-font-smoothing', 'grayscale');
+    card.style.color = typeof opts.color === 'string' && opts.color.trim() ? opts.color : DEFAULT_TEXT_COLOR;
+    card.style.fontSize = `${Math.max(1, Math.round(Number(opts.fontSizePx) || DEFAULT_TEXT_FONT_SIZE_PX))}px`;
     card.style.fontFamily =
-      'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"';
+      typeof opts.fontFamily === 'string' && opts.fontFamily.trim() ? opts.fontFamily : DEFAULT_TEXT_FONT_FAMILY;
     card.innerHTML = html ?? '';
     root.appendChild(card);
 

@@ -9,12 +9,13 @@ type Props = {
   anchorRect: Rect | null;
   viewport: { w: number; h: number };
   zoom: number;
+  baseFontSizePx: number;
   onCommit: (next: string) => void;
   onCancel: () => void;
 };
 
 export default function TextNodeEditor(props: Props) {
-  const { nodeId, title, initialValue, anchorRect, viewport, zoom, onCommit, onCancel } = props;
+  const { nodeId, title, initialValue, anchorRect, viewport, zoom, baseFontSizePx, onCommit, onCancel } = props;
   const [draft, setDraft] = useState(() => initialValue ?? '');
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -66,6 +67,7 @@ export default function TextNodeEditor(props: Props) {
     onCommitRef.current(draftRef.current);
   };
 
+  const baseFontSize = Math.max(1, Math.round(Number.isFinite(baseFontSizePx) ? baseFontSizePx : 14));
   const z = Math.max(0.001, Number.isFinite(zoom) ? zoom : 1);
   const chrome = useMemo(() => {
     if (!anchorRect) return null;
@@ -103,14 +105,13 @@ export default function TextNodeEditor(props: Props) {
 
   const previewStyle = useMemo<React.CSSProperties>(
     () => ({
-      fontSize: 14,
+      fontSize: baseFontSize,
       color: 'rgba(255,255,255,0.92)',
-      lineHeight: 1.55,
+      lineHeight: 'var(--node-line-height)',
       wordBreak: 'break-word',
-      fontFamily:
-        'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"',
+      fontFamily: 'var(--node-font-family)',
     }),
-    [],
+    [baseFontSize],
   );
 
   const topbarStyle = useMemo<React.CSSProperties>(() => {
@@ -134,9 +135,9 @@ export default function TextNodeEditor(props: Props) {
     if (!chrome) return {};
     return {
       padding: `${Math.max(0, 10 * z)}px 0`,
-      fontSize: `${Math.max(1, 13 * z)}px`,
+      fontSize: `${Math.max(1, baseFontSize * z)}px`,
     };
-  }, [chrome, z]);
+  }, [baseFontSize, chrome, z]);
 
   return (
     <div

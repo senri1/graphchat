@@ -7,6 +7,17 @@
   --ui-control-bg-hover: rgba(255, 255, 255, 0.1);
   --ui-control-ring: rgba(255, 255, 255, 0.1);
   --ui-control-radius: 6px;
+  --composer-font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+  --composer-font-size: 13px;
+  --composer-line-height: 1.35;
+  --node-font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji",
+    "Segoe UI Emoji";
+  --node-font-size: 14px;
+  --node-line-height: 1.55;
+  --sidebar-font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji",
+    "Segoe UI Emoji";
+  --sidebar-font-size: 12px;
 }
 
 html,
@@ -22,6 +33,8 @@ body {
   background: #0b0d12;
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji",
     "Segoe UI Emoji";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   overflow: hidden;
 }
 
@@ -258,7 +271,8 @@ body {
   cursor: pointer;
   padding: 6px 8px;
   border-radius: 10px;
-  font-size: 12px;
+  font-size: var(--sidebar-font-size);
+  font-family: var(--sidebar-font-family);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -400,7 +414,8 @@ body {
   color: rgba(255, 255, 255, 0.92);
   border-radius: 10px;
   padding: 6px 8px;
-  font-size: 12px;
+  font-size: var(--sidebar-font-size);
+  font-family: var(--sidebar-font-family);
   outline: none;
 }
 
@@ -745,6 +760,32 @@ body {
   font-size: 12px;
   width: 92px;
   outline: none;
+}
+
+.settingsSelect {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.25);
+  color: rgba(255, 255, 255, 0.92);
+  border-radius: 10px;
+  padding: 7px 30px 7px 10px;
+  font-size: 12px;
+  outline: none;
+  min-width: 150px;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 20 20' fill='none'%3E%3Cpath d='M5 7.5L10 12.5L15 7.5' stroke='rgba(255,255,255,0.8)' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 12px 12px;
+}
+
+.settingsSelect:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.settingsSelect:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .settingsSlider {
@@ -1168,10 +1209,10 @@ body {
   background: transparent;
   color: rgba(255, 255, 255, 0.92);
   padding: 10px 12px;
-  font-size: 13px;
-  line-height: 1.35;
+  font-size: var(--composer-font-size);
+  line-height: var(--composer-line-height);
   outline: none;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-family: var(--composer-font-family);
 }
 
 .composer__textarea:focus {
@@ -1185,9 +1226,17 @@ body {
   padding: 10px 12px;
   border-left: 1px solid rgba(255, 255, 255, 0.1);
   color: rgba(255, 255, 255, 0.92);
-  font-size: 13px;
-  line-height: 1.35;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: var(--composer-font-size);
+  line-height: var(--composer-line-height);
+  font-family: var(--composer-font-family);
+}
+
+.composer__preview .mdx > :first-child {
+  margin-top: 0;
+}
+
+.composer__preview .mdx > :last-child {
+  margin-bottom: 0;
 }
 
 .composer__emptyPreview {
@@ -1535,9 +1584,9 @@ body {
   padding: 10px 0;
   background: transparent;
   color: rgba(255, 255, 255, 0.92);
-  font-size: 13px;
-  line-height: 1.45;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: var(--node-font-size);
+  line-height: var(--node-line-height);
+  font-family: var(--node-font-family);
   touch-action: auto;
 }
 
