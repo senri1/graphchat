@@ -144,6 +144,7 @@ body {
 }
 
 .sidebar__title {
+  margin-left: 3px;
   appearance: none;
   border: 0;
   background: transparent;
