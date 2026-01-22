@@ -33,8 +33,9 @@ body {
   background: #0b0d12;
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji",
     "Segoe UI Emoji";
+  /*here lay text sharpening for dom text
   -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  -moz-osx-font-smoothing: grayscale;*/
   overflow: hidden;
 }
 

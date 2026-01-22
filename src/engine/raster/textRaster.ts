@@ -372,8 +372,8 @@ export async function rasterizeHtmlToImage(
     card.style.padding = '0';
     card.style.margin = '0';
     card.style.background = 'transparent';
-    card.style.setProperty('-webkit-font-smoothing', 'antialiased');
-    card.style.setProperty('-moz-osx-font-smoothing', 'grayscale');
+    //card.style.setProperty('-webkit-font-smoothing', 'antialiased');
+    //card.style.setProperty('-moz-osx-font-smoothing', 'grayscale');
     card.style.color = typeof opts.color === 'string' && opts.color.trim() ? opts.color : DEFAULT_TEXT_COLOR;
     card.style.fontSize = `${Math.max(1, Math.round(Number(opts.fontSizePx) || DEFAULT_TEXT_FONT_SIZE_PX))}px`;
     card.style.fontFamily =
