@@ -35,6 +35,8 @@ type Props = {
   onToggleContextAttachmentKey?: (key: string, included: boolean) => void;
 };
 
+type MenuPos = { left: number; top?: number; bottom?: number; maxHeight: number };
+
 function formatBytes(bytes?: number): string {
   const n = typeof bytes === 'number' && Number.isFinite(bytes) ? bytes : 0;
   if (n <= 0) return '0 B';
@@ -128,8 +130,8 @@ export default function ChatComposer(props: Props) {
   const verbosityMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [verbosityMenuOpen, setVerbosityMenuOpen] = useState(false);
-  const [modelMenuPos, setModelMenuPos] = useState<{ top: number; left: number } | null>(null);
-  const [verbosityMenuPos, setVerbosityMenuPos] = useState<{ top: number; left: number } | null>(null);
+  const [modelMenuPos, setModelMenuPos] = useState<MenuPos | null>(null);
+  const [verbosityMenuPos, setVerbosityMenuPos] = useState<MenuPos | null>(null);
 
   useEffect(() => {
     onSendRef.current = onSend;
@@ -147,21 +149,25 @@ export default function ChatComposer(props: Props) {
 
     const gap = 8;
     const viewportPadding = 8;
-    const estimatedWidth = 224;
+    const estimatedWidth = 115;
+    const maxMenuH = 256;
     const itemH = 34;
     const paddingY = 14;
-    const estimatedHeight = Math.min(256, Math.max(56, modelOptions.length * itemH + paddingY));
+    const desiredH = Math.min(maxMenuH, Math.max(56, modelOptions.length * itemH + paddingY));
 
-    let top = rect.top - estimatedHeight - gap;
-    if (top < viewportPadding) {
-      top = Math.min(window.innerHeight - viewportPadding - estimatedHeight, rect.bottom + gap);
-    }
+    const spaceAbove = rect.top - gap - viewportPadding;
+    const spaceBelow = window.innerHeight - rect.bottom - gap - viewportPadding;
+    const openAbove = spaceAbove >= desiredH || spaceAbove >= spaceBelow;
+    const top = openAbove ? undefined : rect.bottom + gap;
+    const bottom = openAbove ? window.innerHeight - rect.top + gap : undefined;
+    const maxHeight = Math.max(0, Math.min(maxMenuH, openAbove ? spaceAbove : spaceBelow));
+
     const left = Math.min(
       window.innerWidth - viewportPadding - estimatedWidth,
       Math.max(viewportPadding, rect.left),
     );
 
-    setModelMenuPos({ top, left });
+    setModelMenuPos({ top, bottom, left, maxHeight });
   }, [modelOptions.length]);
 
   const updateVerbosityMenuPosition = useCallback(() => {
@@ -171,19 +177,23 @@ export default function ChatComposer(props: Props) {
 
     const gap = 8;
     const viewportPadding = 8;
-    const estimatedWidth = 160;
-    const estimatedHeight = 132;
+    const estimatedWidth = 80;
+    const maxMenuH = 256;
+    const desiredH = 132;
 
-    let top = rect.top - estimatedHeight - gap;
-    if (top < viewportPadding) {
-      top = Math.min(window.innerHeight - viewportPadding - estimatedHeight, rect.bottom + gap);
-    }
+    const spaceAbove = rect.top - gap - viewportPadding;
+    const spaceBelow = window.innerHeight - rect.bottom - gap - viewportPadding;
+    const openAbove = spaceAbove >= desiredH || spaceAbove >= spaceBelow;
+    const top = openAbove ? undefined : rect.bottom + gap;
+    const bottom = openAbove ? window.innerHeight - rect.top + gap : undefined;
+    const maxHeight = Math.max(0, Math.min(maxMenuH, openAbove ? spaceAbove : spaceBelow));
+
     const left = Math.min(
       window.innerWidth - viewportPadding - estimatedWidth,
       Math.max(viewportPadding, rect.left),
     );
 
-    setVerbosityMenuPos({ top, left });
+    setVerbosityMenuPos({ top, bottom, left, maxHeight });
   }, []);
 
   const openModelMenu = useCallback(() => {
@@ -720,7 +730,13 @@ export default function ChatComposer(props: Props) {
               <div className="composerMenuBackdrop" onPointerDown={closeMenus} aria-hidden="true" />
               <div
                 className="composerMenu"
-                style={{ top: modelMenuPos.top, left: modelMenuPos.left, width: 224 }}
+                style={{
+                  top: modelMenuPos.top,
+                  bottom: modelMenuPos.bottom,
+                  left: modelMenuPos.left,
+                  width: 115,
+                  maxHeight: modelMenuPos.maxHeight,
+                }}
                 role="menu"
               >
                 {modelOptions.map((m) => (
@@ -732,7 +748,7 @@ export default function ChatComposer(props: Props) {
                     role="menuitem"
                     title={m.label}
                   >
-                    {m.label}
+                    {String(m.shortLabel ?? m.label ?? m.id).trim()}
                   </button>
                 ))}
               </div>
@@ -747,7 +763,13 @@ export default function ChatComposer(props: Props) {
               <div className="composerMenuBackdrop" onPointerDown={closeMenus} aria-hidden="true" />
               <div
                 className="composerMenu"
-                style={{ top: verbosityMenuPos.top, left: verbosityMenuPos.left, width: 160 }}
+                style={{
+                  top: verbosityMenuPos.top,
+                  bottom: verbosityMenuPos.bottom,
+                  left: verbosityMenuPos.left,
+                  width: 80,
+                  maxHeight: verbosityMenuPos.maxHeight,
+                }}
                 role="menu"
               >
                 {(['low', 'medium', 'high'] as const).map((v) => (
