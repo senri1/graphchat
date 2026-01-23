@@ -67,7 +67,7 @@ const REGISTRY: ModelInfo[] = [
     effort: 'low',
     reasoningSummary: true,
   },
-    {
+  {
     id: 'gpt-5.2-none',
     provider: 'openai',
     apiModel: 'gpt-5.2',
@@ -88,5 +88,5 @@ export function listModels(): ModelInfo[] {
   return REGISTRY.slice();
 }
 
-export const DEFAULT_MODEL_ID: string = 'gpt-4o-mini';
+export const DEFAULT_MODEL_ID: string = 'gpt-5.2-high';
 

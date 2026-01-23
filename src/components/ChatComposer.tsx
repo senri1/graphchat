@@ -1,7 +1,7 @@
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import MarkdownMath from './MarkdownMath';
-import type { ModelInfo, TextVerbosity } from '../llm/registry';
+import type { ModelInfo } from '../llm/registry';
 import type { ChatAttachment } from '../model/chat';
 import { getAttachment as getStoredAttachment } from '../storage/attachments';
 
@@ -17,8 +17,6 @@ type Props = {
   modelId: string;
   modelOptions: ModelInfo[];
   onChangeModelId: (next: string) => void;
-  verbosity: TextVerbosity;
-  onChangeVerbosity: (next: TextVerbosity) => void;
   webSearchEnabled: boolean;
   onChangeWebSearchEnabled: (next: boolean) => void;
   containerRef?: React.Ref<HTMLDivElement>;
@@ -59,7 +57,7 @@ function labelForAttachment(att: ChatAttachment): string {
 }
 
 export default function ChatComposer(props: Props) {
-  const { value, onChange, onSend, modelId, modelOptions, onChangeModelId, verbosity, onChangeVerbosity, webSearchEnabled, onChangeWebSearchEnabled, containerRef, replyPreview, onCancelReply, placeholder, sendDisabled, disabled, draftAttachments, onAddAttachmentFiles, onRemoveDraftAttachment, contextAttachments, selectedContextAttachmentKeys, onToggleContextAttachmentKey } = props;
+  const { value, onChange, onSend, modelId, modelOptions, onChangeModelId, webSearchEnabled, onChangeWebSearchEnabled, containerRef, replyPreview, onCancelReply, placeholder, sendDisabled, disabled, draftAttachments, onAddAttachmentFiles, onRemoveDraftAttachment, contextAttachments, selectedContextAttachmentKeys, onToggleContextAttachmentKey } = props;
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const onSendRef = useRef(onSend);
@@ -113,25 +111,9 @@ export default function ChatComposer(props: Props) {
     return String(label).trim();
   }, [modelId, modelOptions]);
 
-  const selectedVerbosityLabel = useMemo(() => {
-    switch (verbosity) {
-      case 'low':
-        return 'Low';
-      case 'medium':
-        return 'Medium';
-      case 'high':
-        return 'High';
-      default:
-        return String(verbosity);
-    }
-  }, [verbosity]);
-
   const modelMenuButtonRef = useRef<HTMLButtonElement | null>(null);
-  const verbosityMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
-  const [verbosityMenuOpen, setVerbosityMenuOpen] = useState(false);
   const [modelMenuPos, setModelMenuPos] = useState<MenuPos | null>(null);
-  const [verbosityMenuPos, setVerbosityMenuPos] = useState<MenuPos | null>(null);
 
   useEffect(() => {
     onSendRef.current = onSend;
@@ -139,7 +121,6 @@ export default function ChatComposer(props: Props) {
 
   const closeMenus = useCallback(() => {
     setModelMenuOpen(false);
-    setVerbosityMenuOpen(false);
   }, []);
 
   const updateModelMenuPosition = useCallback(() => {
@@ -170,45 +151,11 @@ export default function ChatComposer(props: Props) {
     setModelMenuPos({ top, bottom, left, maxHeight });
   }, [modelOptions.length]);
 
-  const updateVerbosityMenuPosition = useCallback(() => {
-    const btn = verbosityMenuButtonRef.current;
-    if (!btn) return;
-    const rect = btn.getBoundingClientRect();
-
-    const gap = 8;
-    const viewportPadding = 8;
-    const estimatedWidth = 80;
-    const maxMenuH = 256;
-    const desiredH = 132;
-
-    const spaceAbove = rect.top - gap - viewportPadding;
-    const spaceBelow = window.innerHeight - rect.bottom - gap - viewportPadding;
-    const openAbove = spaceAbove >= desiredH || spaceAbove >= spaceBelow;
-    const top = openAbove ? undefined : rect.bottom + gap;
-    const bottom = openAbove ? window.innerHeight - rect.top + gap : undefined;
-    const maxHeight = Math.max(0, Math.min(maxMenuH, openAbove ? spaceAbove : spaceBelow));
-
-    const left = Math.min(
-      window.innerWidth - viewportPadding - estimatedWidth,
-      Math.max(viewportPadding, rect.left),
-    );
-
-    setVerbosityMenuPos({ top, bottom, left, maxHeight });
-  }, []);
-
   const openModelMenu = useCallback(() => {
     if (disabled || modelOptions.length === 0) return;
-    setVerbosityMenuOpen(false);
     updateModelMenuPosition();
     setModelMenuOpen(true);
   }, [disabled, modelOptions.length, updateModelMenuPosition]);
-
-  const openVerbosityMenu = useCallback(() => {
-    if (disabled) return;
-    setModelMenuOpen(false);
-    updateVerbosityMenuPosition();
-    setVerbosityMenuOpen(true);
-  }, [disabled, updateVerbosityMenuPosition]);
 
   const selectModel = useCallback(
     (next: string) => {
@@ -218,21 +165,13 @@ export default function ChatComposer(props: Props) {
     [onChangeModelId],
   );
 
-  const selectVerbosity = useCallback(
-    (next: TextVerbosity) => {
-      onChangeVerbosity(next);
-      setVerbosityMenuOpen(false);
-    },
-    [onChangeVerbosity],
-  );
-
   useEffect(() => {
     if (!disabled) return;
     closeMenus();
   }, [closeMenus, disabled]);
 
   useEffect(() => {
-    if (!modelMenuOpen && !verbosityMenuOpen) return;
+    if (!modelMenuOpen) return;
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') closeMenus();
@@ -240,14 +179,13 @@ export default function ChatComposer(props: Props) {
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [closeMenus, modelMenuOpen, verbosityMenuOpen]);
+  }, [closeMenus, modelMenuOpen]);
 
   useEffect(() => {
-    if (!modelMenuOpen && !verbosityMenuOpen) return;
+    if (!modelMenuOpen) return;
 
     const onReposition = () => {
       if (modelMenuOpen) updateModelMenuPosition();
-      if (verbosityMenuOpen) updateVerbosityMenuPosition();
     };
 
     window.addEventListener('resize', onReposition);
@@ -266,8 +204,6 @@ export default function ChatComposer(props: Props) {
   }, [
     modelMenuOpen,
     updateModelMenuPosition,
-    verbosityMenuOpen,
-    updateVerbosityMenuPosition,
   ]);
 
   useEffect(() => {
@@ -686,29 +622,6 @@ export default function ChatComposer(props: Props) {
               </span>
             </label>
 
-            <label className="composer__setting">
-              <span className="composer__settingLabel">Verbosity</span>
-              <span className="composer__selectWrap" data-value={selectedVerbosityLabel}>
-                <button
-                  ref={verbosityMenuButtonRef}
-                  className="composer__menuButton"
-                  type="button"
-                  onClick={() => {
-                    if (verbosityMenuOpen) {
-                      setVerbosityMenuOpen(false);
-                      return;
-                    }
-                    openVerbosityMenu();
-                  }}
-                  disabled={disabled}
-                  aria-haspopup="menu"
-                  aria-expanded={verbosityMenuOpen ? 'true' : 'false'}
-                >
-                  {selectedVerbosityLabel}
-                </button>
-              </span>
-            </label>
-
             <label className="composer__toggle">
               <span>Web</span>
               <input
@@ -750,38 +663,6 @@ export default function ChatComposer(props: Props) {
                     title={m.label}
                   >
                     {String(m.shortLabel ?? m.label ?? m.id).trim()}
-                  </button>
-                ))}
-              </div>
-            </>,
-            document.body,
-          )
-        : null}
-
-      {typeof document !== 'undefined' && verbosityMenuOpen && verbosityMenuPos
-        ? createPortal(
-            <>
-              <div className="composerMenuBackdrop" onPointerDown={closeMenus} aria-hidden="true" />
-              <div
-                className="composerMenu"
-                style={{
-                  top: verbosityMenuPos.top,
-                  bottom: verbosityMenuPos.bottom,
-                  left: verbosityMenuPos.left,
-                  width: 80,
-                  maxHeight: verbosityMenuPos.maxHeight,
-                }}
-                role="menu"
-              >
-                {(['low', 'medium', 'high'] as const).map((v) => (
-                  <button
-                    key={v}
-                    type="button"
-                    className={`composerMenu__item ${v === verbosity ? 'composerMenu__item--active' : ''}`}
-                    onClick={() => selectVerbosity(v)}
-                    role="menuitem"
-                  >
-                    {v === 'low' ? 'Low' : v === 'medium' ? 'Medium' : 'High'}
                   </button>
                 ))}
               </div>

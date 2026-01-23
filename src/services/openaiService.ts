@@ -21,6 +21,31 @@ function createOpenAIClient(apiKey: string) {
   });
 }
 
+export async function sendOpenAIResponse(args: {
+  apiKey: string;
+  request: Record<string, unknown>;
+  signal?: AbortSignal;
+}): Promise<OpenAIStreamResult> {
+  try {
+    const client = createOpenAIClient(args.apiKey);
+    const res = await client.responses.create(args.request as any, { signal: args.signal } as any);
+    let raw: unknown = res;
+    try {
+      raw = JSON.parse(JSON.stringify(res));
+    } catch {
+      raw = res;
+    }
+    const outputText = typeof (res as any)?.output_text === 'string' ? String((res as any).output_text) : '';
+    return { ok: true, text: outputText, response: raw };
+  } catch (err) {
+    const isAbort =
+      (err instanceof DOMException && err.name === 'AbortError') || (err && typeof err === 'object' && (err as any).name === 'AbortError');
+    if (isAbort) return { ok: false, text: '', error: 'Canceled', cancelled: true };
+    const msg = err instanceof Error ? err.message : `Unknown error: ${String(err)}`;
+    return { ok: false, text: '', error: msg };
+  }
+}
+
 export async function streamOpenAIResponse(args: {
   apiKey: string;
   request: Record<string, unknown>;

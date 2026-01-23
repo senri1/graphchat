@@ -19,11 +19,12 @@ import {
   renameItem,
   toggleFolder,
 } from './workspace/tree';
-import { getOpenAIApiKey, streamOpenAIResponse } from './services/openaiService';
+import { getOpenAIApiKey, sendOpenAIResponse, streamOpenAIResponse } from './services/openaiService';
 import type { ChatAttachment, ChatNode, ThinkingSummaryChunk } from './model/chat';
 import { buildOpenAIResponseRequest, type OpenAIChatSettings } from './llm/openai';
-import { DEFAULT_MODEL_ID, listModels, type TextVerbosity } from './llm/registry';
+import { DEFAULT_MODEL_ID, listModels } from './llm/registry';
 import { extractCanonicalMessage, extractCanonicalMeta } from './llm/openaiCanonical';
+import { buildModelUserSettings, normalizeModelUserSettings, type ModelUserSettingsById } from './llm/modelUserSettings';
 import { readFileAsDataUrl, splitDataUrl } from './utils/files';
 import { deleteAttachment, deleteAttachments, getAttachment, listAttachmentKeys, putAttachment } from './storage/attachments';
 import { clearAllStores } from './storage/db';
@@ -336,6 +337,9 @@ export default function App() {
     root: WorkspaceFolder;
     activeChatId: string;
     focusedFolderId: string;
+    llm: {
+      modelUserSettings: ModelUserSettingsById;
+    };
     visual: {
       glassNodesEnabled: boolean;
       glassNodesBlurCssPxWebgl: number;
@@ -377,7 +381,7 @@ export default function App() {
   const [replyContextAttachments, setReplyContextAttachments] = useState<ContextAttachmentItem[]>(() => []);
   const [replySelectedAttachmentKeys, setReplySelectedAttachmentKeys] = useState<string[]>(() => []);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsPanel, setSettingsPanel] = useState<'appearance' | 'debug' | 'reset'>('appearance');
+  const [settingsPanel, setSettingsPanel] = useState<'appearance' | 'models' | 'debug' | 'reset'>('appearance');
   const [debugHudVisible, setDebugHudVisible] = useState(true);
   const [stressSpawnCount, setStressSpawnCount] = useState<number>(50);
   const [backgroundStorageKey, setBackgroundStorageKey] = useState<string | null>(() => null);
@@ -412,9 +416,14 @@ export default function App() {
   const sidebarFontFamilyRef = useRef<FontFamilyKey>(sidebarFontFamily);
   const sidebarFontSizePxRef = useRef<number>(sidebarFontSizePx);
   const backgroundLoadSeqRef = useRef(0);
-  const modelOptions = useMemo(() => listModels(), []);
+  const allModels = useMemo(() => listModels(), []);
+  const [modelUserSettings, setModelUserSettings] = useState<ModelUserSettingsById>(() => buildModelUserSettings(allModels, null));
+  const modelUserSettingsRef = useRef<ModelUserSettingsById>(modelUserSettings);
+  const composerModelOptions = useMemo(
+    () => allModels.filter((m) => modelUserSettings[m.id]?.includeInComposer !== false),
+    [allModels, modelUserSettings],
+  );
   const [composerModelId, setComposerModelId] = useState<string>(() => DEFAULT_MODEL_ID);
-  const [composerVerbosity, setComposerVerbosity] = useState<TextVerbosity>(() => 'medium');
   const [composerWebSearch, setComposerWebSearch] = useState<boolean>(() => false);
 
   const initial = useMemo(() => {
@@ -436,7 +445,7 @@ export default function App() {
       selectedAttachmentKeys: [],
       headNodeId: null,
       turns: [],
-      llm: { modelId: DEFAULT_MODEL_ID, verbosity: 'medium', webSearchEnabled: false },
+      llm: { modelId: DEFAULT_MODEL_ID, webSearchEnabled: false },
       backgroundStorageKey: null,
     });
     return { root, chatId, chatStates, chatMeta };
@@ -461,7 +470,7 @@ export default function App() {
       selectedAttachmentKeys: [],
       headNodeId: null,
       turns: [],
-      llm: { modelId: DEFAULT_MODEL_ID, verbosity: 'medium', webSearchEnabled: false },
+      llm: { modelId: DEFAULT_MODEL_ID, webSearchEnabled: false },
       backgroundStorageKey: null,
     };
     chatMetaRef.current.set(chatId, meta);
@@ -479,6 +488,10 @@ export default function App() {
   useEffect(() => {
     activeChatIdRef.current = activeChatId;
   }, [activeChatId]);
+
+  useEffect(() => {
+    modelUserSettingsRef.current = modelUserSettings;
+  }, [modelUserSettings]);
 
   useEffect(() => {
     glassNodesEnabledRef.current = glassNodesEnabled;
@@ -595,6 +608,7 @@ export default function App() {
             root,
             activeChatId: active,
             focusedFolderId: focused,
+            llm: { modelUserSettings: modelUserSettingsRef.current as any },
             visual: {
               glassNodesEnabled: Boolean(glassNodesEnabledRef.current),
               glassNodesBlurCssPx:
@@ -958,7 +972,8 @@ export default function App() {
       }
       if (job.closed || job.abortController.signal.aborted) return;
 
-      const sentRequest = { ...(request ?? {}), stream: true };
+      const streamingEnabled = typeof settings.stream === 'boolean' ? settings.stream : true;
+      const sentRequest = streamingEnabled ? { ...(request ?? {}), stream: true } : { ...(request ?? {}) };
       const storedRequest = cloneRawPayloadForDisplay(sentRequest);
       updateStoredTextNode(chatId, job.userNodeId, { apiRequest: storedRequest });
       if (activeChatIdRef.current === chatId) {
@@ -973,50 +988,58 @@ export default function App() {
       }
       schedulePersistSoon();
 
-      const res = await streamOpenAIResponse({
-        apiKey,
-        request,
-        signal: job.abortController.signal,
-        callbacks: {
-          onDelta: (_delta, fullText) => {
-            if (job.closed) return;
-            job.fullText = fullText;
-            scheduleJobFlush(job);
-          },
-          onEvent: (evt: any) => {
-            if (job.closed) return;
-            const t = typeof evt?.type === 'string' ? String(evt.type) : '';
-            if (t === 'response.reasoning_summary_text.delta') {
-              const idx = typeof evt?.summary_index === 'number' ? evt.summary_index : 0;
-              const delta = typeof evt?.delta === 'string' ? evt.delta : '';
-              if (!delta) return;
+      const res = streamingEnabled
+        ? await streamOpenAIResponse({
+            apiKey,
+            request,
+            signal: job.abortController.signal,
+            callbacks: {
+              onDelta: (_delta, fullText) => {
+                if (job.closed) return;
+                job.fullText = fullText;
+                scheduleJobFlush(job);
+              },
+              onEvent: (evt: any) => {
+                if (job.closed) return;
+                const t = typeof evt?.type === 'string' ? String(evt.type) : '';
+                if (t === 'response.reasoning_summary_text.delta') {
+                  const idx = typeof evt?.summary_index === 'number' ? evt.summary_index : 0;
+                  const delta = typeof evt?.delta === 'string' ? evt.delta : '';
+                  if (!delta) return;
 
-              const chunks = job.thinkingSummary ?? [];
-              const existing = chunks.find((c) => c.summaryIndex === idx);
-              const nextChunks: ThinkingSummaryChunk[] = existing
-                ? chunks.map((c) => (c.summaryIndex === idx ? { ...c, text: c.text + delta } : c))
-                : [...chunks, { summaryIndex: idx, text: delta, done: false }];
-              job.thinkingSummary = nextChunks;
+                  const chunks = job.thinkingSummary ?? [];
+                  const existing = chunks.find((c) => c.summaryIndex === idx);
+                  const nextChunks: ThinkingSummaryChunk[] = existing
+                    ? chunks.map((c) => (c.summaryIndex === idx ? { ...c, text: c.text + delta } : c))
+                    : [...chunks, { summaryIndex: idx, text: delta, done: false }];
+                  job.thinkingSummary = nextChunks;
 
-              updateStoredTextNode(chatId, job.assistantNodeId, { thinkingSummary: nextChunks });
-              if (activeChatIdRef.current === chatId) {
-                engineRef.current?.setTextNodeThinkingSummary(job.assistantNodeId, nextChunks);
-              }
-            } else if (t === 'response.reasoning_summary_text.done') {
-              const idx = typeof evt?.summary_index === 'number' ? evt.summary_index : 0;
-              const chunks = job.thinkingSummary ?? [];
-              if (!chunks.length) return;
-              const nextChunks: ThinkingSummaryChunk[] = chunks.map((c) => (c.summaryIndex === idx ? { ...c, done: true } : c));
-              job.thinkingSummary = nextChunks;
+                  updateStoredTextNode(chatId, job.assistantNodeId, { thinkingSummary: nextChunks });
+                  if (activeChatIdRef.current === chatId) {
+                    engineRef.current?.setTextNodeThinkingSummary(job.assistantNodeId, nextChunks);
+                  }
+                } else if (t === 'response.reasoning_summary_text.done') {
+                  const idx = typeof evt?.summary_index === 'number' ? evt.summary_index : 0;
+                  const chunks = job.thinkingSummary ?? [];
+                  if (!chunks.length) return;
+                  const nextChunks: ThinkingSummaryChunk[] = chunks.map((c) =>
+                    c.summaryIndex === idx ? { ...c, done: true } : c,
+                  );
+                  job.thinkingSummary = nextChunks;
 
-              updateStoredTextNode(chatId, job.assistantNodeId, { thinkingSummary: nextChunks });
-              if (activeChatIdRef.current === chatId) {
-                engineRef.current?.setTextNodeThinkingSummary(job.assistantNodeId, nextChunks);
-              }
-            }
-          },
-        },
-      });
+                  updateStoredTextNode(chatId, job.assistantNodeId, { thinkingSummary: nextChunks });
+                  if (activeChatIdRef.current === chatId) {
+                    engineRef.current?.setTextNodeThinkingSummary(job.assistantNodeId, nextChunks);
+                  }
+                }
+              },
+            },
+          })
+        : await sendOpenAIResponse({
+            apiKey,
+            request,
+            signal: job.abortController.signal,
+          });
 
       if (!generationJobsByAssistantIdRef.current.has(job.assistantNodeId)) return;
       const usedWebSearch =
@@ -1210,7 +1233,6 @@ export default function App() {
         existingMeta.selectedAttachmentKeys = replySelectedAttachmentKeys;
         existingMeta.llm = {
           modelId: composerModelId,
-          verbosity: composerVerbosity,
           webSearchEnabled: composerWebSearch,
         };
       }
@@ -1243,7 +1265,6 @@ export default function App() {
       setReplyContextAttachments([]);
     }
     setComposerModelId(meta.llm.modelId || DEFAULT_MODEL_ID);
-    setComposerVerbosity((meta.llm.verbosity as TextVerbosity) || 'medium');
     setComposerWebSearch(Boolean(meta.llm.webSearchEnabled));
     setActiveChatId(nextChatId);
     applyVisualSettings(nextChatId);
@@ -1263,6 +1284,8 @@ export default function App() {
     setFocusedFolderId(payload.focusedFolderId || root.id);
     chatStatesRef.current = chatStates;
     chatMetaRef.current = chatMeta;
+    setModelUserSettings(payload.llm.modelUserSettings);
+    modelUserSettingsRef.current = payload.llm.modelUserSettings;
 
     const chatIds = collectChatIds(root);
     const active = chatIds.includes(desiredActive) ? desiredActive : findFirstChatId(root) ?? desiredActive;
@@ -1342,7 +1365,6 @@ export default function App() {
       setReplyContextAttachments([]);
     }
     setComposerModelId(meta.llm.modelId || DEFAULT_MODEL_ID);
-    setComposerVerbosity((meta.llm.verbosity as TextVerbosity) || 'medium');
     setComposerWebSearch(Boolean(meta.llm.webSearchEnabled));
 
     applyVisualSettings(resolvedActive);
@@ -1436,7 +1458,6 @@ export default function App() {
             turns: Array.isArray(raw?.turns) ? (raw.turns as ChatTurnMeta[]) : [],
             llm: {
               modelId: typeof llmRaw?.modelId === 'string' ? llmRaw.modelId : DEFAULT_MODEL_ID,
-              verbosity: typeof llmRaw?.verbosity === 'string' ? llmRaw.verbosity : 'medium',
               webSearchEnabled: Boolean(llmRaw?.webSearchEnabled),
             },
             backgroundStorageKey: typeof raw?.backgroundStorageKey === 'string' ? raw.backgroundStorageKey : null,
@@ -1523,10 +1544,13 @@ export default function App() {
         ),
       };
 
+      const modelUserSettings = buildModelUserSettings(allModels, ws.llm?.modelUserSettings);
+
       const payload = {
         root,
         activeChatId: desiredActiveChatId,
         focusedFolderId: typeof ws.focusedFolderId === 'string' ? ws.focusedFolderId : root.id,
+        llm: { modelUserSettings },
         visual,
         chatStates,
         chatMeta,
@@ -1538,7 +1562,7 @@ export default function App() {
         bootPayloadRef.current = null;
       }
     })();
-  }, [schedulePersistSoon]);
+  }, [allModels, schedulePersistSoon]);
 
   useEffect(() => {
     if (!engineReady) return;
@@ -1560,7 +1584,7 @@ export default function App() {
       selectedAttachmentKeys: [],
       headNodeId: null,
       turns: [],
-      llm: { modelId: DEFAULT_MODEL_ID, verbosity: 'medium', webSearchEnabled: false },
+      llm: { modelId: DEFAULT_MODEL_ID, webSearchEnabled: false },
       backgroundStorageKey: null,
     });
     switchChat(id);
@@ -1642,7 +1666,7 @@ export default function App() {
           selectedAttachmentKeys: [],
           headNodeId: null,
           turns: [],
-          llm: { modelId: DEFAULT_MODEL_ID, verbosity: 'medium', webSearchEnabled: false },
+          llm: { modelId: DEFAULT_MODEL_ID, webSearchEnabled: false },
           backgroundStorageKey: null,
         });
         switchChat(id, { saveCurrent: false });
@@ -1825,16 +1849,11 @@ export default function App() {
             setReplySelectedAttachmentKeys(next);
           }}
           modelId={composerModelId}
-          modelOptions={modelOptions}
+          modelOptions={composerModelOptions}
           onChangeModelId={(next) => {
             const value = next || DEFAULT_MODEL_ID;
             setComposerModelId(value);
             ensureChatMeta(activeChatId).llm.modelId = value;
-          }}
-          verbosity={composerVerbosity}
-          onChangeVerbosity={(next) => {
-            setComposerVerbosity(next);
-            ensureChatMeta(activeChatId).llm.verbosity = next;
           }}
           webSearchEnabled={composerWebSearch}
           onChangeWebSearchEnabled={(next) => {
@@ -1888,10 +1907,15 @@ export default function App() {
 
             const snapshot = engine.exportChatState();
             chatStatesRef.current.set(activeChatId, snapshot);
+            const selectedModelId = composerModelId || DEFAULT_MODEL_ID;
+            const modelSettings =
+              modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
             const settings: OpenAIChatSettings = {
-              modelId: composerModelId,
-              verbosity: composerVerbosity,
+              modelId: selectedModelId,
+              verbosity: modelSettings?.verbosity,
               webSearchEnabled: composerWebSearch,
+              reasoningSummary: modelSettings?.reasoningSummary,
+              stream: modelSettings?.streaming,
             };
             startOpenAIGeneration({
               chatId: activeChatId,
@@ -2012,6 +2036,20 @@ export default function App() {
           activePanel={settingsPanel}
           onChangePanel={setSettingsPanel}
           onClose={() => setSettingsOpen(false)}
+          models={allModels}
+          modelUserSettings={modelUserSettings}
+          onUpdateModelUserSettings={(modelId, patch) => {
+            const model = allModels.find((m) => m.id === modelId);
+            if (!model) return;
+            setModelUserSettings((prev) => {
+              const current = prev[modelId] ?? normalizeModelUserSettings(model, null);
+              const next = normalizeModelUserSettings(model, { ...(current as any), ...(patch as any) });
+              const merged = { ...prev, [modelId]: next };
+              modelUserSettingsRef.current = merged;
+              return merged;
+            });
+            schedulePersistSoon();
+          }}
           backgroundEnabled={Boolean(backgroundStorageKey)}
           onImportBackground={() => backgroundInputRef.current?.click()}
           onClearBackground={() => {
@@ -2178,7 +2216,7 @@ export default function App() {
               selectedAttachmentKeys: [],
               headNodeId: null,
               turns: [],
-              llm: { modelId: DEFAULT_MODEL_ID, verbosity: 'medium', webSearchEnabled: false },
+              llm: { modelId: DEFAULT_MODEL_ID, webSearchEnabled: false },
               backgroundStorageKey: null,
             });
 
@@ -2198,9 +2236,11 @@ export default function App() {
             setReplySelectedAttachmentKeys([]);
             setBackgroundStorageKey(null);
             setComposerModelId(DEFAULT_MODEL_ID);
-            setComposerVerbosity('medium');
             setComposerWebSearch(false);
             setDebugHudVisible(true);
+            const nextModelUserSettings = buildModelUserSettings(allModels, null);
+            setModelUserSettings(nextModelUserSettings);
+            modelUserSettingsRef.current = nextModelUserSettings;
 
             glassNodesEnabledRef.current = false;
             glassNodesBlurCssPxWebglRef.current = 10;

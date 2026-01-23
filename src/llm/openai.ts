@@ -8,6 +8,8 @@ export type OpenAIChatSettings = {
   modelId: string;
   verbosity?: TextVerbosity;
   webSearchEnabled?: boolean;
+  reasoningSummary?: 'auto' | 'detailed' | 'off';
+  stream?: boolean;
 };
 
 async function attachmentToOpenAIContent(att: any): Promise<any | null> {
@@ -181,7 +183,8 @@ export async function buildOpenAIResponseRequest(args: {
 
   if (info?.effort) {
     body.reasoning = { effort: info.effort };
-    if (info.reasoningSummary) body.reasoning.summary = 'auto';
+    const summary = args.settings.reasoningSummary ?? (info.reasoningSummary ? 'auto' : 'off');
+    if (summary && summary !== 'off') body.reasoning.summary = summary;
     const existingInclude = Array.isArray(body.include) ? body.include : [];
     if (!existingInclude.includes('reasoning.encrypted_content')) {
       body.include = [...existingInclude, 'reasoning.encrypted_content'];

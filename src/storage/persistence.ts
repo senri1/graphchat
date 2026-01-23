@@ -9,6 +9,9 @@ export type PersistedWorkspaceSnapshot = {
   root: WorkspaceFolder;
   activeChatId: string;
   focusedFolderId: string;
+  llm?: {
+    modelUserSettings?: Record<string, unknown>;
+  };
   visual?: {
     glassNodesEnabled: boolean;
     glassNodesUnderlayAlpha: number;
