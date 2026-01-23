@@ -427,7 +427,7 @@ export default function WorkspaceSidebar(props: Props) {
             </div>
           </div>
           <div
-            className="sidebar__tree"
+            className="sidebar__treeWrap"
             onDragOver={(e) => {
               e.preventDefault();
               e.stopPropagation();
@@ -442,7 +442,7 @@ export default function WorkspaceSidebar(props: Props) {
               onMoveItem(payload.id, rootId);
             }}
           >
-            {root.children.map((child) => renderItem(child, 0))}
+            <div className="sidebar__tree">{root.children.map((child) => renderItem(child, 0))}</div>
           </div>
         </div>
       </div>

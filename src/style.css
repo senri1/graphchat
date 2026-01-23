@@ -214,6 +214,15 @@ body {
   padding: 6px 8px 16px 8px;
 }
 
+.sidebar__treeWrap {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  padding-right: 3px;
+  padding-bottom: 3px;
+}
+
 .treeRow {
   display: flex;
   align-items: center;
@@ -1298,6 +1307,11 @@ body {
   display: flex;
   min-width: 0;
   min-height: 0;
+}
+
+.composer__panel:not(.composer__panel--preview) .composer__inputWrap {
+  padding-top: 3px;
+  padding-right: 3px;
 }
 
 .composer__textarea {
