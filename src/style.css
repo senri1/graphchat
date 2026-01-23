@@ -629,7 +629,8 @@ body {
 .settingsModal__scroll,
 .sidebar__tree,
 .composer__textarea,
-.composer__preview {
+.composer__preview,
+.gc-textLod2__content {
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.35) transparent;
 }
@@ -637,21 +638,24 @@ body {
 .settingsModal__scroll::-webkit-scrollbar,
 .sidebar__tree::-webkit-scrollbar,
 .composer__textarea::-webkit-scrollbar,
-.composer__preview::-webkit-scrollbar {
+.composer__preview::-webkit-scrollbar,
+.gc-textLod2__content::-webkit-scrollbar {
   width: 10px;
 }
 
 .settingsModal__scroll::-webkit-scrollbar-track,
 .sidebar__tree::-webkit-scrollbar-track,
 .composer__textarea::-webkit-scrollbar-track,
-.composer__preview::-webkit-scrollbar-track {
+.composer__preview::-webkit-scrollbar-track,
+.gc-textLod2__content::-webkit-scrollbar-track {
   background: transparent;
 }
 
 .settingsModal__scroll::-webkit-scrollbar-thumb,
 .sidebar__tree::-webkit-scrollbar-thumb,
 .composer__textarea::-webkit-scrollbar-thumb,
-.composer__preview::-webkit-scrollbar-thumb {
+.composer__preview::-webkit-scrollbar-thumb,
+.gc-textLod2__content::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.32);
   border-radius: 999px;
   border: 2px solid transparent;
@@ -661,7 +665,8 @@ body {
 .settingsModal__scroll::-webkit-scrollbar-thumb:hover,
 .sidebar__tree::-webkit-scrollbar-thumb:hover,
 .composer__textarea::-webkit-scrollbar-thumb:hover,
-.composer__preview::-webkit-scrollbar-thumb:hover {
+.composer__preview::-webkit-scrollbar-thumb:hover,
+.gc-textLod2__content::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.45);
   border: 2px solid transparent;
   background-clip: content-box;
