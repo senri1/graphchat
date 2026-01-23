@@ -672,6 +672,28 @@ body {
   background-clip: content-box;
 }
 
+/* Text nodes: keep content layout stable; only show scrollbar visuals when interactive (hovered). */
+.gc-textLod2__content {
+  scrollbar-gutter: stable;
+  scrollbar-color: transparent transparent;
+}
+
+.gc-textLod2--interactive .gc-textLod2__content {
+  scrollbar-color: rgba(255, 255, 255, 0.35) transparent;
+}
+
+.gc-textLod2__content::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+
+.gc-textLod2--interactive .gc-textLod2__content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.32);
+}
+
+.gc-textLod2--interactive .gc-textLod2__content::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.45);
+}
+
 .settingsModal__close {
   position: absolute;
   top: 10px;

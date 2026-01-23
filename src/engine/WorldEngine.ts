@@ -401,6 +401,7 @@ export class WorldEngine {
   private nodeTextFontSizePx = 14;
   private nodeTextColor = 'rgba(255,255,255,0.92)';
   private nodeTextLineHeight = 1.55;
+  private textScrollGutterPx: number | null = null;
 
   private textSelectNodeId: string | null = null;
   private textSelectPointerId: number | null = null;
@@ -1510,8 +1511,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 	            rasterScale: job.rasterScale,
               fontFamily: this.nodeTextFontFamily,
               fontSizePx: this.nodeTextFontSizePx,
+              lineHeight: this.nodeTextLineHeight,
               color: this.nodeTextColor,
               scrollY: job.scrollY,
+              scrollGutterPx: this.getTextScrollGutterPx(),
 	          });
 	          if (this.textRasterGeneration !== gen) {
             this.closeImage(res.image);
@@ -2195,9 +2198,48 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return Math.max(0, Math.round(raw));
   }
 
+  private getTextScrollGutterPx(): number {
+    if (this.textScrollGutterPx != null) return this.textScrollGutterPx;
+    if (typeof document === 'undefined') {
+      this.textScrollGutterPx = 0;
+      return 0;
+    }
+
+    let el: HTMLDivElement | null = null;
+    try {
+      el = document.createElement('div');
+      el.className = 'gc-textLod2__content';
+      el.style.position = 'absolute';
+      el.style.left = '-99999px';
+      el.style.top = '0';
+      el.style.width = '100px';
+      el.style.height = '100px';
+      el.style.overflowY = 'scroll';
+      el.style.overflowX = 'hidden';
+      el.style.visibility = 'hidden';
+      el.style.pointerEvents = 'none';
+      document.body.appendChild(el);
+
+      const gutter = Math.max(0, (el.offsetWidth || 0) - (el.clientWidth || 0));
+      const v = Math.max(0, Math.round(gutter));
+      this.textScrollGutterPx = v;
+      return v;
+    } catch {
+      this.textScrollGutterPx = 0;
+      return 0;
+    } finally {
+      try {
+        el?.remove();
+      } catch {
+        // ignore
+      }
+    }
+  }
+
   private textRasterSigForNode(node: TextNode, contentRect: Rect): { sig: string; scrollY: number } {
     const scrollY = this.getTextNodeScrollY(node);
-    const sig = `${node.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}|sy${scrollY}`;
+    const gutter = this.getTextScrollGutterPx();
+    const sig = `${node.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}|sy${scrollY}|sg${gutter}`;
     return { sig, scrollY };
   }
 

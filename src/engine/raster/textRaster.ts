@@ -15,13 +15,15 @@ export type TextHitZone =
 
 const DEFAULT_TEXT_COLOR = 'rgba(255,255,255,0.92)';
 const DEFAULT_TEXT_FONT_SIZE_PX = 14;
+const DEFAULT_TEXT_LINE_HEIGHT = 1.55;
 const DEFAULT_TEXT_FONT_FAMILY =
   'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"';
 
 const MDX_CSS = `
 .mdx {
   line-height: 1.55;
-  word-break: break-word;
+  overflow-wrap: break-word;
+  word-wrap: break-word;
 }
 .mdx p { margin: 0.6rem 0; }
 .mdx h1, .mdx h2, .mdx h3, .mdx h4, .mdx h5, .mdx h6 {
@@ -347,8 +349,10 @@ export async function rasterizeHtmlToImage(
     rasterScale: number;
     fontFamily?: string;
     fontSizePx?: number;
+    lineHeight?: number;
     color?: string;
     scrollY?: number;
+    scrollGutterPx?: number;
   },
 ): Promise<TextRasterResult> {
   if (typeof document === 'undefined') {
@@ -370,15 +374,20 @@ export async function rasterizeHtmlToImage(
     card.style.width = `${width}px`;
     card.style.height = `${height}px`;
     card.style.overflow = 'hidden';
+    card.style.boxSizing = 'border-box';
     card.style.padding = '0';
+    card.style.paddingRight = `${Math.max(0, Math.round(Number(opts.scrollGutterPx) || 0))}px`;
     card.style.margin = '0';
     card.style.background = 'transparent';
     //card.style.setProperty('-webkit-font-smoothing', 'antialiased');
     //card.style.setProperty('-moz-osx-font-smoothing', 'grayscale');
     card.style.color = typeof opts.color === 'string' && opts.color.trim() ? opts.color : DEFAULT_TEXT_COLOR;
     card.style.fontSize = `${Math.max(1, Math.round(Number(opts.fontSizePx) || DEFAULT_TEXT_FONT_SIZE_PX))}px`;
+    card.style.lineHeight = `${Math.max(0.1, Number(opts.lineHeight ?? DEFAULT_TEXT_LINE_HEIGHT))}`;
     card.style.fontFamily =
       typeof opts.fontFamily === 'string' && opts.fontFamily.trim() ? opts.fontFamily : DEFAULT_TEXT_FONT_FAMILY;
+    card.style.overflowWrap = 'break-word';
+    (card.style as any).wordWrap = 'break-word';
     card.innerHTML = html ?? '';
     root.appendChild(card);
 

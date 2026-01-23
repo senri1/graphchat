@@ -307,12 +307,14 @@ export class TextLod2Overlay {
     content.style.right = '0';
     content.style.bottom = '0';
     content.style.overflow = 'hidden';
+    content.style.boxSizing = 'border-box';
     content.style.padding = '0';
     content.style.margin = '0';
     content.style.color = 'rgba(255,255,255,0.92)';
     content.style.fontSize = '14px';
     content.style.lineHeight = '1.55';
-    content.style.wordBreak = 'break-word';
+    content.style.overflowWrap = 'break-word';
+    (content.style as any).wordWrap = 'break-word';
     content.style.fontFamily =
       'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"';
     this.content = content;
@@ -459,6 +461,7 @@ export class TextLod2Overlay {
     this.visibleNodeId = opts.nodeId;
     this.mode = opts.mode;
     this.interactive = Boolean(opts.interactive);
+    this.root.classList.toggle('gc-textLod2--interactive', this.interactive);
 
     const z = Math.max(0.001, Number.isFinite(opts.zoom) ? opts.zoom : 1);
     this.lastZoom = z;
@@ -491,7 +494,10 @@ export class TextLod2Overlay {
       this.content.style.cursor = 'default';
     }
 
-    this.content.style.overflow = this.interactive ? 'auto' : 'hidden';
+    // Keep layout stable between interactive/non-interactive states; only scrollbar visuals change via CSS.
+    this.content.style.paddingRight = '0px';
+    this.content.style.overflowX = 'hidden';
+    this.content.style.overflowY = 'scroll';
 
     if ((nodeChanged || hashChanged) && Number.isFinite(opts.scrollTop as number)) {
       const desired = Math.max(0, Number(opts.scrollTop) || 0);
@@ -516,6 +522,7 @@ export class TextLod2Overlay {
     this.mode = null;
     this.contentHash = null;
     this.interactive = false;
+    this.root.classList.remove('gc-textLod2--interactive');
     this.nativePointerId = null;
     try {
       document.removeEventListener('pointerup', this.onNativePointerUpCapture, true);
