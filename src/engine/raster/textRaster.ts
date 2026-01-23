@@ -348,6 +348,7 @@ export async function rasterizeHtmlToImage(
     fontFamily?: string;
     fontSizePx?: number;
     color?: string;
+    scrollY?: number;
   },
 ): Promise<TextRasterResult> {
   if (typeof document === 'undefined') {
@@ -380,6 +381,30 @@ export async function rasterizeHtmlToImage(
       typeof opts.fontFamily === 'string' && opts.fontFamily.trim() ? opts.fontFamily : DEFAULT_TEXT_FONT_FAMILY;
     card.innerHTML = html ?? '';
     root.appendChild(card);
+
+    const scrollY = (() => {
+      const raw = Number(opts.scrollY);
+      if (!Number.isFinite(raw)) return 0;
+      const v = Math.max(0, Math.round(raw));
+      if (v <= 0) return 0;
+      try {
+        const max = Math.max(0, (card.scrollHeight || 0) - (card.clientHeight || 0));
+        return Math.min(v, max);
+      } catch {
+        return v;
+      }
+    })();
+    if (scrollY > 0) {
+      const inner = document.createElement('div');
+      inner.style.transform = `translateY(${-scrollY}px)`;
+      inner.style.transformOrigin = '0 0';
+      try {
+        while (card.firstChild) inner.appendChild(card.firstChild);
+      } catch {
+        // ignore
+      }
+      card.appendChild(inner);
+    }
 
     const hasKaTeX = Boolean(card.querySelector('.katex'));
     const katexCss = hasKaTeX ? getKaTeXCssParts() : { rules: '', fontFaces: '' };

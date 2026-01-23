@@ -111,9 +111,11 @@ export class TextLod2Overlay {
   private interactive = false;
 
   private nativePointerId: number | null = null;
+  private suppressScrollCallback = false;
 
   onRequestCloseSelection?: () => void;
   onRequestAction?: (action: TextLod2Action) => void;
+  onScroll?: (nodeId: string, scrollTop: number) => void;
 
   setBaseTextStyle(style: { fontFamily?: string; fontSizePx?: number; lineHeight?: number; color?: string }): void {
     try {
@@ -185,6 +187,17 @@ export class TextLod2Overlay {
       e.preventDefault();
       e.stopPropagation();
       this.onRequestAction?.({ kind: 'summary_toggle', nodeId });
+    }
+  };
+
+  private readonly onContentScroll = () => {
+    if (this.suppressScrollCallback) return;
+    const nodeId = this.visibleNodeId;
+    if (!nodeId) return;
+    try {
+      this.onScroll?.(nodeId, this.content.scrollTop || 0);
+    } catch {
+      // ignore
     }
   };
 
@@ -304,6 +317,8 @@ export class TextLod2Overlay {
       'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"';
     this.content = content;
     if (opts.textStyle) this.setBaseTextStyle(opts.textStyle);
+
+    content.addEventListener('scroll', this.onContentScroll, { passive: true } as any);
 
     const highlights = document.createElement('div');
     highlights.className = 'gc-textLod2__highlights';
@@ -434,7 +449,13 @@ export class TextLod2Overlay {
     zoom: number;
     contentHash: string;
     html: string;
+    scrollTop?: number;
   }): void {
+    const prevNodeId = this.visibleNodeId;
+    const prevHash = this.contentHash;
+    const nodeChanged = prevNodeId !== opts.nodeId;
+    const hashChanged = prevHash !== opts.contentHash;
+
     this.visibleNodeId = opts.nodeId;
     this.mode = opts.mode;
     this.interactive = Boolean(opts.interactive);
@@ -455,7 +476,7 @@ export class TextLod2Overlay {
     this.scaled.style.height = `${worldH}px`;
     this.scaled.style.transform = `scale(${z})`;
 
-    if (this.contentHash !== opts.contentHash) {
+    if (hashChanged) {
       this.contentHash = opts.contentHash;
       this.content.innerHTML = opts.html;
     }
@@ -468,6 +489,20 @@ export class TextLod2Overlay {
       this.content.style.userSelect = 'none';
       (this.content.style as any).webkitUserSelect = 'none';
       this.content.style.cursor = 'default';
+    }
+
+    this.content.style.overflow = this.interactive ? 'auto' : 'hidden';
+
+    if ((nodeChanged || hashChanged) && Number.isFinite(opts.scrollTop as number)) {
+      const desired = Math.max(0, Number(opts.scrollTop) || 0);
+      this.suppressScrollCallback = true;
+      try {
+        this.content.scrollTop = desired;
+      } catch {
+        // ignore
+      } finally {
+        this.suppressScrollCallback = false;
+      }
     }
 
     if (opts.mode === 'resize') {

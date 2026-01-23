@@ -1126,6 +1126,7 @@ export default function App() {
       setRawViewer((prev) => (prev?.nodeId === nodeId ? null : { nodeId, title, kind, payload }));
     };
     engine.onRequestCancelGeneration = (nodeId) => cancelJob(nodeId);
+    engine.onRequestPersist = () => schedulePersistSoon();
     engine.start();
     engineRef.current = engine;
     setUi(engine.getUiState());

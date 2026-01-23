@@ -194,6 +194,7 @@ type TextNode = DemoNodeBase & {
   thinkingSummary?: ThinkingSummaryChunk[];
   summaryExpanded?: boolean;
   expandedSummaryChunks?: Record<number, boolean>;
+  contentScrollY?: number;
   attachments?: ChatAttachment[];
   selectedAttachmentKeys?: string[];
 };
@@ -225,6 +226,7 @@ type TextRasterJob = {
   width: number;
   height: number;
   html: string;
+  scrollY: number;
 };
 
 export type PdfPageMeta = {
@@ -377,6 +379,7 @@ export class WorldEngine {
   onRequestReply?: (nodeId: string) => void;
   onRequestRaw?: (nodeId: string) => void;
   onRequestCancelGeneration?: (nodeId: string) => void;
+  onRequestPersist?: () => void;
 
   private selectedNodeId: string | null = null;
   private editingNodeId: string | null = null;
@@ -686,6 +689,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           thinkingSummary: n.thinkingSummary,
           summaryExpanded: n.summaryExpanded,
           expandedSummaryChunks: n.expandedSummaryChunks,
+          contentScrollY: n.contentScrollY,
           attachments: Array.isArray(n.attachments) ? n.attachments : undefined,
           selectedAttachmentKeys: Array.isArray(n.selectedAttachmentKeys) ? n.selectedAttachmentKeys : undefined,
         };
@@ -815,6 +819,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           }
           return Object.keys(out).length ? out : undefined;
         })();
+        const contentScrollY = (() => {
+          const raw = Number((n as any)?.contentScrollY);
+          if (!Number.isFinite(raw)) return undefined;
+          const v = Math.max(0, Math.round(raw));
+          return v > 0 ? v : undefined;
+        })();
         const canonicalMessage = (() => {
           const raw = (n as any)?.canonicalMessage;
           if (!raw || typeof raw !== 'object') return undefined;
@@ -846,6 +856,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           thinkingSummary,
           summaryExpanded: Boolean((n as any)?.summaryExpanded),
           expandedSummaryChunks,
+          contentScrollY,
           attachments: Array.isArray((n as any)?.attachments) ? ((n as any).attachments as ChatAttachment[]) : undefined,
           selectedAttachmentKeys: Array.isArray((n as any)?.selectedAttachmentKeys)
             ? ((n as any).selectedAttachmentKeys as string[])
@@ -1482,6 +1493,17 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 	        if (this.textRasterCache.has(job.key)) continue;
 
 	        try {
+            const stillWanted = (() => {
+              const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === job.nodeId) ?? null;
+              if (!node) return false;
+              if (node.id === this.editingNodeId) return false;
+              if (node.isGenerating) return false;
+              const contentRect = this.textContentRect(node.rect);
+              const sig = this.textRasterSigForNode(node, contentRect).sig;
+              return sig === job.sig;
+            })();
+            if (!stillWanted) continue;
+
 	          const res = await rasterizeHtmlToImage(job.html, {
 	            width: job.width,
 	            height: job.height,
@@ -1489,10 +1511,25 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
               fontFamily: this.nodeTextFontFamily,
               fontSizePx: this.nodeTextFontSizePx,
               color: this.nodeTextColor,
+              scrollY: job.scrollY,
 	          });
 	          if (this.textRasterGeneration !== gen) {
             this.closeImage(res.image);
             return;
+          }
+
+          const stillCurrent = (() => {
+            const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === job.nodeId) ?? null;
+            if (!node) return false;
+            if (node.id === this.editingNodeId) return false;
+            if (node.isGenerating) return false;
+            const contentRect = this.textContentRect(node.rect);
+            const sig = this.textRasterSigForNode(node, contentRect).sig;
+            return sig === job.sig;
+          })();
+          if (!stillCurrent) {
+            this.closeImage(res.image);
+            continue;
           }
 
           const readyAt = performance.now();
@@ -1958,7 +1995,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 	    if (!opts?.streaming) {
 	      this.textRasterGeneration += 1;
 	      const contentRect = this.textContentRect(node.rect);
-	      const sig = `${node.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
+	      const sig = this.textRasterSigForNode(node, contentRect).sig;
 	      this.textResizeHold = { nodeId: node.id, sig, expiresAt: performance.now() + 2200 };
 	    }
 
@@ -2065,7 +2102,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (!node.isGenerating && node.id !== this.editingNodeId) {
       this.textRasterGeneration += 1;
       const contentRect = this.textContentRect(node.rect);
-      const sig = `${node.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
+      const sig = this.textRasterSigForNode(node, contentRect).sig;
       this.textResizeHold = { nodeId: node.id, sig, expiresAt: performance.now() + 2200 };
     }
 
@@ -2150,6 +2187,18 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const w = Math.max(1, nodeRect.w - PAD * 2);
     const h = Math.max(1, nodeRect.h - HEADER_H - PAD);
     return { x, y, w, h };
+  }
+
+  private getTextNodeScrollY(node: TextNode): number {
+    const raw = Number(node.contentScrollY);
+    if (!Number.isFinite(raw)) return 0;
+    return Math.max(0, Math.round(raw));
+  }
+
+  private textRasterSigForNode(node: TextNode, contentRect: Rect): { sig: string; scrollY: number } {
+    const scrollY = this.getTextNodeScrollY(node);
+    const sig = `${node.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}|sy${scrollY}`;
+    return { sig, scrollY };
   }
 
   private buildTextNodeDisplaySig(node: TextNode): string {
@@ -2332,7 +2381,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         : null;
 
     const zones = overlayZones ?? (() => {
-      const sig = `${node.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
+      const sig = this.textRasterSigForNode(node, contentRect).sig;
       const best = this.getBestTextRaster(sig);
       return best?.hitZones ?? null;
     })();
@@ -2356,7 +2405,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (typeof document === 'undefined') return null;
     const host = this.overlayHost;
     if (!host) return null;
-    this.textLod2 = new TextLod2Overlay({
+    const overlay = new TextLod2Overlay({
       host,
       textStyle: this.nodeTextStyle(),
       onRequestCloseSelection: () => {
@@ -2376,9 +2425,14 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           this.recomputeTextNodeDisplayHash(node);
           this.textRasterGeneration += 1;
           const contentRect = this.textContentRect(node.rect);
-          const sig = `${node.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
+          const sig = this.textRasterSigForNode(node, contentRect).sig;
           this.textResizeHold = { nodeId: node.id, sig, expiresAt: performance.now() + 2200 };
           this.requestRender();
+          try {
+            this.onRequestPersist?.();
+          } catch {
+            // ignore
+          }
           return;
         }
 
@@ -2395,14 +2449,43 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           if (!node.isGenerating) {
             this.textRasterGeneration += 1;
             const contentRect = this.textContentRect(node.rect);
-            const sig = `${node.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
+            const sig = this.textRasterSigForNode(node, contentRect).sig;
             this.textResizeHold = { nodeId: node.id, sig, expiresAt: performance.now() + 2200 };
           }
           this.requestRender();
+          try {
+            this.onRequestPersist?.();
+          } catch {
+            // ignore
+          }
         }
       },
     });
-    return this.textLod2;
+    overlay.onScroll = (nodeId, scrollTop) => {
+      const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === nodeId) ?? null;
+      if (!node) return;
+      if (node.id === this.editingNodeId) return;
+      const next = Math.max(0, Math.round(Number(scrollTop) || 0));
+      const prev = this.getTextNodeScrollY(node);
+      if (next === prev) return;
+
+      node.contentScrollY = next > 0 ? next : undefined;
+      if (!node.isGenerating) {
+        const contentRect = this.textContentRect(node.rect);
+        const sig = this.textRasterSigForNode(node, contentRect).sig;
+        this.textResizeHold = { nodeId: node.id, sig, expiresAt: performance.now() + 2200 };
+      }
+
+      this.requestRender();
+      try {
+        this.onRequestPersist?.();
+      } catch {
+        // ignore
+      }
+    };
+
+    this.textLod2 = overlay;
+    return overlay;
   }
 
   private ensureTextStreamLod2Overlay(): TextLod2Overlay | null {
@@ -2615,6 +2698,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
             return nextHtml;
           })();
     const interactive = target.mode === 'select' && this.textSelectNodeId !== node.id && !node.isGenerating;
+    const desiredScrollTop = this.getTextNodeScrollY(node);
     lod2.show({
       nodeId: node.id,
       mode: target.mode,
@@ -2625,7 +2709,18 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       zoom: z,
       contentHash: node.displayHash,
       html,
+      scrollTop: desiredScrollTop,
     });
+
+    const actualScrollTop = Math.max(0, Math.round(lod2.getContentElement().scrollTop || 0));
+    if (actualScrollTop !== desiredScrollTop) {
+      node.contentScrollY = actualScrollTop > 0 ? actualScrollTop : undefined;
+      try {
+        this.onRequestPersist?.();
+      } catch {
+        // ignore
+      }
+    }
     this.updateTextLod2HitZonesFromOverlay(node.id, node.displayHash, lod2);
   }
 
@@ -3152,7 +3247,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       if (!rectsIntersect(n.rect, view)) continue;
 
       const contentRect = this.textContentRect(n.rect);
-      const sig = `${n.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
+      const { sig, scrollY } = this.textRasterSigForNode(n, contentRect);
       const best = this.bestTextRasterKeyBySig.get(sig);
       const hasBest = !!best && this.textRasterCache.has(best.key);
       if (hasBest && best!.rasterScale >= desiredScale) continue;
@@ -3172,6 +3267,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         width: contentRect.w,
         height: contentRect.h,
         html: this.renderTextNodeHtml(n),
+        scrollY,
       });
     }
 
@@ -3832,7 +3928,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 	      const node = this.nodes.find((n): n is TextNode => n.id === g.nodeId && n.kind === 'text');
 	      if (node) {
 	        const contentRect = this.textContentRect(node.rect);
-	        const sig = `${node.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
+	        const sig = this.textRasterSigForNode(node, contentRect).sig;
 	        this.textResizeHold = { nodeId: node.id, sig, expiresAt: performance.now() + 2200 };
 	      }
 	    }
@@ -3893,10 +3989,15 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
               this.recomputeTextNodeDisplayHash(hit);
               this.textRasterGeneration += 1;
               const contentRect = this.textContentRect(hit.rect);
-              const sig = `${hit.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
+              const sig = this.textRasterSigForNode(hit, contentRect).sig;
               this.textResizeHold = { nodeId: hit.id, sig, expiresAt: performance.now() + 2200 };
               this.requestRender();
               if (selectionChanged) this.emitUiState();
+              try {
+                this.onRequestPersist?.();
+              } catch {
+                // ignore
+              }
               return;
             }
             if (selectionChanged) {
@@ -3918,11 +4019,16 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
             if (!hit.isGenerating) {
               this.textRasterGeneration += 1;
               const contentRect = this.textContentRect(hit.rect);
-              const sig = `${hit.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
+              const sig = this.textRasterSigForNode(hit, contentRect).sig;
               this.textResizeHold = { nodeId: hit.id, sig, expiresAt: performance.now() + 2200 };
             }
             this.requestRender();
             if (selectionChanged) this.emitUiState();
+            try {
+              this.onRequestPersist?.();
+            } catch {
+              // ignore
+            }
             return;
           }
         }
@@ -4502,7 +4608,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         const hasLod2 =
           this.textLod2Target?.nodeId === node.id || this.textStreamLod2Target?.nodeId === node.id;
         if (!hasLod2) {
-	          const sig = `${node.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}`;
+	          const sig = this.textRasterSigForNode(node, contentRect).sig;
 	          const raster = this.getBestTextRaster(sig);
 	          if (raster) {
 	            try {
