@@ -329,6 +329,12 @@ body {
   pointer-events: auto;
 }
 
+.treeRow[data-item-menu-revealed="true"] .treeRow__menuBtn {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
 .treeRow__menu {
   position: fixed;
   min-width: 120px;
@@ -407,8 +413,10 @@ body {
   }
 }
 
-@media (hover: none) and (pointer: coarse) {
-  .treeRow__menuBtn {
+@media (pointer: fine) {
+  .treeRow--active .treeRow__menuBtn,
+  .treeRow--focused .treeRow__menuBtn,
+  .treeRow:focus-within .treeRow__menuBtn {
     opacity: 1;
     visibility: visible;
     pointer-events: auto;

@@ -51,6 +51,8 @@ export default function WorkspaceSidebar(props: Props) {
   const [renameDraft, setRenameDraft] = useState('');
   const [openItemMenuId, setOpenItemMenuId] = useState<string | null>(null);
   const [itemMenuPos, setItemMenuPos] = useState<{ left: number; top: number } | null>(null);
+  const [revealedItemMenuId, setRevealedItemMenuId] = useState<string | null>(null);
+  const sidebarRef = React.useRef<HTMLDivElement | null>(null);
   const itemMenuButtonRefs = React.useRef(new Map<string, HTMLButtonElement | null>());
   const itemMenuRef = React.useRef<HTMLDivElement | null>(null);
 
@@ -129,6 +131,23 @@ export default function WorkspaceSidebar(props: Props) {
     };
   }, [openItemMenuId, updateItemMenuPosition]);
 
+  React.useEffect(() => {
+    if (!revealedItemMenuId) return;
+
+    const onPointerDownCapture = (e: PointerEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      const sidebar = sidebarRef.current;
+      const menu = itemMenuRef.current;
+      if (sidebar && sidebar.contains(target)) return;
+      if (menu && menu.contains(target)) return;
+      setRevealedItemMenuId(null);
+    };
+
+    window.addEventListener('pointerdown', onPointerDownCapture, true);
+    return () => window.removeEventListener('pointerdown', onPointerDownCapture, true);
+  }, [revealedItemMenuId]);
+
   const rowCommonHandlers = useMemo(
     () => ({
       onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
@@ -182,12 +201,14 @@ export default function WorkspaceSidebar(props: Props) {
             onDrop={onDropFolder}
             {...rowCommonHandlers}
             data-item-menu-open={openItemMenuId === item.id ? 'true' : 'false'}
+            data-item-menu-revealed={revealedItemMenuId === item.id ? 'true' : 'false'}
           >
             <button
               className="treeRow__chev"
               type="button"
               onClick={() => {
                 setOpenItemMenuId(null);
+                setRevealedItemMenuId(item.id);
                 onToggleFolder(item.id);
                 onFocusFolder(item.id);
               }}
@@ -218,6 +239,7 @@ export default function WorkspaceSidebar(props: Props) {
                 type="button"
                 onClick={() => {
                   setOpenItemMenuId(null);
+                  setRevealedItemMenuId(item.id);
                   onFocusFolder(item.id);
                 }}
                 title="Focus folder"
@@ -241,6 +263,7 @@ export default function WorkspaceSidebar(props: Props) {
                   onClick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
+                    setRevealedItemMenuId(item.id);
                     const nextId = openItemMenuId === item.id ? null : item.id;
                     setOpenItemMenuId(nextId);
                     if (nextId) updateItemMenuPosition(nextId);
@@ -308,6 +331,7 @@ export default function WorkspaceSidebar(props: Props) {
         onDragStart={onDragStart}
         {...rowCommonHandlers}
         data-item-menu-open={openItemMenuId === item.id ? 'true' : 'false'}
+        data-item-menu-revealed={revealedItemMenuId === item.id ? 'true' : 'false'}
       >
         {isRenaming ? (
           <input
@@ -332,6 +356,7 @@ export default function WorkspaceSidebar(props: Props) {
             type="button"
             onClick={() => {
               setOpenItemMenuId(null);
+              setRevealedItemMenuId(item.id);
               onSelectChat(item.id);
             }}
           >
@@ -353,6 +378,7 @@ export default function WorkspaceSidebar(props: Props) {
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
+                setRevealedItemMenuId(item.id);
                 const nextId = openItemMenuId === item.id ? null : item.id;
                 setOpenItemMenuId(nextId);
                 if (nextId) updateItemMenuPosition(nextId);
@@ -407,7 +433,7 @@ export default function WorkspaceSidebar(props: Props) {
   return (
     <div className={`sidebarDock ${collapsed ? 'sidebarDock--collapsed' : ''}`}>
       <div className={`sidebarWrap ${collapsed ? 'sidebarWrap--collapsed' : ''}`} aria-hidden={collapsed}>
-        <div className="sidebar" {...rowCommonHandlers}>
+        <div className="sidebar" ref={sidebarRef} {...rowCommonHandlers}>
           <div className="sidebar__header">
             <button
               className="sidebar__title"
