@@ -527,6 +527,7 @@ body {
   position: relative;
   width: min(980px, calc(100% - 20px));
   max-height: min(80vh, 720px);
+  height: min(80vh, 720px);
   border-radius: 18px;
   overflow: hidden;
   background: rgba(0, 0, 0, var(--ui-glass-bg-alpha));
@@ -534,12 +535,14 @@ body {
   backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
   -webkit-backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
   box-shadow: 0 24px 65px rgba(0, 0, 0, 0.55);
+  display: flex;
+  flex-direction: column;
 }
 
 .settingsModal__body {
+  flex: 1;
   display: flex;
-  height: 100%;
-  min-height: 440px;
+  min-height: 0;
 }
 
 .settingsModal__sidebar {
@@ -561,6 +564,7 @@ body {
 .settingsModal__sidebarList {
   flex: 1;
   overflow: auto;
+  min-height: 0;
 }
 
 .settingsNavBtn {
@@ -597,9 +601,61 @@ body {
 
 .settingsModal__content {
   flex: 1;
-  padding: 16px 16px 18px 16px;
-  overflow: auto;
+  padding: 10px 10px 10px 0;
+  display: flex;
+  overflow: hidden;
+  min-height: 0;
   background: rgba(0, 0, 0, 0.12);
+}
+
+.settingsModal__scroll {
+  flex: 1;
+  padding: 16px 16px 18px 16px;
+  overflow-y: scroll;
+  overflow-x: hidden;
+  min-height: 0;
+  scrollbar-gutter: stable;
+}
+
+.settingsModal__scroll,
+.sidebar__tree,
+.composer__textarea,
+.composer__preview {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.35) transparent;
+}
+
+.settingsModal__scroll::-webkit-scrollbar,
+.sidebar__tree::-webkit-scrollbar,
+.composer__textarea::-webkit-scrollbar,
+.composer__preview::-webkit-scrollbar {
+  width: 10px;
+}
+
+.settingsModal__scroll::-webkit-scrollbar-track,
+.sidebar__tree::-webkit-scrollbar-track,
+.composer__textarea::-webkit-scrollbar-track,
+.composer__preview::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.settingsModal__scroll::-webkit-scrollbar-thumb,
+.sidebar__tree::-webkit-scrollbar-thumb,
+.composer__textarea::-webkit-scrollbar-thumb,
+.composer__preview::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.32);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+.settingsModal__scroll::-webkit-scrollbar-thumb:hover,
+.sidebar__tree::-webkit-scrollbar-thumb:hover,
+.composer__textarea::-webkit-scrollbar-thumb:hover,
+.composer__preview::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.45);
+  border: 2px solid transparent;
+  background-clip: content-box;
 }
 
 .settingsModal__close {
@@ -652,6 +708,50 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: rgba(0, 0, 0, 0.22);
   padding: 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settingsDetails {
+  padding: 0;
+}
+
+.settingsDetails__summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 12px 12px;
+  position: relative;
+  padding-right: 34px;
+}
+
+.settingsDetails__summary::-webkit-details-marker {
+  display: none;
+}
+
+.settingsDetails__summary::after {
+  content: '▾';
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0.75;
+  transition: transform 160ms ease, opacity 160ms ease;
+}
+
+.settingsDetails[open] .settingsDetails__summary::after {
+  transform: translateY(-50%) rotate(180deg);
+  opacity: 0.9;
+}
+
+.settingsDetails__summary:focus-visible {
+  outline: 2px solid rgba(147, 197, 253, 0.6);
+  outline-offset: 2px;
+  border-radius: 12px;
+}
+
+.settingsDetails__body {
+  padding: 0 12px 12px 12px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -1204,6 +1304,7 @@ body {
   flex: 1;
   width: 100%;
   height: 100%;
+  box-sizing: border-box;
   resize: none;
   appearance: none;
   border: 0;
