@@ -1165,6 +1165,52 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     }
   }
 
+  spawnTextNode(opts?: { title?: string; content?: string; author?: ChatAuthor }): string {
+    const title = typeof opts?.title === 'string' ? opts.title.trim() : '';
+    const content = typeof opts?.content === 'string' ? opts.content : String(opts?.content ?? '');
+    const author: ChatAuthor = opts?.author === 'assistant' ? 'assistant' : 'user';
+
+    const id = `n${Date.now().toString(36)}-${(this.nodeSeq++).toString(36)}`;
+    const center = this.camera.screenToWorld({ x: this.cssW * 0.5, y: this.cssH * 0.5 });
+    const nodeW = 460;
+    const nodeH = 240;
+
+    const node: TextNode = {
+      kind: 'text',
+      id,
+      parentId: null,
+      rect: { x: center.x - nodeW * 0.5, y: center.y - nodeH * 0.5, w: nodeW, h: nodeH },
+      title: title || 'Text',
+      author,
+      content,
+      contentHash: fingerprintText(content),
+      displayHash: '',
+    };
+
+    // Avoid spawning directly on top of existing nodes in the current view.
+    const gapY = 26;
+    const candidate: Rect = { ...node.rect };
+    for (let i = 0; i < 60; i += 1) {
+      const overlap = this.nodes.find((n) => rectsIntersect(n.rect, candidate)) ?? null;
+      if (!overlap) break;
+      candidate.y = overlap.rect.y + overlap.rect.h + gapY;
+    }
+    node.rect.x = candidate.x;
+    node.rect.y = candidate.y;
+
+    this.recomputeTextNodeDisplayHash(node);
+    this.nodes.push(node);
+
+    const changed = this.selectedNodeId !== id || this.editingNodeId !== id;
+    this.selectedNodeId = id;
+    this.editingNodeId = id;
+    this.bringNodeToFront(id);
+    this.requestRender();
+    if (changed) this.emitUiState();
+
+    return id;
+  }
+
   spawnInkNode(): void {
     const id = `i${Date.now().toString(36)}-${(this.nodeSeq++).toString(36)}`;
     const center = this.camera.screenToWorld({ x: this.cssW * 0.5, y: this.cssH * 0.5 });

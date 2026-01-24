@@ -2030,21 +2030,33 @@ export default function App() {
 	          >
 	            <Icons.documentArrowUp className="toolStrip__icon" />
 	          </button>
+		          <button
+		            className={`toolStrip__btn ${ui.tool === 'draw' ? 'toolStrip__btn--active' : ''}`}
+		            type="button"
+		            title={ui.tool === 'draw' ? 'Draw mode (click for select)' : 'Select mode (click for draw)'}
+		            aria-label="Toggle draw mode"
+		            aria-pressed={ui.tool === 'draw'}
+		            onClick={() => engineRef.current?.setTool(ui.tool === 'draw' ? 'select' : 'draw')}
+		          >
+		            <Icons.pen className="toolStrip__icon" />
+		          </button>
+              <button
+                className="toolStrip__btn"
+                type="button"
+                title="New text node"
+                aria-label="New text node"
+                onClick={() => {
+                  engineRef.current?.spawnTextNode({ title: 'Note' });
+                  schedulePersistSoon();
+                }}
+              >
+                <Icons.textBox className="toolStrip__icon" />
+              </button>
 	          <button
-	            className={`toolStrip__btn ${ui.tool === 'draw' ? 'toolStrip__btn--active' : ''}`}
+	            className="toolStrip__btn"
 	            type="button"
-	            title={ui.tool === 'draw' ? 'Draw mode (click for select)' : 'Select mode (click for draw)'}
-	            aria-label="Toggle draw mode"
-	            aria-pressed={ui.tool === 'draw'}
-	            onClick={() => engineRef.current?.setTool(ui.tool === 'draw' ? 'select' : 'draw')}
-	          >
-	            <Icons.pen className="toolStrip__icon" />
-	          </button>
-          <button
-            className="toolStrip__btn"
-            type="button"
-            title="New ink node"
-            aria-label="New ink node"
+	            title="New ink node"
+	            aria-label="New ink node"
             onClick={() => engineRef.current?.spawnInkNode()}
           >
             <Icons.inkBox className="toolStrip__icon" />

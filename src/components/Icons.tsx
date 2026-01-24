@@ -65,4 +65,19 @@ export const Icons = {
       />
     </svg>
   ),
+  textBox: (props: IconProps) => (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      {...props}
+    >
+      <rect x="3.5" y="3.5" width="17" height="17" rx="2.75" ry="2.75" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 9h9" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 12h9" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 15h6" />
+    </svg>
+  ),
 };
