@@ -22,7 +22,7 @@ import {
 import { getOpenAIApiKey, sendOpenAIResponse, streamOpenAIResponse } from './services/openaiService';
 import type { ChatAttachment, ChatNode, ThinkingSummaryChunk } from './model/chat';
 import { buildOpenAIResponseRequest, type OpenAIChatSettings } from './llm/openai';
-import { DEFAULT_MODEL_ID, listModels } from './llm/registry';
+import { DEFAULT_MODEL_ID, getModelInfo, listModels } from './llm/registry';
 import { extractCanonicalMessage, extractCanonicalMeta } from './llm/openaiCanonical';
 import { buildModelUserSettings, normalizeModelUserSettings, type ModelUserSettingsById } from './llm/modelUserSettings';
 import { readFileAsDataUrl, splitDataUrl } from './utils/files';
@@ -1870,20 +1870,31 @@ export default function App() {
             setReplySelectedAttachmentKeys([]);
           }}
           sendDisabled={!composerDraft.trim() && composerDraftAttachments.length === 0}
-          onSend={() => {
-            const engine = engineRef.current;
-            if (!engine) return;
-            const raw = composerDraft;
-            if (!raw.trim() && composerDraftAttachments.length === 0) return;
+	          onSend={() => {
+	            const engine = engineRef.current;
+	            if (!engine) return;
+	            const raw = composerDraft;
+	            if (!raw.trim() && composerDraftAttachments.length === 0) return;
 
-            const meta = ensureChatMeta(activeChatId);
-            const desiredParentId = replySelection?.nodeId && engine.hasNode(replySelection.nodeId) ? replySelection.nodeId : null;
-            const res = engine.spawnChatTurn({
-              userText: raw,
-              parentNodeId: desiredParentId,
-              userAttachments: composerDraftAttachments.length ? composerDraftAttachments : undefined,
-              selectedAttachmentKeys: replySelectedAttachmentKeys.length ? replySelectedAttachmentKeys : undefined,
-            });
+	            const selectedModelId = composerModelId || DEFAULT_MODEL_ID;
+	            const assistantTitle = (() => {
+	              const info = getModelInfo(selectedModelId);
+	              const shortLabel = typeof info?.shortLabel === 'string' ? info.shortLabel.trim() : '';
+	              if (shortLabel) return shortLabel;
+	              const label = typeof info?.label === 'string' ? info.label.trim() : '';
+	              return label || 'Assistant';
+	            })();
+
+	            const meta = ensureChatMeta(activeChatId);
+	            const desiredParentId = replySelection?.nodeId && engine.hasNode(replySelection.nodeId) ? replySelection.nodeId : null;
+	            const res = engine.spawnChatTurn({
+	              userText: raw,
+	              parentNodeId: desiredParentId,
+	              userAttachments: composerDraftAttachments.length ? composerDraftAttachments : undefined,
+	              selectedAttachmentKeys: replySelectedAttachmentKeys.length ? replySelectedAttachmentKeys : undefined,
+	              assistantTitle,
+	              assistantModelId: selectedModelId,
+	            });
 
             meta.turns.push({
               id: genId('turn'),
@@ -1905,14 +1916,13 @@ export default function App() {
             setComposerDraft('');
             setComposerDraftAttachments([]);
 
-            const snapshot = engine.exportChatState();
-            chatStatesRef.current.set(activeChatId, snapshot);
-            const selectedModelId = composerModelId || DEFAULT_MODEL_ID;
-            const modelSettings =
-              modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
-            const settings: OpenAIChatSettings = {
-              modelId: selectedModelId,
-              verbosity: modelSettings?.verbosity,
+	            const snapshot = engine.exportChatState();
+	            chatStatesRef.current.set(activeChatId, snapshot);
+	            const modelSettings =
+	              modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
+	            const settings: OpenAIChatSettings = {
+	              modelId: selectedModelId,
+	              verbosity: modelSettings?.verbosity,
               webSearchEnabled: composerWebSearch,
               reasoningSummary: modelSettings?.reasoningSummary,
               stream: modelSettings?.streaming,

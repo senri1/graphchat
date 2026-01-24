@@ -1181,11 +1181,15 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     parentNodeId: string | null;
     userAttachments?: ChatAttachment[];
     selectedAttachmentKeys?: string[];
+    assistantTitle?: string;
+    assistantModelId?: string | null;
   }): { userNodeId: string; assistantNodeId: string } {
     const userText = String(args.userText ?? '');
     const parentNodeId = args.parentNodeId ?? null;
     const userAttachments = Array.isArray(args.userAttachments) ? args.userAttachments : [];
     const selectedAttachmentKeys = Array.isArray(args.selectedAttachmentKeys) ? args.selectedAttachmentKeys : [];
+    const assistantTitle = typeof args.assistantTitle === 'string' ? args.assistantTitle : '';
+    const assistantModelId = typeof args.assistantModelId === 'string' ? args.assistantModelId : null;
 
     const parent = parentNodeId ? this.nodes.find((n) => n.id === parentNodeId) ?? null : null;
     const resolvedParentId = parent ? parent.id : null;
@@ -1240,12 +1244,13 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       id: assistantNodeId,
       parentId: userNodeId,
       rect: { x, y: userY + userH + gapY, w: nodeW, h: assistantH },
-      title: 'Assistant',
+      title: assistantTitle.trim() || 'Assistant',
       author: 'assistant',
       content: '',
       contentHash: fingerprintText(''),
       displayHash: '',
       summaryExpanded: false,
+      modelId: assistantModelId,
     };
 
     this.recomputeTextNodeDisplayHash(userNode);
