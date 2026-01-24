@@ -82,6 +82,34 @@ function nextFrame(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
+async function waitForImages(container: HTMLElement, timeoutMs: number): Promise<void> {
+  const imgs = Array.from(container.querySelectorAll('img'));
+  if (imgs.length === 0) return;
+
+  const decodePromises = imgs.map(async (img) => {
+    try {
+      // Fast path: already loaded/failed.
+      if ((img as HTMLImageElement).complete) return;
+      if (typeof (img as any).decode === 'function') {
+        await (img as any).decode();
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        const done = () => resolve();
+        img.addEventListener('load', done, { once: true });
+        img.addEventListener('error', done, { once: true });
+      });
+    } catch {
+      // ignore
+    }
+  });
+
+  await Promise.race([
+    Promise.allSettled(decodePromises).then(() => undefined),
+    new Promise<void>((resolve) => window.setTimeout(resolve, timeoutMs)),
+  ]);
+}
+
 function sheetBaseHref(sheet: CSSStyleSheet): string {
   if (typeof document === 'undefined') return '';
   const href = (sheet as any)?.href;
@@ -415,6 +443,9 @@ export async function rasterizeHtmlToImage(
       card.appendChild(inner);
     }
 
+    const hasImages = Boolean(card.querySelector('img'));
+    if (hasImages) await waitForImages(card, 450);
+
     const hasKaTeX = Boolean(card.querySelector('.katex'));
     const katexCss = hasKaTeX ? getKaTeXCssParts() : { rules: '', fontFaces: '' };
     const fontCssRaw = hasKaTeX ? stripInvalidXmlChars(katexCss.fontFaces || '') : '';
@@ -449,7 +480,7 @@ export async function rasterizeHtmlToImage(
     const svgBlob = new Blob([svg], { type: 'image/svg+xml' });
     const bitmapBytesEstimate = pixelW * pixelH * 4;
     const image = await svgToImage(svgBlob, {
-      postDecodeWait: hasKaTeX,
+      postDecodeWait: hasKaTeX || hasImages,
       postDecodeWaitMs: 32,
     });
 

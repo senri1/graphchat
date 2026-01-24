@@ -11,6 +11,7 @@ import { WebGLPreblur } from './WebGLPreblur';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import type { PDFPageProxy, PageViewport } from 'pdfjs-dist';
 import { loadPdfDocument } from './pdf/pdfjs';
+import { getAttachment as getStoredAttachment } from '../storage/attachments';
 import type {
   CanonicalAssistantMessage,
   ChatAttachment,
@@ -435,6 +436,17 @@ export class WorldEngine {
   private readonly textRasterQueueByNodeId = new Map<string, TextRasterJob>();
   private textRasterRunning = false;
   private textRasterGeneration = 0;
+
+  private readonly attachmentThumbDataUrlByKey = new Map<
+    string,
+    { key: string; dataUrl: string; rev: number; size: number }
+  >();
+  private attachmentThumbDataUrlBytes = 0;
+  private readonly attachmentThumbDataUrlInFlight = new Set<string>();
+  private readonly attachmentThumbDataUrlFailed = new Set<string>();
+  private readonly attachmentThumbDataUrlRevByKey = new Map<string, number>();
+  private readonly attachmentThumbDataUrlMaxEntries = 220;
+  private readonly attachmentThumbDataUrlMaxBytes = 32 * 1024 * 1024;
 
   private readonly textRasterCache = new Map<
     string,
@@ -2249,6 +2261,36 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     parts.push(node.author);
     parts.push(node.isGenerating ? 'gen:1' : 'gen:0');
 
+    const atts = Array.isArray(node.attachments) ? node.attachments : [];
+    if (atts.length > 0) {
+      const attSig = atts
+        .map((a) => {
+          if (!a || typeof a !== 'object') return '';
+          if (a.kind === 'image') {
+            const storageKey = typeof a.storageKey === 'string' ? a.storageKey : '';
+            const rev = storageKey ? (this.attachmentThumbDataUrlByKey.get(storageKey)?.rev ?? 0) : 0;
+            const dataLen = typeof a.data === 'string' ? a.data.length : 0;
+            const name = typeof a.name === 'string' ? a.name.trim() : '';
+            return `i:${storageKey}:${rev}:${dataLen}:${name}`;
+          }
+          if (a.kind === 'pdf') {
+            const storageKey = typeof a.storageKey === 'string' ? a.storageKey : '';
+            const dataLen = typeof a.data === 'string' ? a.data.length : 0;
+            const name = typeof a.name === 'string' ? a.name.trim() : '';
+            const size = Number.isFinite(a.size) ? a.size : '';
+            return `p:${storageKey}:${dataLen}:${name}:${size}`;
+          }
+          if (a.kind === 'ink') {
+            const storageKey = typeof a.storageKey === 'string' ? a.storageKey : '';
+            const rev = Number.isFinite(a.rev) ? a.rev : '';
+            return `k:${storageKey}:${rev}`;
+          }
+          return '';
+        })
+        .join('|');
+      parts.push(`att:${attSig}`);
+    }
+
     if (node.author === 'assistant') {
       const expanded = node.expandedSummaryChunks ?? {};
       const expandedKeys = Object.keys(expanded)
@@ -2270,6 +2312,152 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 	    }
 
     return parts.join('\n');
+  }
+
+  private touchAttachmentThumbDataUrl(storageKey: string): void {
+    const entry = this.attachmentThumbDataUrlByKey.get(storageKey);
+    if (!entry) return;
+    this.attachmentThumbDataUrlByKey.delete(storageKey);
+    this.attachmentThumbDataUrlByKey.set(storageKey, entry);
+  }
+
+  private evictOldAttachmentThumbDataUrls(): void {
+    while (
+      this.attachmentThumbDataUrlByKey.size > this.attachmentThumbDataUrlMaxEntries ||
+      this.attachmentThumbDataUrlBytes > this.attachmentThumbDataUrlMaxBytes
+    ) {
+      const oldestKey = this.attachmentThumbDataUrlByKey.keys().next().value as string | undefined;
+      if (!oldestKey) return;
+      const entry = this.attachmentThumbDataUrlByKey.get(oldestKey);
+      if (entry) {
+        this.attachmentThumbDataUrlBytes -= entry.size || 0;
+      }
+      this.attachmentThumbDataUrlByKey.delete(oldestKey);
+    }
+  }
+
+  private async prefetchAttachmentThumbDataUrl(storageKey: string): Promise<void> {
+    const key = typeof storageKey === 'string' ? storageKey.trim() : '';
+    if (!key) return;
+    if (this.attachmentThumbDataUrlByKey.has(key)) return;
+    if (this.attachmentThumbDataUrlInFlight.has(key)) return;
+    if (this.attachmentThumbDataUrlFailed.has(key)) return;
+
+    this.attachmentThumbDataUrlInFlight.add(key);
+    try {
+      const rec = await getStoredAttachment(key);
+      const blob = rec?.blob ?? null;
+      if (!blob) {
+        this.attachmentThumbDataUrlFailed.add(key);
+        return;
+      }
+
+      const thumbDataUrl = await (async () => {
+        if (typeof document === 'undefined') return null;
+        const srcUrl = URL.createObjectURL(blob);
+        try {
+          const img = new Image();
+          (img as any).decoding = 'async';
+          img.src = srcUrl;
+          if (typeof (img as any).decode === 'function') {
+            await (img as any).decode();
+          } else {
+            await new Promise<void>((resolve, reject) => {
+              img.onload = () => resolve();
+              img.onerror = () => reject(new Error('Failed to load image attachment.'));
+            });
+          }
+
+          const iw = Number.isFinite(img.naturalWidth) ? img.naturalWidth : 0;
+          const ih = Number.isFinite(img.naturalHeight) ? img.naturalHeight : 0;
+          if (iw <= 0 || ih <= 0) return null;
+
+          const THUMB_PX = 192;
+          const canvas = document.createElement('canvas');
+          canvas.width = THUMB_PX;
+          canvas.height = THUMB_PX;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return null;
+
+          // "Cover" crop into a square thumbnail.
+          const scale = Math.max(THUMB_PX / iw, THUMB_PX / ih);
+          const sw = THUMB_PX / scale;
+          const sh = THUMB_PX / scale;
+          const sx = Math.max(0, (iw - sw) * 0.5);
+          const sy = Math.max(0, (ih - sh) * 0.5);
+          ctx.drawImage(img, sx, sy, sw, sh, 0, 0, THUMB_PX, THUMB_PX);
+
+          try {
+            return canvas.toDataURL('image/png');
+          } catch {
+            return null;
+          }
+        } finally {
+          try {
+            URL.revokeObjectURL(srcUrl);
+          } catch {
+            // ignore
+          }
+        }
+      })();
+
+      if (!thumbDataUrl) {
+        this.attachmentThumbDataUrlFailed.add(key);
+        return;
+      }
+
+      const size = Math.max(0, thumbDataUrl.length || 0);
+      const rev = (this.attachmentThumbDataUrlRevByKey.get(key) ?? 0) + 1;
+      this.attachmentThumbDataUrlRevByKey.set(key, rev);
+
+      const prev = this.attachmentThumbDataUrlByKey.get(key);
+      if (prev) this.attachmentThumbDataUrlBytes -= prev.size || 0;
+      this.attachmentThumbDataUrlByKey.set(key, { key, dataUrl: thumbDataUrl, rev, size });
+      this.attachmentThumbDataUrlBytes += size;
+      this.touchAttachmentThumbDataUrl(key);
+      this.evictOldAttachmentThumbDataUrls();
+
+      let anyChanged = false;
+      for (const node of this.nodes) {
+        if (node.kind !== 'text') continue;
+        const atts = Array.isArray(node.attachments) ? node.attachments : [];
+        const usesKey = atts.some((a) => a?.kind === 'image' && typeof a.storageKey === 'string' && a.storageKey === key);
+        if (!usesKey) continue;
+        const prevHash = node.displayHash;
+        this.recomputeTextNodeDisplayHash(node);
+        if (node.displayHash !== prevHash) anyChanged = true;
+      }
+
+      if (anyChanged) {
+        this.textRasterGeneration += 1;
+        this.requestRender();
+      }
+    } catch {
+      this.attachmentThumbDataUrlFailed.add(key);
+    } finally {
+      this.attachmentThumbDataUrlInFlight.delete(key);
+    }
+  }
+
+  private resolveImageAttachmentThumbSrc(att: ChatAttachment): string | null {
+    if (!att || att.kind !== 'image') return null;
+
+    if (typeof att.data === 'string' && att.data) {
+      const mimeType = typeof att.mimeType === 'string' && att.mimeType ? att.mimeType : 'image/png';
+      return `data:${mimeType};base64,${att.data}`;
+    }
+
+    const storageKey = typeof att.storageKey === 'string' ? att.storageKey : '';
+    if (!storageKey) return null;
+
+    const entry = this.attachmentThumbDataUrlByKey.get(storageKey);
+    if (entry?.dataUrl) {
+      this.touchAttachmentThumbDataUrl(storageKey);
+      return entry.dataUrl;
+    }
+
+    void this.prefetchAttachmentThumbDataUrl(storageKey);
+    return null;
   }
 
   private recomputeTextNodeDisplayHash(node: TextNode): void {
@@ -2353,6 +2541,58 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           parts.push('</div>');
         }
       }
+    }
+
+    const atts = Array.isArray(node.attachments) ? node.attachments : [];
+    if (atts.length > 0) {
+      parts.push('<div style="display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 10px;">');
+      for (const att of atts) {
+        if (!att) continue;
+        parts.push(
+          '<div style="width:96px;height:96px;border-radius:8px;overflow:hidden;' +
+            'border:1px solid rgba(255,255,255,0.15);background:rgba(0,0,0,0.20);">',
+        );
+
+        if (att.kind === 'image') {
+          const src = this.resolveImageAttachmentThumbSrc(att);
+          if (src) {
+            const alt = typeof att.name === 'string' && att.name.trim() ? att.name.trim() : 'attachment';
+            parts.push(
+              `<img src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" ` +
+                'style="width:100%;height:100%;object-fit:cover;display:block;" />',
+            );
+          } else {
+            parts.push(
+              '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;' +
+                'font-size:11px;color:rgba(243,244,246,0.85);">Image</div>',
+            );
+          }
+        } else if (att.kind === 'pdf') {
+          const label = 'PDF';
+          const name = typeof att.name === 'string' && att.name.trim() ? att.name.trim() : 'document.pdf';
+          parts.push(
+            '<div style="width:100%;height:100%;display:flex;flex-direction:column;' +
+              'align-items:center;justify-content:center;padding:6px;box-sizing:border-box;' +
+              'text-align:center;color:rgba(243,244,246,0.90);">',
+          );
+          parts.push('<div style="font-weight:700;font-size:11px;">' + escapeHtml(label) + '</div>');
+          parts.push(
+            '<div style="font-size:10px;opacity:0.85;word-break:break-all;display:-webkit-box;' +
+              '-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;">' +
+              escapeHtml(name) +
+              '</div>',
+          );
+          parts.push('</div>');
+        } else if (att.kind === 'ink') {
+          parts.push(
+            '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;' +
+              'font-size:11px;color:rgba(243,244,246,0.85);">Ink</div>',
+          );
+        }
+
+        parts.push('</div>');
+      }
+      parts.push('</div>');
     }
 
     if (hasContent) {
