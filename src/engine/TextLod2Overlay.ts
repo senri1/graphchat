@@ -496,7 +496,7 @@ export class TextLod2Overlay {
 
     // Keep layout stable between interactive/non-interactive states; only scrollbar visuals change via CSS.
     this.content.style.paddingRight = '0px';
-    this.content.style.overflowX = 'hidden';
+    this.content.style.overflowX = 'auto';
     this.content.style.overflowY = 'scroll';
 
     if ((nodeChanged || hashChanged) && Number.isFinite(opts.scrollTop as number)) {

@@ -81,6 +81,15 @@ function summarizeFirstLine(text: string): string {
   return stripStrong(firstLine);
 }
 
+const TEXT_NODE_PAD_PX = 14;
+const TEXT_NODE_HEADER_H_PX = 50;
+
+// Spawn + streaming auto-grow bounds (manual resizing can exceed these).
+const TEXT_NODE_SPAWN_MIN_W_PX = 260;
+const TEXT_NODE_SPAWN_MAX_W_PX = 640;
+const TEXT_NODE_SPAWN_MIN_H_PX = 140;
+const TEXT_NODE_SPAWN_MAX_H_PX = 420;
+
 type ReasoningSummaryBlock = { type: 'summary_text'; text: string };
 
 function readReasoningSummaryBlocks(canonicalMeta: unknown): ReasoningSummaryBlock[] {
@@ -403,6 +412,9 @@ export class WorldEngine {
   private nodeTextColor = 'rgba(255,255,255,0.92)';
   private nodeTextLineHeight = 1.55;
   private textScrollGutterPx: number | null = null;
+  private textMeasureRoot: HTMLDivElement | null = null;
+  private textStreamingAutoResizeRaf: number | null = null;
+  private readonly textStreamingAutoResizeNodeIds = new Set<string>();
 
   private textSelectNodeId: string | null = null;
   private textSelectPointerId: number | null = null;
@@ -1199,10 +1211,40 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const assistantNodeId = `a${now}-${(this.nodeSeq++).toString(36)}`;
 
     const gapY = 26;
-    const nodeW = 640;
-    const userH = 220;
-    const assistantH = 260;
-    const totalH = userH + gapY + assistantH;
+
+    const userNode: TextNode = {
+      kind: 'text',
+      id: userNodeId,
+      parentId: resolvedParentId,
+      rect: { x: 0, y: 0, w: TEXT_NODE_SPAWN_MAX_W_PX, h: TEXT_NODE_SPAWN_MIN_H_PX },
+      title: 'User',
+      author: 'user',
+      content: userText,
+      contentHash: fingerprintText(userText),
+      displayHash: '',
+      attachments: userAttachments.length ? userAttachments : undefined,
+      selectedAttachmentKeys: selectedAttachmentKeys.length ? selectedAttachmentKeys : undefined,
+    };
+
+    // Size the user node to content, clamped to spawn max (manual resizing can exceed later).
+    this.applySpawnAutoSizeToTextNode(userNode, { mode: 'set_exact' });
+
+    const assistantNode: TextNode = {
+      kind: 'text',
+      id: assistantNodeId,
+      parentId: userNodeId,
+      rect: { x: 0, y: 0, w: userNode.rect.w, h: TEXT_NODE_SPAWN_MIN_H_PX },
+      title: assistantTitle.trim() || 'Assistant',
+      author: 'assistant',
+      content: '',
+      contentHash: fingerprintText(''),
+      displayHash: '',
+      summaryExpanded: false,
+      modelId: assistantModelId,
+    };
+
+    const nodeW = Math.max(userNode.rect.w, assistantNode.rect.w);
+    const totalH = userNode.rect.h + gapY + assistantNode.rect.h;
 
     let x = 0;
     let userY = 0;
@@ -1225,33 +1267,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       candidate.y = userY;
     }
 
-    const userNode: TextNode = {
-      kind: 'text',
-      id: userNodeId,
-      parentId: resolvedParentId,
-      rect: { x, y: userY, w: nodeW, h: userH },
-      title: 'User',
-      author: 'user',
-      content: userText,
-      contentHash: fingerprintText(userText),
-      displayHash: '',
-      attachments: userAttachments.length ? userAttachments : undefined,
-      selectedAttachmentKeys: selectedAttachmentKeys.length ? selectedAttachmentKeys : undefined,
-    };
-
-    const assistantNode: TextNode = {
-      kind: 'text',
-      id: assistantNodeId,
-      parentId: userNodeId,
-      rect: { x, y: userY + userH + gapY, w: nodeW, h: assistantH },
-      title: assistantTitle.trim() || 'Assistant',
-      author: 'assistant',
-      content: '',
-      contentHash: fingerprintText(''),
-      displayHash: '',
-      summaryExpanded: false,
-      modelId: assistantModelId,
-    };
+    userNode.rect.x = x;
+    userNode.rect.y = userY;
+    assistantNode.rect.x = x;
+    assistantNode.rect.y = userY + userNode.rect.h + gapY;
 
     this.recomputeTextNodeDisplayHash(userNode);
     this.recomputeTextNodeDisplayHash(assistantNode);
@@ -2026,6 +2045,14 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 	    node.contentHash = fingerprintText(text);
 	    this.recomputeTextNodeDisplayHash(node);
 
+	    if (node.author === 'assistant') {
+	      if (opts?.streaming) {
+	        this.scheduleTextNodeStreamingAutoGrow(node.id);
+	      } else {
+	        this.applySpawnAutoSizeToTextNode(node, { mode: 'grow_only' });
+	      }
+	    }
+
 	    // Avoid churn while streaming; finalize with a re-raster + short LOD2 hold.
 	    if (!opts?.streaming) {
 	      this.textRasterGeneration += 1;
@@ -2100,6 +2127,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const normalized = Array.isArray(next) ? next : undefined;
     node.thinkingSummary = normalized && normalized.length ? normalized : undefined;
     this.recomputeTextNodeDisplayHash(node);
+    if (node.author === 'assistant' && node.isGenerating) this.scheduleTextNodeStreamingAutoGrow(node.id);
     this.requestRender();
   }
 
@@ -2215,12 +2243,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   }
 
   private textContentRect(nodeRect: Rect): Rect {
-    const PAD = 14;
-    const HEADER_H = 50;
-    const x = nodeRect.x + PAD;
-    const y = nodeRect.y + HEADER_H;
-    const w = Math.max(1, nodeRect.w - PAD * 2);
-    const h = Math.max(1, nodeRect.h - HEADER_H - PAD);
+    const x = nodeRect.x + TEXT_NODE_PAD_PX;
+    const y = nodeRect.y + TEXT_NODE_HEADER_H_PX;
+    const w = Math.max(1, nodeRect.w - TEXT_NODE_PAD_PX * 2);
+    const h = Math.max(1, nodeRect.h - TEXT_NODE_HEADER_H_PX - TEXT_NODE_PAD_PX);
     return { x, y, w, h };
   }
 
@@ -2266,6 +2292,147 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         // ignore
       }
     }
+  }
+
+  private ensureTextMeasureRoot(): HTMLDivElement | null {
+    if (typeof document === 'undefined') return null;
+    if (this.textMeasureRoot && document.body.contains(this.textMeasureRoot)) return this.textMeasureRoot;
+    try {
+      const el = document.createElement('div');
+      el.setAttribute('data-gcv1-text-measure', 'true');
+      el.style.position = 'fixed';
+      el.style.left = '-10000px';
+      el.style.top = '-10000px';
+      el.style.visibility = 'hidden';
+      el.style.pointerEvents = 'none';
+      el.style.contain = 'layout paint style';
+      el.style.zIndex = '-1';
+      document.body.appendChild(el);
+      this.textMeasureRoot = el;
+      return el;
+    } catch {
+      return null;
+    }
+  }
+
+  private measureTextNodeContentSize(html: string, bounds: { minW: number; maxW: number; minH: number; maxH: number }): { w: number; h: number } {
+    const minW = Math.max(1, Math.round(bounds.minW));
+    const maxW = Math.max(minW, Math.round(bounds.maxW));
+    const minH = Math.max(1, Math.round(bounds.minH));
+    const maxH = Math.max(minH, Math.round(bounds.maxH));
+
+    const root = this.ensureTextMeasureRoot();
+    if (!root) return { w: maxW, h: minH };
+
+    try {
+      root.innerHTML = '';
+      const el = document.createElement('div');
+      el.className = 'gc-textLod2__content mdx';
+      el.style.display = 'inline-block';
+      el.style.boxSizing = 'border-box';
+      el.style.minWidth = `${minW}px`;
+      el.style.maxWidth = `${maxW}px`;
+      el.style.padding = '0';
+      el.style.margin = '0';
+      el.style.overflow = 'visible';
+      el.style.overflowWrap = 'break-word';
+      (el.style as any).wordWrap = 'break-word';
+      (el.style as any).scrollbarGutter = 'stable';
+
+      const gutter = this.getTextScrollGutterPx();
+      if (gutter > 0) el.style.paddingRight = `${gutter}px`;
+
+      const style = this.nodeTextStyle();
+      el.style.color = style.color;
+      el.style.fontFamily = style.fontFamily;
+      el.style.fontSize = `${Math.max(1, Math.round(style.fontSizePx))}px`;
+      el.style.lineHeight = `${Math.max(0.1, style.lineHeight)}`;
+
+      el.innerHTML = html ?? '';
+      root.appendChild(el);
+
+      const r = el.getBoundingClientRect();
+      const w = Math.round(clamp(Math.ceil(r.width || 0), minW, maxW));
+      const h = Math.round(clamp(Math.ceil(r.height || 0), minH, maxH));
+      return { w, h };
+    } catch {
+      return { w: maxW, h: minH };
+    } finally {
+      try {
+        root.innerHTML = '';
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  private applySpawnAutoSizeToTextNode(node: TextNode, opts: { mode: 'set_exact' | 'grow_only' }): boolean {
+    const minNodeW = TEXT_NODE_SPAWN_MIN_W_PX;
+    const maxNodeW = TEXT_NODE_SPAWN_MAX_W_PX;
+    const minNodeH = TEXT_NODE_SPAWN_MIN_H_PX;
+    const maxNodeH = TEXT_NODE_SPAWN_MAX_H_PX;
+
+    const minContentW = Math.max(1, minNodeW - TEXT_NODE_PAD_PX * 2);
+    const maxContentW = Math.max(minContentW, maxNodeW - TEXT_NODE_PAD_PX * 2);
+    const minContentH = Math.max(1, minNodeH - TEXT_NODE_HEADER_H_PX - TEXT_NODE_PAD_PX);
+    const maxContentH = Math.max(minContentH, maxNodeH - TEXT_NODE_HEADER_H_PX - TEXT_NODE_PAD_PX);
+
+    const html = this.renderTextNodeHtml(node);
+    const contentSize = this.measureTextNodeContentSize(html, {
+      minW: minContentW,
+      maxW: maxContentW,
+      minH: minContentH,
+      maxH: maxContentH,
+    });
+
+    const desiredW = clamp(contentSize.w + TEXT_NODE_PAD_PX * 2, minNodeW, maxNodeW);
+    const desiredH = clamp(contentSize.h + TEXT_NODE_HEADER_H_PX + TEXT_NODE_PAD_PX, minNodeH, maxNodeH);
+
+    let changed = false;
+    if (opts.mode === 'set_exact') {
+      if (Math.abs(node.rect.w - desiredW) > 0.5) {
+        node.rect.w = desiredW;
+        changed = true;
+      }
+      if (Math.abs(node.rect.h - desiredH) > 0.5) {
+        node.rect.h = desiredH;
+        changed = true;
+      }
+      return changed;
+    }
+
+    if (desiredW > node.rect.w + 0.5) {
+      node.rect.w = desiredW;
+      changed = true;
+    }
+    if (desiredH > node.rect.h + 0.5) {
+      node.rect.h = desiredH;
+      changed = true;
+    }
+    return changed;
+  }
+
+  private scheduleTextNodeStreamingAutoGrow(nodeId: string): void {
+    if (!nodeId) return;
+    this.textStreamingAutoResizeNodeIds.add(nodeId);
+    if (this.textStreamingAutoResizeRaf != null) return;
+
+    this.textStreamingAutoResizeRaf = requestAnimationFrame(() => {
+      this.textStreamingAutoResizeRaf = null;
+      const ids = Array.from(this.textStreamingAutoResizeNodeIds);
+      this.textStreamingAutoResizeNodeIds.clear();
+
+      let anyResized = false;
+      for (const id of ids) {
+        const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === id) ?? null;
+        if (!node) continue;
+        if (!node.isGenerating) continue;
+        const changed = this.applySpawnAutoSizeToTextNode(node, { mode: 'grow_only' });
+        if (changed) anyResized = true;
+      }
+
+      if (anyResized) this.requestRender();
+    });
   }
 
   private textRasterSigForNode(node: TextNode, contentRect: Rect): { sig: string; scrollY: number } {
