@@ -64,9 +64,9 @@ async function attachmentToOpenAIContent(att: any): Promise<any | null> {
   }
 
   if (att.kind === 'pdf' || att.mimeType === 'application/pdf') {
-    const base64 = await materializeBase64('application/pdf');
-    if (!base64) return null;
-    const fileBlock: any = { type: 'input_file', file_data: base64 };
+    const dataUrl = await materializeDataUrl('application/pdf');
+    if (!dataUrl) return null;
+    const fileBlock: any = { type: 'input_file', file_data: dataUrl };
     if (typeof att.name === 'string' && att.name.trim()) fileBlock.filename = att.name.trim();
     return fileBlock;
   }
