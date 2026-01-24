@@ -2007,30 +2007,39 @@ export default function App() {
           onPointerMove={(e) => e.stopPropagation()}
           onPointerUp={(e) => e.stopPropagation()}
           onWheel={(e) => e.stopPropagation()}
-        >
-          <button
-            className="toolStrip__btn"
-            type="button"
-            title="Settings"
-            aria-label="Settings"
-            aria-expanded={settingsOpen}
-            onClick={() => {
-              setSettingsPanel('appearance');
-              setSettingsOpen(true);
-            }}
-          >
-            <Icons.gear className="toolStrip__icon" />
-          </button>
-          <button
-            className={`toolStrip__btn ${ui.tool === 'draw' ? 'toolStrip__btn--active' : ''}`}
-            type="button"
-            title={ui.tool === 'draw' ? 'Draw mode (click for select)' : 'Select mode (click for draw)'}
-            aria-label="Toggle draw mode"
-            aria-pressed={ui.tool === 'draw'}
-            onClick={() => engineRef.current?.setTool(ui.tool === 'draw' ? 'select' : 'draw')}
-          >
-            <Icons.pen className="toolStrip__icon" />
-          </button>
+	        >
+	          <button
+	            className="toolStrip__btn"
+	            type="button"
+	            title="Settings"
+	            aria-label="Settings"
+	            aria-expanded={settingsOpen}
+	            onClick={() => {
+	              setSettingsPanel('appearance');
+	              setSettingsOpen(true);
+	            }}
+	          >
+	            <Icons.gear className="toolStrip__icon" />
+	          </button>
+	          <button
+	            className="toolStrip__btn"
+	            type="button"
+	            title="Import PDF"
+	            aria-label="Import PDF"
+	            onClick={() => pdfInputRef.current?.click()}
+	          >
+	            <Icons.documentArrowUp className="toolStrip__icon" />
+	          </button>
+	          <button
+	            className={`toolStrip__btn ${ui.tool === 'draw' ? 'toolStrip__btn--active' : ''}`}
+	            type="button"
+	            title={ui.tool === 'draw' ? 'Draw mode (click for select)' : 'Select mode (click for draw)'}
+	            aria-label="Toggle draw mode"
+	            aria-pressed={ui.tool === 'draw'}
+	            onClick={() => engineRef.current?.setTool(ui.tool === 'draw' ? 'select' : 'draw')}
+	          >
+	            <Icons.pen className="toolStrip__icon" />
+	          </button>
           <button
             className="toolStrip__btn"
             type="button"
@@ -2062,21 +2071,20 @@ export default function App() {
           }}
           backgroundEnabled={Boolean(backgroundStorageKey)}
           onImportBackground={() => backgroundInputRef.current?.click()}
-          onClearBackground={() => {
-            const chatId = activeChatIdRef.current;
-            const meta = ensureChatMeta(chatId);
-            meta.backgroundStorageKey = null;
-            setBackgroundStorageKey(null);
-            attachmentsGcDirtyRef.current = true;
-            engineRef.current?.clearBackground();
-            schedulePersistSoon();
-          }}
-          onImportPdf={() => pdfInputRef.current?.click()}
-          composerFontFamily={composerFontFamily}
-          onChangeComposerFontFamily={(next) => {
-            setComposerFontFamily(next);
-            schedulePersistSoon();
-          }}
+	          onClearBackground={() => {
+	            const chatId = activeChatIdRef.current;
+	            const meta = ensureChatMeta(chatId);
+	            meta.backgroundStorageKey = null;
+	            setBackgroundStorageKey(null);
+	            attachmentsGcDirtyRef.current = true;
+	            engineRef.current?.clearBackground();
+	            schedulePersistSoon();
+	          }}
+	          composerFontFamily={composerFontFamily}
+	          onChangeComposerFontFamily={(next) => {
+	            setComposerFontFamily(next);
+	            schedulePersistSoon();
+	          }}
           composerFontSizePx={composerFontSizePx}
           onChangeComposerFontSizePx={(raw) => {
             setComposerFontSizePx(Math.round(clampNumber(raw, 10, 30, DEFAULT_COMPOSER_FONT_SIZE_PX)));

@@ -12,6 +12,25 @@ export const Icons = {
       />
     </svg>
   ),
+  documentArrowUp: (props: IconProps) => (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      {...props}
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M6.75 3.75h7.5L19.5 9v11.25c0 1.243-1.007 2.25-2.25 2.25H6.75A2.25 2.25 0 014.5 20.25V6c0-1.243 1.007-2.25 2.25-2.25z"
+      />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M14.25 3.75V9h5.25" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 16.5v-5.25" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 13.5L12 11.25l2.25 2.25" />
+    </svg>
+  ),
   pen: (props: IconProps) => (
     <svg
       xmlns="http://www.w3.org/2000/svg"
@@ -47,4 +66,3 @@ export const Icons = {
     </svg>
   ),
 };
-

@@ -20,7 +20,6 @@ type Props = {
   backgroundEnabled: boolean;
   onImportBackground: () => void;
   onClearBackground: () => void;
-  onImportPdf: () => void;
 
   composerFontFamily: FontFamilyKey;
   onChangeComposerFontFamily: (next: FontFamilyKey) => void;
@@ -157,11 +156,11 @@ export default function SettingsModal(props: Props) {
                   <div className="settingsPanel__subtitle">Import backgrounds and tune typography and glass nodes.</div>
                 </div>
 
-                <div className="settingsCard">
-                  <div className="settingsRow">
-                    <div className="settingsRow__text">
-                      <div className="settingsRow__title">Background</div>
-                      <div className="settingsRow__desc">Set or clear the canvas background image.</div>
+	                <div className="settingsCard">
+	                  <div className="settingsRow">
+	                    <div className="settingsRow__text">
+	                      <div className="settingsRow__title">Background</div>
+	                      <div className="settingsRow__desc">Set or clear the canvas background image.</div>
                     </div>
                     <div className="settingsRow__actions">
                       <button className="settingsBtn" type="button" onClick={props.onImportBackground}>
@@ -176,27 +175,13 @@ export default function SettingsModal(props: Props) {
                         Clear background
                       </button>
                     </div>
-                  </div>
-                </div>
+	                  </div>
+	                </div>
 
-                <div className="settingsCard">
-                  <div className="settingsRow">
-                    <div className="settingsRow__text">
-                      <div className="settingsRow__title">PDF</div>
-                      <div className="settingsRow__desc">Import a PDF node into the canvas.</div>
-                    </div>
-                    <div className="settingsRow__actions">
-                      <button className="settingsBtn" type="button" onClick={props.onImportPdf}>
-                        Import PDF
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                <details className="settingsCard settingsDetails" open>
-                  <summary className="settingsDetails__summary">
-                    <div className="settingsRow settingsRow--stack">
-                      <div className="settingsRow__text">
+	                <details className="settingsCard settingsDetails" open>
+	                  <summary className="settingsDetails__summary">
+	                    <div className="settingsRow settingsRow--stack">
+	                      <div className="settingsRow__text">
                         <div className="settingsRow__title">Typography</div>
                         <div className="settingsRow__desc">Adjust fonts and sizes for composer, nodes, and sidebar.</div>
                       </div>
