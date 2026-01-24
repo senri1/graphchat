@@ -1718,6 +1718,8 @@ export default function App() {
 	            viewport={viewport}
 	            zoom={editorZoom}
 	            baseFontSizePx={nodeFontSizePx}
+              onResize={(nextRect) => engineRef.current?.setNodeScreenRect(ui.editingNodeId as string, nextRect)}
+              onResizeEnd={() => schedulePersistSoon()}
 	            onCommit={(next) => {
 	              engineRef.current?.commitEditing(next);
 	              schedulePersistSoon();

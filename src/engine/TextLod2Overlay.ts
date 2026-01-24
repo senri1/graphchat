@@ -115,6 +115,8 @@ export class TextLod2Overlay {
 
   onRequestCloseSelection?: () => void;
   onRequestAction?: (action: TextLod2Action) => void;
+  onRequestSelect?: (nodeId: string) => void;
+  onRequestEdit?: (nodeId: string) => void;
   onScroll?: (nodeId: string, scrollTop: number) => void;
 
   setBaseTextStyle(style: { fontFamily?: string; fontSizePx?: number; lineHeight?: number; color?: string }): void {
@@ -151,6 +153,14 @@ export class TextLod2Overlay {
     if (!this.interactive) return;
     if ((e.pointerType || 'mouse') !== 'mouse') return;
     if (e.button !== 0) return;
+    const nodeId = this.visibleNodeId;
+    if (nodeId) {
+      try {
+        this.onRequestSelect?.(nodeId);
+      } catch {
+        // ignore
+      }
+    }
     // Prevent world interactions (camera pan / node drag) while allowing native DOM selection.
     e.stopPropagation();
     this.nativePointerId = e.pointerId;
@@ -187,6 +197,20 @@ export class TextLod2Overlay {
       e.preventDefault();
       e.stopPropagation();
       this.onRequestAction?.({ kind: 'summary_toggle', nodeId });
+    }
+  };
+
+  private readonly onRootDoubleClick = (e: MouseEvent) => {
+    const nodeId = this.visibleNodeId;
+    if (!nodeId) return;
+    if (e.button !== 0) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      this.onRequestEdit?.(nodeId);
+    } catch {
+      // ignore
     }
   };
 
@@ -269,12 +293,16 @@ export class TextLod2Overlay {
     host: HTMLElement;
     onRequestCloseSelection?: () => void;
     onRequestAction?: (action: TextLod2Action) => void;
+    onRequestSelect?: (nodeId: string) => void;
+    onRequestEdit?: (nodeId: string) => void;
     zIndex?: number;
     textStyle?: { fontFamily?: string; fontSizePx?: number; lineHeight?: number; color?: string };
   }) {
     this.host = opts.host;
     this.onRequestCloseSelection = opts.onRequestCloseSelection;
     this.onRequestAction = opts.onRequestAction;
+    this.onRequestSelect = opts.onRequestSelect;
+    this.onRequestEdit = opts.onRequestEdit;
 
     const root = document.createElement('div');
     root.className = 'gc-textLod2';
@@ -339,6 +367,7 @@ export class TextLod2Overlay {
 
     root.addEventListener('pointerdown', this.onRootPointerDown);
     root.addEventListener('click', this.onRootClick);
+    root.addEventListener('dblclick', this.onRootDoubleClick);
 
     const menu = document.createElement('div');
     menu.className = 'gc-selectionMenu';

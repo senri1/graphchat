@@ -2014,6 +2014,35 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y };
   }
 
+  setNodeScreenRect(nodeId: string, screenRect: Rect): void {
+    const id = typeof nodeId === 'string' ? nodeId : String(nodeId ?? '');
+    if (!id) return;
+
+    const node = this.nodes.find((n) => n.id === id);
+    if (!node) return;
+
+    const r = screenRect;
+    const sx = Number(r?.x);
+    const sy = Number(r?.y);
+    const sw = Number(r?.w);
+    const sh = Number(r?.h);
+    if (!Number.isFinite(sx) || !Number.isFinite(sy) || !Number.isFinite(sw) || !Number.isFinite(sh)) return;
+
+    const z = Math.max(0.001, Number.isFinite(this.camera.zoom) ? this.camera.zoom : 1);
+    const nextWorld: Rect = {
+      x: this.camera.x + sx / z,
+      y: this.camera.y + sy / z,
+      w: sw / z,
+      h: sh / z,
+    };
+
+    if (nextWorld.w < this.minNodeW) nextWorld.w = this.minNodeW;
+    if (nextWorld.h < this.minNodeH) nextWorld.h = this.minNodeH;
+
+    node.rect = nextWorld;
+    this.requestRender();
+  }
+
   beginEditingSelectedNode(): void {
     if (this.editingNodeId) return;
     const nodeId = this.selectedNodeId;
@@ -2926,6 +2955,20 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       onRequestCloseSelection: () => {
         this.clearTextSelection({ suppressOverlayCallback: true });
         this.requestRender();
+      },
+      onRequestSelect: (nodeId) => {
+        if (!nodeId) return;
+        if (!this.nodes.some((n) => n.id === nodeId)) return;
+        const changed = this.selectedNodeId !== nodeId || this.editingNodeId !== null;
+        this.selectedNodeId = nodeId;
+        this.editingNodeId = null;
+        this.bringNodeToFront(nodeId);
+        this.requestRender();
+        if (changed) this.emitUiState();
+      },
+      onRequestEdit: (nodeId) => {
+        if (!nodeId) return;
+        this.beginEditingNode(nodeId);
       },
       onRequestAction: (action: TextLod2Action) => {
         const nodeId = action?.nodeId;

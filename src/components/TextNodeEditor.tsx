@@ -10,12 +10,16 @@ type Props = {
   viewport: { w: number; h: number };
   zoom: number;
   baseFontSizePx: number;
+  onResize: (nextRect: Rect) => void;
+  onResizeEnd: () => void;
   onCommit: (next: string) => void;
   onCancel: () => void;
 };
 
+type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
+
 export default function TextNodeEditor(props: Props) {
-  const { nodeId, title, initialValue, anchorRect, viewport, zoom, baseFontSizePx, onCommit, onCancel } = props;
+  const { nodeId, title, initialValue, anchorRect, viewport, zoom, baseFontSizePx, onResize, onResizeEnd, onCommit, onCancel } = props;
   const [draft, setDraft] = useState(() => initialValue ?? '');
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -23,11 +27,24 @@ export default function TextNodeEditor(props: Props) {
   const draftRef = useRef(draft);
   const onCommitRef = useRef(onCommit);
   const onCancelRef = useRef(onCancel);
+  const onResizeRef = useRef(onResize);
+  const onResizeEndRef = useRef(onResizeEnd);
+  const resizeRef = useRef<{
+    pointerId: number;
+    corner: ResizeCorner;
+    startClient: { x: number; y: number };
+    startRect: Rect;
+    startZoom: number;
+  } | null>(null);
+
+  const [liveRect, setLiveRect] = useState<Rect | null>(() => anchorRect ?? null);
 
   useEffect(() => {
     onCommitRef.current = onCommit;
     onCancelRef.current = onCancel;
-  }, [onCommit, onCancel]);
+    onResizeRef.current = onResize;
+    onResizeEndRef.current = onResizeEnd;
+  }, [onCancel, onCommit, onResize, onResizeEnd]);
 
   useEffect(() => {
     committedRef.current = false;
@@ -36,6 +53,11 @@ export default function TextNodeEditor(props: Props) {
     const raf = requestAnimationFrame(() => taRef.current?.focus());
     return () => cancelAnimationFrame(raf);
   }, [nodeId, initialValue]);
+
+  useEffect(() => {
+    if (resizeRef.current) return;
+    setLiveRect(anchorRect ?? null);
+  }, [anchorRect?.x, anchorRect?.y, anchorRect?.w, anchorRect?.h, nodeId]);
 
   useEffect(() => {
     draftRef.current = draft;
@@ -55,6 +77,99 @@ export default function TextNodeEditor(props: Props) {
     return () => window.removeEventListener('pointerdown', onPointerDownCapture, true);
   }, []);
 
+  const applyResize = (start: Rect, corner: ResizeCorner, dx: number, dy: number, minW: number, minH: number): Rect => {
+    const right = start.x + start.w;
+    const bottom = start.y + start.h;
+
+    let next: Rect;
+    switch (corner) {
+      case 'nw': {
+        next = { x: start.x + dx, y: start.y + dy, w: start.w - dx, h: start.h - dy };
+        if (next.w < minW) {
+          next.w = minW;
+          next.x = right - next.w;
+        }
+        if (next.h < minH) {
+          next.h = minH;
+          next.y = bottom - next.h;
+        }
+        break;
+      }
+      case 'ne': {
+        next = { x: start.x, y: start.y + dy, w: start.w + dx, h: start.h - dy };
+        if (next.w < minW) next.w = minW;
+        if (next.h < minH) {
+          next.h = minH;
+          next.y = bottom - next.h;
+        }
+        break;
+      }
+      case 'sw': {
+        next = { x: start.x + dx, y: start.y, w: start.w - dx, h: start.h + dy };
+        if (next.w < minW) {
+          next.w = minW;
+          next.x = right - next.w;
+        }
+        if (next.h < minH) next.h = minH;
+        break;
+      }
+      case 'se': {
+        next = { x: start.x, y: start.y, w: start.w + dx, h: start.h + dy };
+        if (next.w < minW) next.w = minW;
+        if (next.h < minH) next.h = minH;
+        break;
+      }
+    }
+
+    return next;
+  };
+
+  const onResizePointerMove = (e: React.PointerEvent<HTMLElement>) => {
+    const active = resizeRef.current;
+    if (!active || active.pointerId !== e.pointerId) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const dx = e.clientX - active.startClient.x;
+    const dy = e.clientY - active.startClient.y;
+    const minW = 160 * active.startZoom;
+    const minH = 110 * active.startZoom;
+    const next = applyResize(active.startRect, active.corner, dx, dy, minW, minH);
+    setLiveRect(next);
+    onResizeRef.current(next);
+  };
+
+  const onResizePointerEnd = (e: React.PointerEvent<HTMLElement>) => {
+    const active = resizeRef.current;
+    if (!active || active.pointerId !== e.pointerId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    resizeRef.current = null;
+    onResizeEndRef.current();
+  };
+
+  const beginResize = (corner: ResizeCorner) => (e: React.PointerEvent<HTMLElement>) => {
+    if (resizeRef.current) return;
+    const startRect = liveRect ?? anchorRect;
+    if (!startRect) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    resizeRef.current = {
+      pointerId: e.pointerId,
+      corner,
+      startClient: { x: e.clientX, y: e.clientY },
+      startRect,
+      startZoom: Math.max(0.001, Number.isFinite(zoom) ? zoom : 1),
+    };
+
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+  };
+
   const cancel = () => {
     if (committedRef.current) return;
     committedRef.current = true;
@@ -69,9 +184,10 @@ export default function TextNodeEditor(props: Props) {
 
   const baseFontSize = Math.max(1, Math.round(Number.isFinite(baseFontSizePx) ? baseFontSizePx : 14));
   const z = Math.max(0.001, Number.isFinite(zoom) ? zoom : 1);
+  const activeAnchorRect = liveRect ?? anchorRect;
   const chrome = useMemo(() => {
-    if (!anchorRect) return null;
-    const totalContentWorldW = Math.max(1, anchorRect.w / z - 28);
+    if (!activeAnchorRect) return null;
+    const totalContentWorldW = Math.max(1, activeAnchorRect.w / z - 28);
     const paneWorldW = Math.max(1, totalContentWorldW * 0.5 - 6);
     return {
       headerH: 50 * z,
@@ -80,17 +196,17 @@ export default function TextNodeEditor(props: Props) {
       padTop: 12 * z,
       gap: 10 * z,
       contentWorldW: paneWorldW,
-      contentWorldH: Math.max(1, anchorRect.h / z - 64),
+      contentWorldH: Math.max(1, activeAnchorRect.h / z - 64),
     };
-  }, [anchorRect, z]);
+  }, [activeAnchorRect, z]);
 
   const style = useMemo<React.CSSProperties>(() => {
-    if (anchorRect) {
+    if (activeAnchorRect) {
       return {
-        left: anchorRect.x,
-        top: anchorRect.y,
-        width: anchorRect.w,
-        height: anchorRect.h,
+        left: activeAnchorRect.x,
+        top: activeAnchorRect.y,
+        width: activeAnchorRect.w,
+        height: activeAnchorRect.h,
         borderRadius: `${18 * z}px`,
       };
     }
@@ -149,6 +265,39 @@ export default function TextNodeEditor(props: Props) {
       onPointerUp={(e) => e.stopPropagation()}
       onWheel={(e) => e.stopPropagation()}
     >
+      <div
+        className="editor__resizeHandle editor__resizeHandle--nw"
+        aria-hidden="true"
+        onPointerDown={beginResize('nw')}
+        onPointerMove={onResizePointerMove}
+        onPointerUp={onResizePointerEnd}
+        onPointerCancel={onResizePointerEnd}
+      />
+      <div
+        className="editor__resizeHandle editor__resizeHandle--ne"
+        aria-hidden="true"
+        onPointerDown={beginResize('ne')}
+        onPointerMove={onResizePointerMove}
+        onPointerUp={onResizePointerEnd}
+        onPointerCancel={onResizePointerEnd}
+      />
+      <div
+        className="editor__resizeHandle editor__resizeHandle--sw"
+        aria-hidden="true"
+        onPointerDown={beginResize('sw')}
+        onPointerMove={onResizePointerMove}
+        onPointerUp={onResizePointerEnd}
+        onPointerCancel={onResizePointerEnd}
+      />
+      <div
+        className="editor__resizeHandle editor__resizeHandle--se"
+        aria-hidden="true"
+        onPointerDown={beginResize('se')}
+        onPointerMove={onResizePointerMove}
+        onPointerUp={onResizePointerEnd}
+        onPointerCancel={onResizePointerEnd}
+      />
+
       <div className="editor__topbar" style={topbarStyle}>
         <div className="editor__title">{title ?? 'Edit node'}</div>
         <div className="editor__actions">
@@ -191,7 +340,6 @@ export default function TextNodeEditor(props: Props) {
               chrome
                 ? {
                     width: `${chrome.contentWorldW}px`,
-                    height: `${chrome.contentWorldH}px`,
                     transform: `scale(${z})`,
                     transformOrigin: '0 0',
                   }

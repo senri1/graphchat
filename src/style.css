@@ -638,7 +638,9 @@ body {
 .sidebar__tree,
 .composer__textarea,
 .composer__preview,
-.gc-textLod2__content {
+.gc-textLod2__content,
+.editor__textarea,
+.editor__preview {
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.35) transparent;
 }
@@ -647,7 +649,9 @@ body {
 .sidebar__tree::-webkit-scrollbar,
 .composer__textarea::-webkit-scrollbar,
 .composer__preview::-webkit-scrollbar,
-.gc-textLod2__content::-webkit-scrollbar {
+.gc-textLod2__content::-webkit-scrollbar,
+.editor__textarea::-webkit-scrollbar,
+.editor__preview::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
@@ -656,7 +660,9 @@ body {
 .sidebar__tree::-webkit-scrollbar-track,
 .composer__textarea::-webkit-scrollbar-track,
 .composer__preview::-webkit-scrollbar-track,
-.gc-textLod2__content::-webkit-scrollbar-track {
+.gc-textLod2__content::-webkit-scrollbar-track,
+.editor__textarea::-webkit-scrollbar-track,
+.editor__preview::-webkit-scrollbar-track {
   background: transparent;
 }
 
@@ -664,7 +670,9 @@ body {
 .sidebar__tree::-webkit-scrollbar-thumb,
 .composer__textarea::-webkit-scrollbar-thumb,
 .composer__preview::-webkit-scrollbar-thumb,
-.gc-textLod2__content::-webkit-scrollbar-thumb {
+.gc-textLod2__content::-webkit-scrollbar-thumb,
+.editor__textarea::-webkit-scrollbar-thumb,
+.editor__preview::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.32);
   border-radius: 999px;
   border: 2px solid transparent;
@@ -675,7 +683,9 @@ body {
 .sidebar__tree::-webkit-scrollbar-thumb:hover,
 .composer__textarea::-webkit-scrollbar-thumb:hover,
 .composer__preview::-webkit-scrollbar-thumb:hover,
-.gc-textLod2__content::-webkit-scrollbar-thumb:hover {
+.gc-textLod2__content::-webkit-scrollbar-thumb:hover,
+.editor__textarea::-webkit-scrollbar-thumb:hover,
+.editor__preview::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.45);
   border: 2px solid transparent;
   background-clip: content-box;
@@ -700,6 +710,33 @@ body {
 }
 
 .gc-textLod2--interactive .gc-textLod2__content::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.45);
+}
+
+/* Editor: keep layout stable; only show scrollbar visuals when hovered. */
+.editor__textarea,
+.editor__preview {
+  scrollbar-gutter: stable;
+  scrollbar-color: transparent transparent;
+}
+
+.editor:hover .editor__textarea,
+.editor:hover .editor__preview {
+  scrollbar-color: rgba(255, 255, 255, 0.35) transparent;
+}
+
+.editor__textarea::-webkit-scrollbar-thumb,
+.editor__preview::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+
+.editor:hover .editor__textarea::-webkit-scrollbar-thumb,
+.editor:hover .editor__preview::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.32);
+}
+
+.editor:hover .editor__textarea::-webkit-scrollbar-thumb:hover,
+.editor:hover .editor__preview::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.45);
 }
 
@@ -1662,10 +1699,12 @@ body {
   display: flex;
   flex-direction: column;
   pointer-events: auto;
-  background: rgba(11, 13, 18, 0.96);
-  border: 1px solid rgba(147, 197, 253, 0.65);
+  background: rgba(0, 0, 0, var(--ui-glass-bg-alpha));
+  border: 1px solid rgba(147, 197, 253, 0.55);
   border-radius: 18px;
   overflow: hidden;
+  backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
   box-shadow: 0 24px 65px rgba(0, 0, 0, 0.45);
   touch-action: auto;
 }
@@ -1746,13 +1785,49 @@ body {
   flex: 1;
   min-height: 0;
   min-width: 0;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 0;
   touch-action: auto;
 }
 
 .editor__previewScaled {
   will-change: transform;
+}
+
+.editor__resizeHandle {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  z-index: 3;
+  border-radius: 10px;
+  touch-action: none;
+  background: transparent;
+}
+
+.editor__resizeHandle:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.editor__resizeHandle--nw {
+  left: 0;
+  top: 0;
+  cursor: nwse-resize;
+}
+.editor__resizeHandle--ne {
+  right: 0;
+  top: 0;
+  cursor: nesw-resize;
+}
+.editor__resizeHandle--sw {
+  left: 0;
+  bottom: 0;
+  cursor: nesw-resize;
+}
+.editor__resizeHandle--se {
+  right: 0;
+  bottom: 0;
+  cursor: nwse-resize;
 }
 
 /* Markdown-ish styling (kept minimal for early verification). */
