@@ -51,6 +51,8 @@ type Props = {
 
   debugHudVisible: boolean;
   onToggleDebugHudVisible: () => void;
+  allowEditingAllTextNodes: boolean;
+  onToggleAllowEditingAllTextNodes: () => void;
   spawnCount: number;
   onChangeSpawnCount: (next: number) => void;
   onSpawnNodes: () => void;
@@ -626,6 +628,27 @@ export default function SettingsModal(props: Props) {
                         onClick={props.onToggleDebugHudVisible}
                       >
                         {props.debugHudVisible ? 'On' : 'Off'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="settingsCard">
+                  <div className="settingsRow">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Edit all text nodes</div>
+                      <div className="settingsRow__desc">
+                        When off, only note/edit nodes (spawned from the bottom-right +Text button) can be edited by double-click.
+                      </div>
+                    </div>
+                    <div className="settingsRow__actions">
+                      <button
+                        className={`settingsToggle ${props.allowEditingAllTextNodes ? 'settingsToggle--on' : ''}`}
+                        type="button"
+                        aria-pressed={props.allowEditingAllTextNodes}
+                        onClick={props.onToggleAllowEditingAllTextNodes}
+                      >
+                        {props.allowEditingAllTextNodes ? 'On' : 'Off'}
                       </button>
                     </div>
                   </div>

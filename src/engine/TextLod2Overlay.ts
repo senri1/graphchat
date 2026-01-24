@@ -116,7 +116,7 @@ export class TextLod2Overlay {
   onRequestCloseSelection?: () => void;
   onRequestAction?: (action: TextLod2Action) => void;
   onRequestSelect?: (nodeId: string) => void;
-  onRequestEdit?: (nodeId: string) => void;
+  onRequestEdit?: (nodeId: string) => boolean;
   onScroll?: (nodeId: string, scrollTop: number) => void;
 
   setBaseTextStyle(style: { fontFamily?: string; fontSizePx?: number; lineHeight?: number; color?: string }): void {
@@ -205,13 +205,14 @@ export class TextLod2Overlay {
     if (!nodeId) return;
     if (e.button !== 0) return;
 
-    e.preventDefault();
     e.stopPropagation();
+    let handled = false;
     try {
-      this.onRequestEdit?.(nodeId);
+      handled = Boolean(this.onRequestEdit?.(nodeId));
     } catch {
       // ignore
     }
+    if (handled) e.preventDefault();
   };
 
   private readonly onContentScroll = () => {
@@ -294,7 +295,7 @@ export class TextLod2Overlay {
     onRequestCloseSelection?: () => void;
     onRequestAction?: (action: TextLod2Action) => void;
     onRequestSelect?: (nodeId: string) => void;
-    onRequestEdit?: (nodeId: string) => void;
+    onRequestEdit?: (nodeId: string) => boolean;
     zIndex?: number;
     textStyle?: { fontFamily?: string; fontSizePx?: number; lineHeight?: number; color?: string };
   }) {

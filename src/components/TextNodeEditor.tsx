@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import MarkdownMath from './MarkdownMath';
 import type { Rect } from '../engine/types';
 
@@ -21,6 +21,7 @@ type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
 export default function TextNodeEditor(props: Props) {
   const { nodeId, title, initialValue, anchorRect, viewport, zoom, baseFontSizePx, onResize, onResizeEnd, onCommit, onCancel } = props;
   const [draft, setDraft] = useState(() => initialValue ?? '');
+  const [previewEnabled, setPreviewEnabled] = useState(true);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const committedRef = useRef(false);
@@ -38,6 +39,7 @@ export default function TextNodeEditor(props: Props) {
   } | null>(null);
 
   const [liveRect, setLiveRect] = useState<Rect | null>(() => anchorRect ?? null);
+  const deferredDraft = useDeferredValue(draft);
 
   useEffect(() => {
     onCommitRef.current = onCommit;
@@ -188,17 +190,16 @@ export default function TextNodeEditor(props: Props) {
   const chrome = useMemo(() => {
     if (!activeAnchorRect) return null;
     const totalContentWorldW = Math.max(1, activeAnchorRect.w / z - 28);
-    const paneWorldW = Math.max(1, totalContentWorldW * 0.5 - 6);
+    const paneWorldW = previewEnabled ? Math.max(1, totalContentWorldW * 0.5 - 6) : Math.max(1, totalContentWorldW);
     return {
       headerH: 50 * z,
       cornerR: 18 * z,
       padX: 14 * z,
       padTop: 12 * z,
-      gap: 10 * z,
       contentWorldW: paneWorldW,
       contentWorldH: Math.max(1, activeAnchorRect.h / z - 64),
     };
-  }, [activeAnchorRect, z]);
+  }, [activeAnchorRect, previewEnabled, z]);
 
   const style = useMemo<React.CSSProperties>(() => {
     if (activeAnchorRect) {
@@ -217,7 +218,7 @@ export default function TextNodeEditor(props: Props) {
     const w = Math.min(740, vpW - margin * 2);
     const h = Math.min(Math.round(vpH * 0.72), vpH - margin * 2);
     return { left: (vpW - w) * 0.5, top: margin, width: w, height: h };
-  }, [anchorRect, viewport.h, viewport.w, z]);
+  }, [activeAnchorRect, viewport.h, viewport.w, z]);
 
   const previewStyle = useMemo<React.CSSProperties>(
     () => ({
@@ -243,7 +244,6 @@ export default function TextNodeEditor(props: Props) {
     if (!chrome) return {};
     return {
       padding: `0 ${chrome.padX}px ${chrome.padX}px ${chrome.padX}px`,
-      gap: `${chrome.gap}px`,
     };
   }, [chrome]);
 
@@ -301,6 +301,14 @@ export default function TextNodeEditor(props: Props) {
       <div className="editor__topbar" style={topbarStyle}>
         <div className="editor__title">{title ?? 'Edit node'}</div>
         <div className="editor__actions">
+          <label className="editor__toggle">
+            <span>Preview</span>
+            <input
+              type="checkbox"
+              checked={previewEnabled}
+              onChange={(e) => setPreviewEnabled(Boolean((e.currentTarget as HTMLInputElement).checked))}
+            />
+          </label>
           <button className="editor__btn" type="button" onClick={cancel}>
             Cancel
           </button>
@@ -310,45 +318,57 @@ export default function TextNodeEditor(props: Props) {
         </div>
       </div>
 
-      <div className="editor__body" style={bodyStyle}>
-        <textarea
-          ref={taRef}
-          className="editor__textarea"
-          style={textareaStyle}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          spellCheck={false}
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') {
-              e.preventDefault();
-              e.stopPropagation();
-              cancel();
-              return;
-            }
-            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-              e.preventDefault();
-              e.stopPropagation();
-              commit();
-            }
-          }}
-        />
-
-        <div className="editor__preview">
-          <div
-            className="editor__previewScaled"
-            style={
-              chrome
-                ? {
-                    width: `${chrome.contentWorldW}px`,
-                    transform: `scale(${z})`,
-                    transformOrigin: '0 0',
-                  }
-                : undefined
-            }
-          >
-            <MarkdownMath source={draft} className="mdx" style={previewStyle} />
-          </div>
+      <div className={`editor__body ${previewEnabled ? 'editor__body--preview' : ''}`} style={bodyStyle}>
+        <div className="editor__pane editor__pane--edit">
+          <div className="editor__paneLabel">Edit</div>
+          <textarea
+            ref={taRef}
+            className="editor__textarea"
+            style={textareaStyle}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            spellCheck={false}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                cancel();
+                return;
+              }
+              if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                e.preventDefault();
+                e.stopPropagation();
+                commit();
+              }
+            }}
+          />
         </div>
+
+        {previewEnabled ? (
+          <div className="editor__pane editor__pane--preview">
+            <div className="editor__paneLabel">Preview</div>
+            <div className="editor__preview">
+              <div
+                className="editor__previewScaled"
+                style={
+                  chrome
+                    ? {
+                        width: `${chrome.contentWorldW}px`,
+                        transform: `scale(${z})`,
+                        transformOrigin: '0 0',
+                      }
+                    : undefined
+                }
+              >
+                {(deferredDraft ?? '').trim().length > 0 ? (
+                  <MarkdownMath source={deferredDraft} className="mdx" style={previewStyle} />
+                ) : (
+                  <div className="editor__emptyPreview">Nothing to preview.</div>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );

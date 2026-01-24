@@ -383,6 +383,8 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsPanel, setSettingsPanel] = useState<'appearance' | 'models' | 'debug' | 'reset'>('appearance');
   const [debugHudVisible, setDebugHudVisible] = useState(true);
+  const [allowEditingAllTextNodes, setAllowEditingAllTextNodes] = useState(false);
+  const allowEditingAllTextNodesRef = useRef<boolean>(allowEditingAllTextNodes);
   const [stressSpawnCount, setStressSpawnCount] = useState<number>(50);
   const [backgroundStorageKey, setBackgroundStorageKey] = useState<string | null>(() => null);
   const [glassNodesEnabled, setGlassNodesEnabled] = useState<boolean>(() => false);
@@ -492,6 +494,11 @@ export default function App() {
   useEffect(() => {
     modelUserSettingsRef.current = modelUserSettings;
   }, [modelUserSettings]);
+
+  useEffect(() => {
+    allowEditingAllTextNodesRef.current = allowEditingAllTextNodes;
+    engineRef.current?.setAllowEditingAllTextNodes(allowEditingAllTextNodes);
+  }, [allowEditingAllTextNodes]);
 
   useEffect(() => {
     glassNodesEnabledRef.current = glassNodesEnabled;
@@ -1123,6 +1130,7 @@ export default function App() {
     const engine = new WorldEngine({ canvas });
     engine.setNodeTextFontFamily(fontFamilyCss(nodeFontFamilyRef.current));
     engine.setNodeTextFontSizePx(nodeFontSizePxRef.current);
+    engine.setAllowEditingAllTextNodes(allowEditingAllTextNodesRef.current);
     engine.onDebug = setDebug;
     engine.onUiState = setUi;
     engine.onRequestReply = (nodeId) => {
@@ -2200,6 +2208,8 @@ export default function App() {
           }}
           debugHudVisible={debugHudVisible}
           onToggleDebugHudVisible={() => setDebugHudVisible((prev) => !prev)}
+          allowEditingAllTextNodes={allowEditingAllTextNodes}
+          onToggleAllowEditingAllTextNodes={() => setAllowEditingAllTextNodes((prev) => !prev)}
           spawnCount={stressSpawnCount}
           onChangeSpawnCount={(raw) => {
             const next = Number.isFinite(raw) ? Math.max(1, Math.min(500, Math.round(raw))) : 50;

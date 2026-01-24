@@ -188,6 +188,7 @@ type DemoNodeBase = {
 
 type TextNode = DemoNodeBase & {
   kind: 'text';
+  isEditNode?: boolean;
   author: ChatAuthor;
   rect: Rect;
   content: string;
@@ -393,6 +394,7 @@ export class WorldEngine {
 
   private selectedNodeId: string | null = null;
   private editingNodeId: string | null = null;
+  private allowEditingAllTextNodes = false;
   private tool: Tool = 'select';
   private activeGesture: ActiveGesture | null = null;
   private suppressTapPointerIds = new Set<number>();
@@ -701,6 +703,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           title: n.title,
           parentId: n.parentId,
           rect: { ...n.rect },
+          ...(n.isEditNode ? { isEditNode: true } : {}),
           author: n.author,
           content: n.content,
           isGenerating: n.isGenerating,
@@ -809,6 +812,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       const parentId = ((n as any)?.parentId as string | null | undefined) ?? null;
       if (n.kind === 'text') {
         const content = typeof n.content === 'string' ? n.content : String(n.content ?? '');
+        const isEditNode = Boolean((n as any)?.isEditNode) || n.id.startsWith('n');
         const rawAuthor = (n as any)?.author;
         const author: ChatAuthor =
           rawAuthor === 'user' || rawAuthor === 'assistant'
@@ -863,6 +867,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           parentId,
           rect: { ...n.rect },
           title: n.title,
+          ...(isEditNode ? { isEditNode: true } : {}),
           author,
           content,
           contentHash: fingerprintText(content),
@@ -1004,6 +1009,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.tool = next;
     this.requestRender();
     this.emitUiState();
+  }
+
+  setAllowEditingAllTextNodes(enabled: boolean): void {
+    this.allowEditingAllTextNodes = Boolean(enabled);
   }
 
   setGlassNodesEnabled(enabled: boolean): void {
@@ -1181,6 +1190,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       parentId: null,
       rect: { x: center.x - nodeW * 0.5, y: center.y - nodeH * 0.5, w: nodeW, h: nodeH },
       title: title || 'Text',
+      isEditNode: true,
       author,
       content,
       contentHash: fingerprintText(content),
@@ -2047,18 +2057,31 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (this.editingNodeId) return;
     const nodeId = this.selectedNodeId;
     if (!nodeId) return;
-    this.beginEditingNode(nodeId);
+    this.tryBeginEditingNode(nodeId);
   }
 
   beginEditingNode(nodeId: string): void {
-    const node = this.nodes.find((n) => n.id === nodeId);
-    if (!node || node.kind !== 'text') return;
+    this.tryBeginEditingNode(nodeId);
+  }
+
+  private canEditTextNode(node: TextNode): boolean {
+    if (this.allowEditingAllTextNodes) return true;
+    if (node.isEditNode) return true;
+    // Back-compat: notes created before we tagged them use an `n...` id prefix.
+    return typeof node.id === 'string' && node.id.startsWith('n');
+  }
+
+  private tryBeginEditingNode(nodeId: string): boolean {
+    const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === nodeId) ?? null;
+    if (!node) return false;
+    if (!this.canEditTextNode(node)) return false;
     const changed = this.editingNodeId !== nodeId || this.selectedNodeId !== nodeId;
     this.selectedNodeId = nodeId;
     this.editingNodeId = nodeId;
     this.bringNodeToFront(nodeId);
     this.requestRender();
     if (changed) this.emitUiState();
+    return true;
   }
 
   commitEditing(next: string): void {
@@ -2967,8 +2990,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         if (changed) this.emitUiState();
       },
       onRequestEdit: (nodeId) => {
-        if (!nodeId) return;
-        this.beginEditingNode(nodeId);
+        if (!nodeId) return false;
+        return this.tryBeginEditingNode(nodeId);
       },
       onRequestAction: (action: TextLod2Action) => {
         const nodeId = action?.nodeId;
@@ -4635,8 +4658,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.lastTapNodeId = hit?.id ?? null;
 
     if (isDoubleTap && hit.kind === 'text') {
-      this.beginEditingNode(hit.id);
-      return;
+      if (this.tryBeginEditingNode(hit.id)) return;
     }
 
     const nextSelected = hit ? hit.id : null;
@@ -4845,7 +4867,6 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const z = Math.max(0.001, this.camera.zoom || 1);
 
     for (const node of this.nodes) {
-      if (node.id === this.editingNodeId) continue;
       if (node.kind !== 'text' && node.kind !== 'ink') continue;
 
       const tl = this.camera.worldToScreen({ x: node.rect.x, y: node.rect.y });
@@ -5143,7 +5164,6 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       ctx.font = '14px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
       ctx.textBaseline = 'top';
       ctx.fillText(node.title, x + 14, y + 12);
-
       if (node.kind === 'text' && node.isGenerating) this.drawStopButton(node);
       if (node.kind === 'text' && this.shouldShowRawButton(node)) this.drawRawButton(node.rect, { active: isSelected });
       this.drawReplyButton(node.rect, { active: isSelected });

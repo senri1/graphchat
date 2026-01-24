@@ -55,6 +55,7 @@ export type ChatNode =
       rect: Rect;
       author: ChatAuthor;
       content: string;
+      isEditNode?: boolean;
       isGenerating?: boolean;
       modelId?: string | null;
       llmParams?: ChatLlmParams;
