@@ -1825,6 +1825,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     const world = this.camera.screenToWorld(p);
     const hit = this.findTopmostNodeAtWorld(world);
+    this.updateHoverCursor(world, hit);
     let nextTextHover: string | null = null;
     let nextPdfHover: { nodeId: string; token: number; pageNumber: number } | null = null;
 
@@ -1859,6 +1860,20 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       this.requestRender();
     }
   };
+
+  private setCanvasCursor(cursor: string): void {
+    if (this.canvas.style.cursor !== cursor) this.canvas.style.cursor = cursor;
+  }
+
+  private cursorForResizeCorner(corner: ResizeCorner): string {
+    return corner === 'nw' || corner === 'se' ? 'nwse-resize' : 'nesw-resize';
+  }
+
+  private updateHoverCursor(world: Vec2, hit: WorldNode | null): void {
+    const corner = hit && hit.kind === 'text' ? this.hitResizeHandle(world, hit.rect) : null;
+    if (corner) this.setCanvasCursor(this.cursorForResizeCorner(corner));
+    else this.setCanvasCursor('default');
+  }
 
   resize(cssW: number, cssH: number, dpr?: number): void {
     const w = Math.max(1, Math.round(cssW));
@@ -5035,7 +5050,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         ctx.restore();
       }
 
-      if (isSelected && node.kind === 'text' && node.id !== this.editingNodeId) this.drawResizeHandles(node.rect);
+      // Resize handles are intentionally hidden; cursor changes near corners indicate resizability.
     }
   }
 
