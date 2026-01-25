@@ -389,6 +389,7 @@ export class WorldEngine {
   onUiState?: (state: WorldEngineUiState) => void;
   onRequestReply?: (nodeId: string) => void;
   onRequestRaw?: (nodeId: string) => void;
+  onRequestNodeMenu?: (nodeId: string) => void;
   onRequestCancelGeneration?: (nodeId: string) => void;
   onRequestPersist?: () => void;
 
@@ -2021,6 +2022,15 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (!node) return null;
     const tl = this.camera.worldToScreen({ x: node.rect.x, y: node.rect.y });
     const br = this.camera.worldToScreen({ x: node.rect.x + node.rect.w, y: node.rect.y + node.rect.h });
+    return { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y };
+  }
+
+  getNodeMenuButtonScreenRect(nodeId: string): Rect | null {
+    const node = this.nodes.find((n) => n.id === nodeId);
+    if (!node) return null;
+    const btn = this.menuButtonRect(node.rect);
+    const tl = this.camera.worldToScreen({ x: btn.x, y: btn.y });
+    const br = this.camera.worldToScreen({ x: btn.x + btn.w, y: btn.y + btn.h });
     return { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y };
   }
 
@@ -4177,6 +4187,18 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       if (inContent) return null;
     }
 
+    const menuBtn = this.menuButtonRect(hit.rect);
+    const inMenu =
+      world.x >= menuBtn.x &&
+      world.x <= menuBtn.x + menuBtn.w &&
+      world.y >= menuBtn.y &&
+      world.y <= menuBtn.y + menuBtn.h;
+    if (inMenu) {
+      this.requestRender();
+      if (selectionChanged) this.emitUiState();
+      return 'node';
+    }
+
     const replyBtn = this.replyButtonRect(hit.rect);
     const inReply =
       world.x >= replyBtn.x &&
@@ -4187,16 +4209,6 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       this.requestRender();
       if (selectionChanged) this.emitUiState();
       return 'node';
-    }
-
-    if (hit.kind === 'text' && this.shouldShowRawButton(hit)) {
-      const rawBtn = this.rawButtonRect(hit.rect);
-      const inRaw = world.x >= rawBtn.x && world.x <= rawBtn.x + rawBtn.w && world.y >= rawBtn.y && world.y <= rawBtn.y + rawBtn.h;
-      if (inRaw) {
-        this.requestRender();
-        if (selectionChanged) this.emitUiState();
-        return 'node';
-      }
     }
 
 	    if (hit.kind === 'text' && hit.isGenerating) {
@@ -4615,19 +4627,17 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         }
       }
 
-      if (hit.kind === 'text' && this.shouldShowRawButton(hit)) {
-        const btn = this.rawButtonRect(hit.rect);
-        const inRaw = world.x >= btn.x && world.x <= btn.x + btn.w && world.y >= btn.y && world.y <= btn.y + btn.h;
-        if (inRaw) {
-          const changed = this.selectedNodeId !== hit.id || this.editingNodeId !== null;
-          this.selectedNodeId = hit.id;
-          this.editingNodeId = null;
-          this.bringNodeToFront(hit.id);
-          this.requestRender();
-          if (changed) this.emitUiState();
-          this.onRequestRaw?.(hit.id);
-          return;
-        }
+      const menuBtn = this.menuButtonRect(hit.rect);
+      const inMenu = world.x >= menuBtn.x && world.x <= menuBtn.x + menuBtn.w && world.y >= menuBtn.y && world.y <= menuBtn.y + menuBtn.h;
+      if (inMenu) {
+        const changed = this.selectedNodeId !== hit.id || this.editingNodeId !== null;
+        this.selectedNodeId = hit.id;
+        this.editingNodeId = null;
+        this.bringNodeToFront(hit.id);
+        this.requestRender();
+        if (changed) this.emitUiState();
+        this.onRequestNodeMenu?.(hit.id);
+        return;
       }
 
       const btn = this.replyButtonRect(hit.rect);
@@ -4932,26 +4942,22 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const pad = 14;
     const w = 58;
     const h = 22;
+    const gap = 8;
+
+    const menu = this.menuButtonRect(nodeRect);
+    const x = menu.x - gap - w;
+    const y = menu.y;
+    const minX = nodeRect.x + pad;
+    return { x: Math.max(minX, x), y, w, h };
+  }
+
+  private menuButtonRect(nodeRect: Rect): Rect {
+    const pad = 14;
+    const w = 28;
+    const h = 22;
     const x = nodeRect.x + nodeRect.w - pad - w;
     const y = nodeRect.y + 12;
     return { x, y, w, h };
-  }
-
-  private shouldShowRawButton(node: TextNode): boolean {
-    return node.author === 'user' ? node.apiRequest !== undefined : node.apiResponse !== undefined;
-  }
-
-  private rawButtonRect(nodeRect: Rect): Rect {
-    const pad = 14;
-    const w = 52;
-    const h = 22;
-    const gap = 8;
-
-    const reply = this.replyButtonRect(nodeRect);
-    const x = reply.x - gap - w;
-    const y = reply.y;
-    const minX = nodeRect.x + pad;
-    return { x: Math.max(minX, x), y, w, h };
   }
 
   private stopButtonRect(node: TextNode): Rect {
@@ -4961,21 +4967,21 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const gap = 8;
 
     const nodeRect = node.rect;
-    const anchor = this.shouldShowRawButton(node) ? this.rawButtonRect(nodeRect) : this.replyButtonRect(nodeRect);
+    const anchor = this.replyButtonRect(nodeRect);
     const x = anchor.x - gap - w;
     const y = anchor.y;
     const minX = nodeRect.x + pad;
     return { x: Math.max(minX, x), y, w, h };
   }
 
-  private drawRawButton(nodeRect: Rect, opts?: { active?: boolean }): void {
+  private drawMenuButton(nodeRect: Rect, opts?: { active?: boolean }): void {
     const ctx = this.ctx;
     const r = 9;
-    const rect = this.rawButtonRect(nodeRect);
+    const rect = this.menuButtonRect(nodeRect);
 
     ctx.save();
-    ctx.fillStyle = opts?.active ? 'rgba(147,197,253,0.22)' : 'rgba(0,0,0,0.22)';
-    ctx.strokeStyle = opts?.active ? 'rgba(147,197,253,0.5)' : 'rgba(255,255,255,0.14)';
+    ctx.fillStyle = opts?.active ? 'rgba(147,197,253,0.18)' : 'rgba(0,0,0,0.22)';
+    ctx.strokeStyle = opts?.active ? 'rgba(147,197,253,0.42)' : 'rgba(255,255,255,0.14)';
     ctx.lineWidth = 1;
 
     ctx.beginPath();
@@ -4995,7 +5001,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     ctx.fillStyle = 'rgba(255,255,255,0.86)';
     ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
     ctx.textBaseline = 'middle';
-    const label = 'Raw';
+    const label = '⋮';
     const m = ctx.measureText(label);
     const textX = rect.x + (rect.w - (m.width || 0)) * 0.5;
     ctx.fillText(label, textX, rect.y + rect.h * 0.5);
@@ -5165,7 +5171,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       ctx.textBaseline = 'top';
       ctx.fillText(node.title, x + 14, y + 12);
       if (node.kind === 'text' && node.isGenerating) this.drawStopButton(node);
-      if (node.kind === 'text' && this.shouldShowRawButton(node)) this.drawRawButton(node.rect, { active: isSelected });
+      this.drawMenuButton(node.rect, { active: isSelected });
       this.drawReplyButton(node.rect, { active: isSelected });
 
       ctx.fillStyle = 'rgba(255,255,255,0.55)';

@@ -361,6 +361,11 @@ body {
   cursor: pointer;
 }
 
+.treeRow__menuItem:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .treeRow__menuItem--danger {
   color: rgba(255, 120, 120, 0.92);
 }

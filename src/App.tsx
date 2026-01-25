@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { WorldEngine, type GlassBlurBackend, type WorldEngineDebug } from './engine/WorldEngine';
 import ChatComposer from './components/ChatComposer';
+import NodeHeaderMenu from './components/NodeHeaderMenu';
 import RawPayloadViewer from './components/RawPayloadViewer';
 import TextNodeEditor from './components/TextNodeEditor';
 import WorkspaceSidebar from './components/WorkspaceSidebar';
@@ -372,6 +373,7 @@ export default function App() {
     tool: 'select' as 'select' | 'draw',
   }));
   const [rawViewer, setRawViewer] = useState<RawViewerState | null>(null);
+  const [nodeMenuId, setNodeMenuId] = useState<string | null>(null);
   const [viewport, setViewport] = useState(() => ({ w: 1, h: 1 }));
   const [composerDraft, setComposerDraft] = useState('');
   const [composerDraftAttachments, setComposerDraftAttachments] = useState<ChatAttachment[]>(() => []);
@@ -577,7 +579,35 @@ export default function App() {
 
   useEffect(() => {
     setRawViewer(null);
+    setNodeMenuId(null);
   }, [activeChatId]);
+
+  const getNodeMenuButtonRect = React.useCallback((nodeId: string): { left: number; top: number; right: number; bottom: number } | null => {
+    const engine = engineRef.current;
+    const canvas = canvasRef.current;
+    if (!engine || !canvas) return null;
+    const r = engine.getNodeMenuButtonScreenRect(nodeId);
+    if (!r) return null;
+    const canvasRect = canvas.getBoundingClientRect();
+    const left = canvasRect.left + r.x;
+    const top = canvasRect.top + r.y;
+    const right = left + r.w;
+    const bottom = top + r.h;
+    return { left, top, right, bottom };
+  }, []);
+
+  const toggleRawViewerForNode = React.useCallback((nodeId: string) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const snapshot = engine.exportChatState();
+    const node =
+      snapshot.nodes.find((n): n is Extract<ChatNode, { kind: 'text' }> => n.kind === 'text' && n.id === nodeId) ?? null;
+    if (!node) return;
+    const kind: RawViewerState['kind'] = node.author === 'user' ? 'request' : 'response';
+    const payload = kind === 'request' ? node.apiRequest : node.apiResponse;
+    const title = `${kind === 'request' ? 'Raw request' : 'Raw response'} • ${node.title}`;
+    setRawViewer((prev) => (prev?.nodeId === nodeId ? null : { nodeId, title, kind, payload }));
+  }, []);
 
   useEffect(() => {
     engineReadyRef.current = engineReady;
@@ -1147,15 +1177,7 @@ export default function App() {
       setReplyContextAttachments(ctx);
       setReplySelectedAttachmentKeys(keys);
     };
-    engine.onRequestRaw = (nodeId) => {
-      const snapshot = engine.exportChatState();
-      const node = snapshot.nodes.find((n): n is Extract<ChatNode, { kind: 'text' }> => n.kind === 'text' && n.id === nodeId) ?? null;
-      if (!node) return;
-      const kind: RawViewerState['kind'] = node.author === 'user' ? 'request' : 'response';
-      const payload = kind === 'request' ? node.apiRequest : node.apiResponse;
-      const title = `${kind === 'request' ? 'Raw request' : 'Raw response'} • ${node.title}`;
-      setRawViewer((prev) => (prev?.nodeId === nodeId ? null : { nodeId, title, kind, payload }));
-    };
+    engine.onRequestNodeMenu = (nodeId) => setNodeMenuId((prev) => (prev === nodeId ? null : nodeId));
     engine.onRequestCancelGeneration = (nodeId) => cancelJob(nodeId);
     engine.onRequestPersist = () => schedulePersistSoon();
     engine.start();
@@ -1225,6 +1247,21 @@ export default function App() {
   const editorTitle = ui.editingNodeId ? engineRef.current?.getNodeTitle(ui.editingNodeId) ?? null : null;
   const editorZoom = debug?.zoom ?? engineRef.current?.camera.zoom ?? 1;
   const rawAnchor = rawViewer ? engineRef.current?.getNodeScreenRect(rawViewer.nodeId) ?? null : null;
+  const nodeMenuButtonRect = nodeMenuId ? getNodeMenuButtonRect(nodeMenuId) : null;
+  const nodeMenuRawEnabled = useMemo(() => {
+    const nodeId = nodeMenuId;
+    const engine = engineRef.current;
+    if (!nodeId || !engine) return false;
+    try {
+      const snapshot = engine.exportChatState();
+      const node =
+        snapshot.nodes.find((n): n is Extract<ChatNode, { kind: 'text' }> => n.kind === 'text' && n.id === nodeId) ?? null;
+      if (!node) return false;
+      return node.author === 'user' ? node.apiRequest !== undefined : node.apiResponse !== undefined;
+    } catch {
+      return false;
+    }
+  }, [nodeMenuId]);
 
   const switchChat = (nextChatId: string, opts?: { saveCurrent?: boolean }) => {
     if (!nextChatId) return;
@@ -1717,6 +1754,45 @@ export default function App() {
 
 	      <div className="workspace" ref={workspaceRef}>
 	        <canvas className="stage" ref={canvasRef} />
+          {nodeMenuId && nodeMenuButtonRect ? (
+            <NodeHeaderMenu
+              nodeId={nodeMenuId}
+              getButtonRect={getNodeMenuButtonRect}
+              rawEnabled={nodeMenuRawEnabled}
+              onRaw={() => toggleRawViewerForNode(nodeMenuId)}
+              onDelete={() => {
+                const engine = engineRef.current;
+                if (!engine) return;
+
+                let title = 'this node';
+                try {
+                  const snapshot = engine.exportChatState();
+                  const node = snapshot.nodes.find((n) => n.id === nodeMenuId) ?? null;
+                  if (node?.title) title = `“${node.title}”`;
+                } catch {
+                  // ignore
+                }
+
+                if (!window.confirm(`Delete ${title}?`)) return;
+
+                engine.deleteNode(nodeMenuId);
+                attachmentsGcDirtyRef.current = true;
+                schedulePersistSoon();
+
+                setRawViewer((prev) => (prev?.nodeId === nodeMenuId ? null : prev));
+                const chatId = activeChatIdRef.current;
+                const meta = ensureChatMeta(chatId);
+                if (meta.replyTo?.nodeId === nodeMenuId) {
+                  meta.replyTo = null;
+                  meta.selectedAttachmentKeys = [];
+                  setReplySelection(null);
+                  setReplyContextAttachments([]);
+                  setReplySelectedAttachmentKeys([]);
+                }
+              }}
+              onClose={() => setNodeMenuId(null)}
+            />
+          ) : null}
 	        {ui.editingNodeId ? (
 	          <TextNodeEditor
 	            nodeId={ui.editingNodeId}
