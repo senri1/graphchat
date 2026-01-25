@@ -10,6 +10,7 @@ export type OpenAIChatSettings = {
   webSearchEnabled?: boolean;
   reasoningSummary?: 'auto' | 'detailed' | 'off';
   stream?: boolean;
+  background?: boolean;
 };
 
 async function attachmentToOpenAIContent(att: any): Promise<any | null> {

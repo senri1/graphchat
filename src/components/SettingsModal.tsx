@@ -461,24 +461,33 @@ export default function SettingsModal(props: Props) {
                     </summary>
 
                     <div className="settingsDetails__body">
-                      {provider.models.map((model) => {
-                        const s = props.modelUserSettings?.[model.id];
-                        const supportsStreaming = Boolean(model.parameters?.streaming);
-                        const supportsVerbosity = typeof model.defaults?.verbosity === 'string';
-                        const supportsSummary = model.provider === 'openai' && Boolean(model.effort);
-                        const includeInComposer = typeof s?.includeInComposer === 'boolean' ? s.includeInComposer : true;
-                        const streaming =
-                          typeof s?.streaming === 'boolean'
-                            ? s.streaming
-                            : supportsStreaming
-                              ? typeof model.defaults?.streaming === 'boolean'
-                                ? model.defaults.streaming
-                                : true
-                              : false;
-                        const verbosity = (() => {
-                          const raw = typeof s?.verbosity === 'string' ? s.verbosity : String(model.defaults?.verbosity ?? 'medium');
-                          return raw === 'low' || raw === 'medium' || raw === 'high' ? raw : 'medium';
-                        })();
+	                      {provider.models.map((model) => {
+	                        const s = props.modelUserSettings?.[model.id];
+	                        const supportsStreaming = Boolean(model.parameters?.streaming);
+	                        const supportsBackground = Boolean(model.parameters?.background);
+	                        const supportsVerbosity = typeof model.defaults?.verbosity === 'string';
+	                        const supportsSummary = model.provider === 'openai' && Boolean(model.effort);
+	                        const includeInComposer = typeof s?.includeInComposer === 'boolean' ? s.includeInComposer : true;
+	                        const streaming =
+	                          typeof s?.streaming === 'boolean'
+	                            ? s.streaming
+	                            : supportsStreaming
+	                              ? typeof model.defaults?.streaming === 'boolean'
+	                                ? model.defaults.streaming
+	                                : true
+	                              : false;
+	                        const background =
+	                          typeof s?.background === 'boolean'
+	                            ? s.background
+	                            : supportsBackground
+	                              ? typeof model.defaults?.background === 'boolean'
+	                                ? model.defaults.background
+	                                : false
+	                              : false;
+	                        const verbosity = (() => {
+	                          const raw = typeof s?.verbosity === 'string' ? s.verbosity : String(model.defaults?.verbosity ?? 'medium');
+	                          return raw === 'low' || raw === 'medium' || raw === 'high' ? raw : 'medium';
+	                        })();
                         const reasoningSummary: ReasoningSummarySetting = (() => {
                           if (!supportsSummary) return 'off';
                           const raw = typeof s?.reasoningSummary === 'string' ? s.reasoningSummary : model.reasoningSummary ? 'auto' : 'off';
@@ -519,12 +528,12 @@ export default function SettingsModal(props: Props) {
                                 </div>
                               </div>
 
-                              <div className="settingsRow">
-                                <div className="settingsRow__text">
-                                  <div className="settingsRow__title">Streaming</div>
-                                  <div className="settingsRow__desc">Stream the response into the node as it arrives.</div>
-                                </div>
-                                <div className="settingsRow__actions">
+	                              <div className="settingsRow">
+	                                <div className="settingsRow__text">
+	                                  <div className="settingsRow__title">Streaming</div>
+	                                  <div className="settingsRow__desc">Stream the response into the node as it arrives.</div>
+	                                </div>
+	                                <div className="settingsRow__actions">
                                   <button
                                     className={`settingsToggle ${streaming ? 'settingsToggle--on' : ''}`}
                                     type="button"
@@ -537,15 +546,37 @@ export default function SettingsModal(props: Props) {
                                     }
                                   >
                                     {streaming ? 'On' : 'Off'}
-                                  </button>
-                                </div>
-                              </div>
+	                                  </button>
+	                                </div>
+	                              </div>
 
-                              <div className="settingsRow">
-                                <div className="settingsRow__text">
-                                  <div className="settingsRow__title">Verbosity</div>
-                                  <div className="settingsRow__desc">Controls response detail (if supported by the model).</div>
-                                </div>
+	                              <div className="settingsRow">
+	                                <div className="settingsRow__text">
+	                                  <div className="settingsRow__title">Background mode</div>
+	                                  <div className="settingsRow__desc">Run requests asynchronously and resume after refresh. Enables Stop.</div>
+	                                </div>
+	                                <div className="settingsRow__actions">
+	                                  <button
+	                                    className={`settingsToggle ${background ? 'settingsToggle--on' : ''}`}
+	                                    type="button"
+	                                    aria-pressed={background}
+	                                    disabled={!supportsBackground}
+	                                    onClick={() =>
+	                                      supportsBackground
+	                                        ? props.onUpdateModelUserSettings(model.id, { background: !background })
+	                                        : undefined
+	                                    }
+	                                  >
+	                                    {background ? 'On' : 'Off'}
+	                                  </button>
+	                                </div>
+	                              </div>
+
+	                              <div className="settingsRow">
+	                                <div className="settingsRow__text">
+	                                  <div className="settingsRow__title">Verbosity</div>
+	                                  <div className="settingsRow__desc">Controls response detail (if supported by the model).</div>
+	                                </div>
                                 <div className="settingsRow__actions">
                                   <select
                                     className="settingsSelect"

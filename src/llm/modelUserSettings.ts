@@ -5,6 +5,7 @@ export type ReasoningSummarySetting = 'auto' | 'detailed' | 'off';
 export type ModelUserSettings = {
   includeInComposer: boolean;
   streaming: boolean;
+  background: boolean;
   verbosity: TextVerbosity;
   reasoningSummary: ReasoningSummarySetting;
 };
@@ -14,6 +15,10 @@ export type ModelUserSettingsById = Record<string, ModelUserSettings>;
 export function defaultModelUserSettings(model: ModelInfo): ModelUserSettings {
   const streamingDefault =
     model.parameters.streaming && typeof model.defaults?.streaming === 'boolean' ? model.defaults.streaming : Boolean(model.parameters.streaming);
+  const backgroundDefault =
+    model.parameters.background && typeof model.defaults?.background === 'boolean'
+      ? model.defaults.background
+      : Boolean(model.parameters.background);
   const verbosityDefault: TextVerbosity =
     model.defaults?.verbosity === 'low' || model.defaults?.verbosity === 'medium' || model.defaults?.verbosity === 'high'
       ? model.defaults.verbosity
@@ -23,6 +28,7 @@ export function defaultModelUserSettings(model: ModelInfo): ModelUserSettings {
   return {
     includeInComposer: true,
     streaming: model.parameters.streaming ? streamingDefault : false,
+    background: model.parameters.background ? backgroundDefault : false,
     verbosity: verbosityDefault,
     reasoningSummary: reasoningSummaryDefault,
   };
@@ -36,6 +42,7 @@ export function normalizeModelUserSettings(model: ModelInfo, raw: unknown): Mode
     typeof obj.includeInComposer === 'boolean' ? obj.includeInComposer : defaults.includeInComposer;
 
   const streaming = typeof obj.streaming === 'boolean' ? obj.streaming : defaults.streaming;
+  const background = typeof obj.background === 'boolean' ? obj.background : defaults.background;
 
   const verbosityRaw = typeof obj.verbosity === 'string' ? obj.verbosity : defaults.verbosity;
   const verbosity: TextVerbosity =
@@ -48,6 +55,7 @@ export function normalizeModelUserSettings(model: ModelInfo, raw: unknown): Mode
   return {
     includeInComposer,
     streaming: model.parameters.streaming ? streaming : false,
+    background: model.parameters.background ? background : false,
     verbosity,
     reasoningSummary: model.effort ? reasoningSummary : 'off',
   };
@@ -61,4 +69,3 @@ export function buildModelUserSettings(models: ModelInfo[], raw: unknown): Model
   }
   return out;
 }
-

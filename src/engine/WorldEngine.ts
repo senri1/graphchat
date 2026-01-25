@@ -16,6 +16,7 @@ import type {
   CanonicalAssistantMessage,
   ChatAttachment,
   ChatAuthor,
+  ChatLlmTask,
   ChatLlmParams,
   ChatNode,
   InkPoint,
@@ -198,6 +199,7 @@ type TextNode = DemoNodeBase & {
   modelId?: string | null;
   llmParams?: ChatLlmParams;
   llmError?: string | null;
+  llmTask?: ChatLlmTask;
   apiRequest?: unknown;
   apiResponse?: unknown;
   canonicalMessage?: CanonicalAssistantMessage;
@@ -711,6 +713,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           modelId: n.modelId ?? null,
           llmParams: n.llmParams,
           llmError: n.llmError ?? null,
+          llmTask: n.llmTask,
           apiRequest: n.apiRequest,
           apiResponse: n.apiResponse,
           canonicalMessage: n.canonicalMessage,
@@ -855,17 +858,37 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           const v = Math.max(0, Math.round(raw));
           return v > 0 ? v : undefined;
         })();
-        const canonicalMessage = (() => {
-          const raw = (n as any)?.canonicalMessage;
-          if (!raw || typeof raw !== 'object') return undefined;
-          if ((raw as any).role !== 'assistant') return undefined;
-          const text = typeof (raw as any).text === 'string' ? (raw as any).text : '';
-          return text ? ({ role: 'assistant', text } as CanonicalAssistantMessage) : undefined;
-        })();
-        const node: TextNode = {
-          kind: 'text',
-          id: n.id,
-          parentId,
+	        const canonicalMessage = (() => {
+	          const raw = (n as any)?.canonicalMessage;
+	          if (!raw || typeof raw !== 'object') return undefined;
+	          if ((raw as any).role !== 'assistant') return undefined;
+	          const text = typeof (raw as any).text === 'string' ? (raw as any).text : '';
+	          return text ? ({ role: 'assistant', text } as CanonicalAssistantMessage) : undefined;
+	        })();
+	        const llmTask = (() => {
+	          const raw = (n as any)?.llmTask;
+	          if (!raw || typeof raw !== 'object') return undefined;
+	          const provider = typeof (raw as any).provider === 'string' ? (raw as any).provider : '';
+	          const kind = typeof (raw as any).kind === 'string' ? (raw as any).kind : '';
+	          if (!provider || !kind) return undefined;
+	          const taskId = typeof (raw as any).taskId === 'string' ? (raw as any).taskId : undefined;
+	          const cancelable = typeof (raw as any).cancelable === 'boolean' ? (raw as any).cancelable : undefined;
+	          const background = typeof (raw as any).background === 'boolean' ? (raw as any).background : undefined;
+	          const lastEventSeqRaw = (raw as any).lastEventSeq;
+	          const lastEventSeq = typeof lastEventSeqRaw === 'number' && Number.isFinite(lastEventSeqRaw) ? lastEventSeqRaw : undefined;
+	          return {
+	            provider,
+	            kind,
+	            ...(taskId ? { taskId } : {}),
+	            ...(cancelable !== undefined ? { cancelable } : {}),
+	            ...(background !== undefined ? { background } : {}),
+	            ...(lastEventSeq !== undefined ? { lastEventSeq } : {}),
+	          } as ChatLlmTask;
+	        })();
+	        const node: TextNode = {
+	          kind: 'text',
+	          id: n.id,
+	          parentId,
           rect: { ...n.rect },
           title: n.title,
           ...(isEditNode ? { isEditNode: true } : {}),
@@ -874,16 +897,17 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           contentHash: fingerprintText(content),
           displayHash: '',
           isGenerating: Boolean((n as any)?.isGenerating),
-          modelId: typeof (n as any)?.modelId === 'string' ? ((n as any).modelId as string) : null,
-          llmParams:
-            (n as any)?.llmParams && typeof (n as any).llmParams === 'object'
-              ? ((n as any).llmParams as ChatLlmParams)
-              : undefined,
-          llmError: typeof (n as any)?.llmError === 'string' ? ((n as any).llmError as string) : null,
-          apiRequest: (n as any)?.apiRequest,
-          apiResponse: (n as any)?.apiResponse,
-          canonicalMessage,
-          canonicalMeta: (n as any)?.canonicalMeta,
+	          modelId: typeof (n as any)?.modelId === 'string' ? ((n as any).modelId as string) : null,
+	          llmParams:
+	            (n as any)?.llmParams && typeof (n as any).llmParams === 'object'
+	              ? ((n as any).llmParams as ChatLlmParams)
+	              : undefined,
+	          llmError: typeof (n as any)?.llmError === 'string' ? ((n as any).llmError as string) : null,
+	          llmTask,
+	          apiRequest: (n as any)?.apiRequest,
+	          apiResponse: (n as any)?.apiResponse,
+	          canonicalMessage,
+	          canonicalMeta: (n as any)?.canonicalMeta,
           thinkingSummary,
           summaryExpanded: Boolean((n as any)?.summaryExpanded),
           expandedSummaryChunks,
@@ -2172,14 +2196,20 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.requestRender();
   }
 
-  setTextNodeLlmState(
-    nodeId: string,
-    patch: { isGenerating?: boolean; modelId?: string | null; llmParams?: ChatLlmParams | null; llmError?: string | null },
-  ): void {
-    const id = nodeId;
-    if (!id) return;
-    const node = this.nodes.find((n): n is TextNode => n.id === id && n.kind === 'text');
-    if (!node) return;
+	setTextNodeLlmState(
+	  nodeId: string,
+	  patch: {
+	    isGenerating?: boolean;
+	    modelId?: string | null;
+	    llmParams?: ChatLlmParams | null;
+	    llmError?: string | null;
+	    llmTask?: ChatLlmTask | null;
+	  },
+	): void {
+	  const id = nodeId;
+	  if (!id) return;
+	  const node = this.nodes.find((n): n is TextNode => n.id === id && n.kind === 'text');
+	  if (!node) return;
 
     let changed = false;
     if (typeof patch.isGenerating === 'boolean' && Boolean(node.isGenerating) !== patch.isGenerating) {
@@ -2197,15 +2227,22 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         changed = true;
       }
     }
-    if (patch.llmError !== undefined && (node.llmError ?? null) !== (patch.llmError ?? null)) {
-      node.llmError = patch.llmError ?? null;
-      changed = true;
-    }
+	  if (patch.llmError !== undefined && (node.llmError ?? null) !== (patch.llmError ?? null)) {
+	    node.llmError = patch.llmError ?? null;
+	    changed = true;
+	  }
+	  if (patch.llmTask !== undefined) {
+	    const next = patch.llmTask ?? undefined;
+	    if (node.llmTask !== next) {
+	      node.llmTask = next;
+	      changed = true;
+	    }
+	  }
 
-    if (!changed) return;
-    this.recomputeTextNodeDisplayHash(node);
-    this.requestRender();
-  }
+	  if (!changed) return;
+	  this.recomputeTextNodeDisplayHash(node);
+	  this.requestRender();
+	}
 
   setTextNodeApiPayload(nodeId: string, patch: { apiRequest?: unknown; apiResponse?: unknown }): void {
     const id = nodeId;
@@ -4211,7 +4248,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       return 'node';
     }
 
-	    if (hit.kind === 'text' && hit.isGenerating) {
+	    if (hit.kind === 'text' && this.canCancelNode(hit)) {
 	      const stopBtn = this.stopButtonRect(hit);
 	      const inStop =
 	        world.x >= stopBtn.x &&
@@ -4552,12 +4589,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const hit = this.findTopmostNodeAtWorld(world);
 
     if (hit) {
-      if (hit.kind === 'text' && hit.isGenerating) {
-        const btn = this.stopButtonRect(hit);
-        const inStop = world.x >= btn.x && world.x <= btn.x + btn.w && world.y >= btn.y && world.y <= btn.y + btn.h;
-        if (inStop) {
-          const changed = this.selectedNodeId !== hit.id || this.editingNodeId !== null;
-          this.selectedNodeId = hit.id;
+	      if (hit.kind === 'text' && this.canCancelNode(hit)) {
+	        const btn = this.stopButtonRect(hit);
+	        const inStop = world.x >= btn.x && world.x <= btn.x + btn.w && world.y >= btn.y && world.y <= btn.y + btn.h;
+	        if (inStop) {
+	          const changed = this.selectedNodeId !== hit.id || this.editingNodeId !== null;
+	          this.selectedNodeId = hit.id;
           this.editingNodeId = null;
           this.bringNodeToFront(hit.id);
           this.requestRender();
@@ -4974,6 +5011,15 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return { x: Math.max(minX, x), y, w, h };
   }
 
+  private canCancelNode(node: TextNode): boolean {
+    if (!node.isGenerating) return false;
+    const task = node.llmTask;
+    if (!task || typeof task !== 'object') return false;
+    if (!task.cancelable) return false;
+    const taskId = typeof task.taskId === 'string' ? task.taskId.trim() : '';
+    return Boolean(taskId);
+  }
+
   private drawMenuButton(nodeRect: Rect, opts?: { active?: boolean }): void {
     const ctx = this.ctx;
     const r = 9;
@@ -5170,7 +5216,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       ctx.font = '14px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
       ctx.textBaseline = 'top';
       ctx.fillText(node.title, x + 14, y + 12);
-      if (node.kind === 'text' && node.isGenerating) this.drawStopButton(node);
+	      if (node.kind === 'text' && this.canCancelNode(node)) this.drawStopButton(node);
       this.drawMenuButton(node.rect, { active: isSelected });
       this.drawReplyButton(node.rect, { active: isSelected });
 

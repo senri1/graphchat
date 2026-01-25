@@ -20,7 +20,15 @@ import {
   renameItem,
   toggleFolder,
 } from './workspace/tree';
-import { getOpenAIApiKey, sendOpenAIResponse, streamOpenAIResponse } from './services/openaiService';
+import {
+  cancelOpenAIResponse,
+  getOpenAIApiKey,
+  retrieveOpenAIResponse,
+  sendOpenAIResponse,
+  startOpenAIBackgroundResponse,
+  streamOpenAIResponse,
+  streamOpenAIResponseById,
+} from './services/openaiService';
 import type { ChatAttachment, ChatNode, ThinkingSummaryChunk } from './model/chat';
 import { buildOpenAIResponseRequest, type OpenAIChatSettings } from './llm/openai';
 import { DEFAULT_MODEL_ID, getModelInfo, listModels } from './llm/registry';
@@ -71,6 +79,9 @@ type GenerationJob = {
   llmParams: NonNullable<Extract<ChatNode, { kind: 'text' }>['llmParams']>;
   startedAt: number;
   abortController: AbortController;
+  background: boolean;
+  taskId: string | null;
+  lastEventSeq: number | null;
   fullText: string;
   thinkingSummary: ThinkingSummaryChunk[];
   lastFlushedText: string;
@@ -330,6 +341,7 @@ export default function App() {
   const composerDockRef = useRef<HTMLDivElement | null>(null);
   const engineRef = useRef<WorldEngine | null>(null);
   const generationJobsByAssistantIdRef = useRef<Map<string, GenerationJob>>(new Map());
+  const resumedLlmJobsRef = useRef(false);
   const [debug, setDebug] = useState<WorldEngineDebug | null>(null);
   const [engineReady, setEngineReady] = useState(false);
   const engineReadyRef = useRef(false);
@@ -891,26 +903,32 @@ export default function App() {
     const rawText = result.finalText ?? job.fullText;
     const finalText =
       rawText.trim() || !result.error ? rawText : result.cancelled ? 'Canceled.' : `Error: ${result.error}`;
-    const patch: Partial<Extract<ChatNode, { kind: 'text' }>> = {
-      content: finalText,
-      isGenerating: false,
-      modelId: job.modelId,
-      llmError: result.error,
-      thinkingSummary: undefined,
-    };
+	    const patch: Partial<Extract<ChatNode, { kind: 'text' }>> = {
+	      content: finalText,
+	      isGenerating: false,
+	      modelId: job.modelId,
+	      llmError: result.error,
+	      llmTask: undefined,
+	      thinkingSummary: undefined,
+	    };
     if (result.apiResponse !== undefined) patch.apiResponse = result.apiResponse;
     if (result.apiResponseKey !== undefined) patch.apiResponseKey = result.apiResponseKey;
     if (result.canonicalMessage !== undefined) patch.canonicalMessage = result.canonicalMessage as any;
     if (result.canonicalMeta !== undefined) patch.canonicalMeta = result.canonicalMeta as any;
     updateStoredTextNode(job.chatId, job.assistantNodeId, patch);
 
-    if (activeChatIdRef.current === job.chatId) {
-      const engine = engineRef.current;
-      engine?.setTextNodeLlmState(job.assistantNodeId, { isGenerating: false, modelId: job.modelId, llmError: result.error });
-      if (result.canonicalMessage !== undefined || result.canonicalMeta !== undefined) {
-        engine?.setTextNodeCanonical(job.assistantNodeId, {
-          canonicalMessage: result.canonicalMessage,
-          canonicalMeta: result.canonicalMeta,
+	    if (activeChatIdRef.current === job.chatId) {
+	      const engine = engineRef.current;
+	      engine?.setTextNodeLlmState(job.assistantNodeId, {
+	        isGenerating: false,
+	        modelId: job.modelId,
+	        llmError: result.error,
+	        llmTask: null,
+	      } as any);
+	      if (result.canonicalMessage !== undefined || result.canonicalMeta !== undefined) {
+	        engine?.setTextNodeCanonical(job.assistantNodeId, {
+	          canonicalMessage: result.canonicalMessage,
+	          canonicalMeta: result.canonicalMeta,
         });
       }
       engine?.setTextNodeThinkingSummary(job.assistantNodeId, undefined);
@@ -922,16 +940,41 @@ export default function App() {
     schedulePersistSoon();
   };
 
-  const cancelJob = (assistantNodeId: string) => {
-    const job = generationJobsByAssistantIdRef.current.get(assistantNodeId);
-    if (!job) return;
-    try {
-      job.abortController.abort();
-    } catch {
-      // ignore
-    }
-    finishJob(assistantNodeId, { finalText: job.fullText, error: 'Canceled', cancelled: true });
-  };
+	  const cancelJob = (assistantNodeId: string) => {
+	    const job = generationJobsByAssistantIdRef.current.get(assistantNodeId);
+	    if (!job) return;
+
+	    const chatId = job.chatId;
+	    const taskId = typeof job.taskId === 'string' ? job.taskId.trim() : '';
+	    const shouldCancelRemote = Boolean(job.background && taskId);
+	    const apiKey = shouldCancelRemote ? getOpenAIApiKey() : null;
+	    try {
+	      job.abortController.abort();
+	    } catch {
+	      // ignore
+	    }
+	    finishJob(assistantNodeId, { finalText: job.fullText, error: 'Canceled', cancelled: true });
+
+	    if (!shouldCancelRemote || !apiKey) return;
+	    void (async () => {
+	      const cancelled = await cancelOpenAIResponse({ apiKey, responseId: taskId });
+	      if (!cancelled.ok || cancelled.response === undefined) return;
+	      const storedResponse = cloneRawPayloadForDisplay(cancelled.response);
+	      let responseKey: string | undefined = undefined;
+	      try {
+	        const key = `${chatId}/${assistantNodeId}/res`;
+	        await putPayload({ key, json: cancelled.response });
+	        responseKey = key;
+	      } catch {
+	        // ignore
+	      }
+	      updateStoredTextNode(chatId, assistantNodeId, { apiResponse: storedResponse, apiResponseKey: responseKey });
+	      if (activeChatIdRef.current === chatId) {
+	        engineRef.current?.setTextNodeApiPayload(assistantNodeId, { apiResponse: storedResponse });
+	      }
+	      schedulePersistSoon();
+	    })();
+	  };
 
   const startOpenAIGeneration = (args: {
     chatId: string;
@@ -962,21 +1005,24 @@ export default function App() {
     const settings = args.settings;
     const llmParams = { verbosity: settings.verbosity, webSearchEnabled: settings.webSearchEnabled };
 
-    const job: GenerationJob = {
-      chatId,
-      userNodeId: args.userNodeId,
-      assistantNodeId: args.assistantNodeId,
-      modelId: settings.modelId,
-      llmParams,
-      startedAt: Date.now(),
-      abortController: new AbortController(),
-      fullText: '',
-      thinkingSummary: [],
-      lastFlushedText: '',
-      lastFlushAt: 0,
-      flushTimer: null,
-      closed: false,
-    };
+	    const job: GenerationJob = {
+	      chatId,
+	      userNodeId: args.userNodeId,
+	      assistantNodeId: args.assistantNodeId,
+	      modelId: settings.modelId,
+	      llmParams,
+	      startedAt: Date.now(),
+	      abortController: new AbortController(),
+	      background: Boolean(settings.background),
+	      taskId: null,
+	      lastEventSeq: null,
+	      fullText: '',
+	      thinkingSummary: [],
+	      lastFlushedText: '',
+	      lastFlushAt: 0,
+	      flushTimer: null,
+	      closed: false,
+	    };
 
     generationJobsByAssistantIdRef.current.set(job.assistantNodeId, job);
     updateStoredTextNode(chatId, job.assistantNodeId, {
@@ -1007,14 +1053,19 @@ export default function App() {
         finishJob(job.assistantNodeId, { finalText: job.fullText, error: msg });
         return;
       }
-      if (job.closed || job.abortController.signal.aborted) return;
+	      if (job.closed || job.abortController.signal.aborted) return;
 
-      const streamingEnabled = typeof settings.stream === 'boolean' ? settings.stream : true;
-      const sentRequest = streamingEnabled ? { ...(request ?? {}), stream: true } : { ...(request ?? {}) };
-      const storedRequest = cloneRawPayloadForDisplay(sentRequest);
-      updateStoredTextNode(chatId, job.userNodeId, { apiRequest: storedRequest });
-      if (activeChatIdRef.current === chatId) {
-        engineRef.current?.setTextNodeApiPayload(job.userNodeId, { apiRequest: storedRequest });
+	      const streamingEnabled = typeof settings.stream === 'boolean' ? settings.stream : true;
+	      const backgroundEnabled = Boolean(settings.background);
+	      const sentRequest = backgroundEnabled
+	        ? { ...(request ?? {}), background: true }
+	        : streamingEnabled
+	          ? { ...(request ?? {}), stream: true }
+	          : { ...(request ?? {}) };
+	      const storedRequest = cloneRawPayloadForDisplay(sentRequest);
+	      updateStoredTextNode(chatId, job.userNodeId, { apiRequest: storedRequest });
+	      if (activeChatIdRef.current === chatId) {
+	        engineRef.current?.setTextNodeApiPayload(job.userNodeId, { apiRequest: storedRequest });
       }
       try {
         const key = `${chatId}/${job.userNodeId}/req`;
@@ -1022,61 +1073,156 @@ export default function App() {
         updateStoredTextNode(chatId, job.userNodeId, { apiRequestKey: key });
       } catch {
         // ignore
-      }
-      schedulePersistSoon();
+	      }
+	      schedulePersistSoon();
 
-      const res = streamingEnabled
-        ? await streamOpenAIResponse({
-            apiKey,
-            request,
-            signal: job.abortController.signal,
-            callbacks: {
-              onDelta: (_delta, fullText) => {
-                if (job.closed) return;
-                job.fullText = fullText;
-                scheduleJobFlush(job);
-              },
-              onEvent: (evt: any) => {
-                if (job.closed) return;
-                const t = typeof evt?.type === 'string' ? String(evt.type) : '';
-                if (t === 'response.reasoning_summary_text.delta') {
-                  const idx = typeof evt?.summary_index === 'number' ? evt.summary_index : 0;
-                  const delta = typeof evt?.delta === 'string' ? evt.delta : '';
-                  if (!delta) return;
+	      const callbacks = {
+	        onDelta: (_delta: string, fullText: string) => {
+	          if (job.closed) return;
+	          job.fullText = fullText;
+	          scheduleJobFlush(job);
+	        },
+	        onEvent: (evt: any) => {
+	          if (job.closed) return;
 
-                  const chunks = job.thinkingSummary ?? [];
-                  const existing = chunks.find((c) => c.summaryIndex === idx);
-                  const nextChunks: ThinkingSummaryChunk[] = existing
-                    ? chunks.map((c) => (c.summaryIndex === idx ? { ...c, text: c.text + delta } : c))
-                    : [...chunks, { summaryIndex: idx, text: delta, done: false }];
-                  job.thinkingSummary = nextChunks;
+	          const seq = typeof evt?.sequence_number === 'number' ? evt.sequence_number : null;
+	          if (seq != null) job.lastEventSeq = seq;
 
-                  updateStoredTextNode(chatId, job.assistantNodeId, { thinkingSummary: nextChunks });
-                  if (activeChatIdRef.current === chatId) {
-                    engineRef.current?.setTextNodeThinkingSummary(job.assistantNodeId, nextChunks);
-                  }
-                } else if (t === 'response.reasoning_summary_text.done') {
-                  const idx = typeof evt?.summary_index === 'number' ? evt.summary_index : 0;
-                  const chunks = job.thinkingSummary ?? [];
-                  if (!chunks.length) return;
-                  const nextChunks: ThinkingSummaryChunk[] = chunks.map((c) =>
-                    c.summaryIndex === idx ? { ...c, done: true } : c,
-                  );
-                  job.thinkingSummary = nextChunks;
+	          const t = typeof evt?.type === 'string' ? String(evt.type) : '';
+	          if (t === 'response.reasoning_summary_text.delta') {
+	            const idx = typeof evt?.summary_index === 'number' ? evt.summary_index : 0;
+	            const delta = typeof evt?.delta === 'string' ? evt.delta : '';
+	            if (!delta) return;
 
-                  updateStoredTextNode(chatId, job.assistantNodeId, { thinkingSummary: nextChunks });
-                  if (activeChatIdRef.current === chatId) {
-                    engineRef.current?.setTextNodeThinkingSummary(job.assistantNodeId, nextChunks);
-                  }
-                }
-              },
-            },
-          })
-        : await sendOpenAIResponse({
-            apiKey,
-            request,
-            signal: job.abortController.signal,
-          });
+	            const chunks = job.thinkingSummary ?? [];
+	            const existing = chunks.find((c) => c.summaryIndex === idx);
+	            const nextChunks: ThinkingSummaryChunk[] = existing
+	              ? chunks.map((c) => (c.summaryIndex === idx ? { ...c, text: c.text + delta } : c))
+	              : [...chunks, { summaryIndex: idx, text: delta, done: false }];
+	            job.thinkingSummary = nextChunks;
+
+	            updateStoredTextNode(chatId, job.assistantNodeId, { thinkingSummary: nextChunks });
+	            if (activeChatIdRef.current === chatId) {
+	              engineRef.current?.setTextNodeThinkingSummary(job.assistantNodeId, nextChunks);
+	            }
+	          } else if (t === 'response.reasoning_summary_text.done') {
+	            const idx = typeof evt?.summary_index === 'number' ? evt.summary_index : 0;
+	            const chunks = job.thinkingSummary ?? [];
+	            if (!chunks.length) return;
+	            const nextChunks: ThinkingSummaryChunk[] = chunks.map((c) =>
+	              c.summaryIndex === idx ? { ...c, done: true } : c,
+	            );
+	            job.thinkingSummary = nextChunks;
+
+	            updateStoredTextNode(chatId, job.assistantNodeId, { thinkingSummary: nextChunks });
+	            if (activeChatIdRef.current === chatId) {
+	              engineRef.current?.setTextNodeThinkingSummary(job.assistantNodeId, nextChunks);
+	            }
+	          }
+	        },
+	      };
+
+	      const sleepMs = (ms: number) =>
+	        new Promise<void>((resolve) => {
+	          if (job.abortController.signal.aborted) return resolve();
+	          const handle = window.setTimeout(resolve, ms);
+	          job.abortController.signal.addEventListener(
+	            'abort',
+	            () => {
+	              try {
+	                window.clearTimeout(handle);
+	              } catch {
+	                // ignore
+	              }
+	              resolve();
+	            },
+	            { once: true },
+	          );
+	        });
+
+	      const pollResponseUntilDone = async (responseId: string) => {
+	        const minDelayMs = 650;
+	        const maxDelayMs = 2500;
+	        let delayMs = minDelayMs;
+	        while (!job.closed && !job.abortController.signal.aborted) {
+	          const got = await retrieveOpenAIResponse({ apiKey, responseId, signal: job.abortController.signal });
+	          if (!got.ok) return { ok: false as const, text: job.fullText, error: got.error, cancelled: got.cancelled, response: got.response };
+
+	          const raw: any = got.response as any;
+	          const outputText = typeof raw?.output_text === 'string' ? String(raw.output_text) : '';
+	          if (outputText && outputText !== job.fullText) {
+	            job.fullText = outputText;
+	            scheduleJobFlush(job);
+	          }
+
+	          const status = typeof got.status === 'string' ? got.status : typeof raw?.status === 'string' ? String(raw.status) : '';
+	          if (status === 'completed') return { ok: true as const, text: outputText || job.fullText, response: got.response };
+	          if (status === 'failed' || status === 'cancelled' || status === 'incomplete') {
+	            const error = status === 'cancelled' ? 'Canceled' : status === 'incomplete' ? 'Incomplete' : 'Failed';
+	            return { ok: false as const, text: outputText || job.fullText, error, response: got.response };
+	          }
+
+	          await sleepMs(delayMs);
+	          delayMs = Math.min(maxDelayMs, Math.round(delayMs * 1.25));
+	        }
+
+	        return { ok: false as const, text: job.fullText, error: 'Canceled', cancelled: true };
+	      };
+
+	      const res = backgroundEnabled
+	        ? await (async () => {
+	            const started = await startOpenAIBackgroundResponse({
+	              apiKey,
+	              request: sentRequest,
+	              signal: job.abortController.signal,
+	            });
+
+	            if (!started.ok) return { ok: false as const, text: job.fullText, error: started.error, cancelled: started.cancelled, response: started.response };
+	            if (job.closed || job.abortController.signal.aborted) return { ok: false as const, text: job.fullText, error: 'Canceled', cancelled: true };
+
+	            job.taskId = started.responseId;
+
+	            updateStoredTextNode(chatId, job.assistantNodeId, {
+	              ...(job.background
+	                ? { llmTask: { provider: 'openai', kind: 'response', taskId: started.responseId, background: true, cancelable: true } }
+	                : {}),
+	            } as any);
+	            if (activeChatIdRef.current === chatId) {
+	              engineRef.current?.setTextNodeLlmState(job.assistantNodeId, {
+	                llmTask: { provider: 'openai', kind: 'response', taskId: started.responseId, background: true, cancelable: true },
+	              } as any);
+	            }
+	            schedulePersistSoon();
+
+	            if (started.status === 'completed') {
+	              const raw: any = started.response as any;
+	              const text = typeof raw?.output_text === 'string' ? String(raw.output_text) : job.fullText;
+	              return { ok: true as const, text, response: started.response };
+	            }
+
+	            return streamingEnabled
+	              ? await streamOpenAIResponseById({
+	                  apiKey,
+	                  responseId: started.responseId,
+	                  startingAfter: job.lastEventSeq ?? undefined,
+	                  initialText: job.fullText,
+	                  signal: job.abortController.signal,
+	                  callbacks,
+	                })
+	              : await pollResponseUntilDone(started.responseId);
+	          })()
+	        : streamingEnabled
+	          ? await streamOpenAIResponse({
+	              apiKey,
+	              request,
+	              signal: job.abortController.signal,
+	              callbacks,
+	            })
+	          : await sendOpenAIResponse({
+	              apiKey,
+	              request,
+	              signal: job.abortController.signal,
+	            });
 
       if (!generationJobsByAssistantIdRef.current.has(job.assistantNodeId)) return;
       const usedWebSearch =
@@ -1133,12 +1279,284 @@ export default function App() {
         });
       }
     })();
-  };
+	  };
 
-  useEffect(() => {
-    const el = composerDockRef.current;
-    if (!el) return;
-    const rootEl = document.documentElement;
+	  const resumeOpenAIBackgroundJob = (args: {
+	    chatId: string;
+	    assistantNode: Extract<ChatNode, { kind: 'text' }>;
+	    responseId: string;
+	  }) => {
+	    const chatId = args.chatId;
+	    const assistantNodeId = args.assistantNode.id;
+	    const responseId = args.responseId;
+	    if (!chatId || !assistantNodeId || !responseId) return;
+	    if (generationJobsByAssistantIdRef.current.has(assistantNodeId)) return;
+
+	    const apiKey = getOpenAIApiKey();
+	    if (!apiKey) {
+	      const msg = 'OpenAI API key missing. Set VITE_OPENAI_API_KEY in graphchatv1/.env.local';
+	      updateStoredTextNode(chatId, assistantNodeId, { isGenerating: false, llmError: msg, llmTask: undefined });
+	      if (activeChatIdRef.current === chatId) {
+	        engineRef.current?.setTextNodeLlmState(assistantNodeId, { isGenerating: false, llmError: msg, llmTask: null } as any);
+	        engineRef.current?.setTextNodeContent(assistantNodeId, msg, { streaming: false });
+	      }
+	      schedulePersistSoon();
+	      return;
+	    }
+
+	    const modelId = typeof args.assistantNode.modelId === 'string' && args.assistantNode.modelId ? args.assistantNode.modelId : DEFAULT_MODEL_ID;
+	    const llmParams =
+	      args.assistantNode.llmParams && typeof args.assistantNode.llmParams === 'object'
+	        ? (args.assistantNode.llmParams as NonNullable<Extract<ChatNode, { kind: 'text' }>['llmParams']>)
+	        : {};
+	    const userNodeId = typeof args.assistantNode.parentId === 'string' ? args.assistantNode.parentId : '';
+
+	    const modelSettings = modelUserSettingsRef.current[modelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
+	    const streamingEnabled = typeof modelSettings?.streaming === 'boolean' ? modelSettings.streaming : true;
+
+	    const resetStreamState = streamingEnabled;
+
+	    const job: GenerationJob = {
+	      chatId,
+	      userNodeId,
+	      assistantNodeId,
+	      modelId,
+	      llmParams,
+	      startedAt: Date.now(),
+	      abortController: new AbortController(),
+	      background: true,
+	      taskId: responseId,
+	      lastEventSeq: null,
+	      fullText: resetStreamState ? '' : String(args.assistantNode.content ?? ''),
+	      thinkingSummary: resetStreamState ? [] : (Array.isArray(args.assistantNode.thinkingSummary) ? args.assistantNode.thinkingSummary : []),
+	      lastFlushedText: '',
+	      lastFlushAt: 0,
+	      flushTimer: null,
+	      closed: false,
+	    };
+
+	    generationJobsByAssistantIdRef.current.set(assistantNodeId, job);
+	    updateStoredTextNode(chatId, assistantNodeId, {
+	      ...(resetStreamState ? { content: '', thinkingSummary: undefined } : {}),
+	      isGenerating: true,
+	      modelId,
+	      llmParams,
+	      llmError: null,
+	      llmTask: { provider: 'openai', kind: 'response', taskId: responseId, background: true, cancelable: true },
+	    } as any);
+
+	    if (activeChatIdRef.current === chatId) {
+	      engineRef.current?.setTextNodeLlmState(assistantNodeId, {
+	        isGenerating: true,
+	        modelId,
+	        llmParams,
+	        llmError: null,
+	        llmTask: { provider: 'openai', kind: 'response', taskId: responseId, background: true, cancelable: true },
+	      } as any);
+	      if (resetStreamState) {
+	        engineRef.current?.setTextNodeThinkingSummary(assistantNodeId, undefined);
+	        engineRef.current?.setTextNodeContent(assistantNodeId, '', { streaming: true });
+	      }
+	    }
+	    schedulePersistSoon();
+
+	    void (async () => {
+	      const callbacks = {
+	        onDelta: (_delta: string, fullText: string) => {
+	          if (job.closed) return;
+	          job.fullText = fullText;
+	          scheduleJobFlush(job);
+	        },
+	        onEvent: (evt: any) => {
+	          if (job.closed) return;
+	          const t = typeof evt?.type === 'string' ? String(evt.type) : '';
+	          if (t === 'response.reasoning_summary_text.delta') {
+	            const idx = typeof evt?.summary_index === 'number' ? evt.summary_index : 0;
+	            const delta = typeof evt?.delta === 'string' ? evt.delta : '';
+	            if (!delta) return;
+
+	            const chunks = job.thinkingSummary ?? [];
+	            const existing = chunks.find((c) => c.summaryIndex === idx);
+	            const nextChunks: ThinkingSummaryChunk[] = existing
+	              ? chunks.map((c) => (c.summaryIndex === idx ? { ...c, text: c.text + delta } : c))
+	              : [...chunks, { summaryIndex: idx, text: delta, done: false }];
+	            job.thinkingSummary = nextChunks;
+	            updateStoredTextNode(chatId, assistantNodeId, { thinkingSummary: nextChunks });
+	            if (activeChatIdRef.current === chatId) {
+	              engineRef.current?.setTextNodeThinkingSummary(assistantNodeId, nextChunks);
+	            }
+	          } else if (t === 'response.reasoning_summary_text.done') {
+	            const idx = typeof evt?.summary_index === 'number' ? evt.summary_index : 0;
+	            const chunks = job.thinkingSummary ?? [];
+	            if (!chunks.length) return;
+	            const nextChunks: ThinkingSummaryChunk[] = chunks.map((c) =>
+	              c.summaryIndex === idx ? { ...c, done: true } : c,
+	            );
+	            job.thinkingSummary = nextChunks;
+	            updateStoredTextNode(chatId, assistantNodeId, { thinkingSummary: nextChunks });
+	            if (activeChatIdRef.current === chatId) {
+	              engineRef.current?.setTextNodeThinkingSummary(assistantNodeId, nextChunks);
+	            }
+	          }
+	        },
+	      };
+
+	      const sleepMs = (ms: number) =>
+	        new Promise<void>((resolve) => {
+	          if (job.abortController.signal.aborted) return resolve();
+	          const handle = window.setTimeout(resolve, ms);
+	          job.abortController.signal.addEventListener(
+	            'abort',
+	            () => {
+	              try {
+	                window.clearTimeout(handle);
+	              } catch {
+	                // ignore
+	              }
+	              resolve();
+	            },
+	            { once: true },
+	          );
+	        });
+
+	      const pollResponseUntilDone = async () => {
+	        const minDelayMs = 650;
+	        const maxDelayMs = 2500;
+	        let delayMs = minDelayMs;
+	        while (!job.closed && !job.abortController.signal.aborted) {
+	          const got = await retrieveOpenAIResponse({ apiKey, responseId, signal: job.abortController.signal });
+	          if (!got.ok) return { ok: false as const, text: job.fullText, error: got.error, cancelled: got.cancelled, response: got.response };
+
+	          const raw: any = got.response as any;
+	          const outputText = typeof raw?.output_text === 'string' ? String(raw.output_text) : '';
+	          if (outputText && outputText !== job.fullText) {
+	            job.fullText = outputText;
+	            scheduleJobFlush(job);
+	          }
+
+	          const status = typeof got.status === 'string' ? got.status : typeof raw?.status === 'string' ? String(raw.status) : '';
+	          if (status === 'completed') return { ok: true as const, text: outputText || job.fullText, response: got.response };
+	          if (status === 'failed' || status === 'cancelled' || status === 'incomplete') {
+	            const error = status === 'cancelled' ? 'Canceled' : status === 'incomplete' ? 'Incomplete' : 'Failed';
+	            return { ok: false as const, text: outputText || job.fullText, error, response: got.response };
+	          }
+
+	          await sleepMs(delayMs);
+	          delayMs = Math.min(maxDelayMs, Math.round(delayMs * 1.25));
+	        }
+
+	        return { ok: false as const, text: job.fullText, error: 'Canceled', cancelled: true };
+	      };
+
+	      const res = streamingEnabled
+	        ? await streamOpenAIResponseById({
+	            apiKey,
+	            responseId,
+	            startingAfter: undefined,
+	            initialText: job.fullText,
+	            signal: job.abortController.signal,
+	            callbacks,
+	          })
+	        : await pollResponseUntilDone();
+
+	      if (!generationJobsByAssistantIdRef.current.has(assistantNodeId)) return;
+
+	      const usedWebSearch = Boolean(job.llmParams?.webSearchEnabled);
+	      const effort = getModelInfo(modelId)?.effort;
+	      const verbosity = job.llmParams?.verbosity;
+	      const baseCanonicalMeta = extractCanonicalMeta(res.response, { usedWebSearch, effort, verbosity });
+	      const canonicalMessage = extractCanonicalMessage(
+	        res.response,
+	        typeof res.text === 'string' ? res.text : job.fullText,
+	      );
+	      const finalText = (typeof res.text === 'string' ? res.text : '') || canonicalMessage?.text || job.fullText || '';
+	      const streamed = job.thinkingSummary ?? [];
+	      const canonicalMeta = (() => {
+	        const hasBlocks = Array.isArray((baseCanonicalMeta as any)?.reasoningSummaryBlocks) && (baseCanonicalMeta as any).reasoningSummaryBlocks.length > 0;
+	        if (hasBlocks || streamed.length === 0) return baseCanonicalMeta;
+	        return {
+	          ...(baseCanonicalMeta ?? {}),
+	          reasoningSummaryBlocks: [...streamed]
+	            .sort((a, b) => (a.summaryIndex ?? 0) - (b.summaryIndex ?? 0))
+	            .map((c) => ({ type: 'summary_text' as const, text: c?.text ?? '' })),
+	        };
+	      })();
+	      const storedResponse = res.response !== undefined ? cloneRawPayloadForDisplay(res.response) : undefined;
+	      let responseKey: string | undefined = undefined;
+	      if (res.response !== undefined) {
+	        try {
+	          const key = `${chatId}/${assistantNodeId}/res`;
+	          await putPayload({ key, json: res.response });
+	          responseKey = key;
+	        } catch {
+	          // ignore
+	        }
+	      }
+
+	      if (res.ok) {
+	        finishJob(assistantNodeId, {
+	          finalText,
+	          error: null,
+	          apiResponse: storedResponse,
+	          apiResponseKey: responseKey,
+	          canonicalMessage,
+	          canonicalMeta,
+	        });
+	      } else {
+	        const error = res.cancelled ? 'Canceled' : res.error;
+	        finishJob(assistantNodeId, {
+	          finalText,
+	          error,
+	          cancelled: res.cancelled,
+	          apiResponse: storedResponse,
+	          apiResponseKey: responseKey,
+	          canonicalMessage,
+	          canonicalMeta,
+	        });
+	      }
+	    })();
+	  };
+
+	  const resumeInProgressLlmJobs = () => {
+	    if (resumedLlmJobsRef.current) return;
+	    resumedLlmJobsRef.current = true;
+
+	    for (const [chatId, state] of chatStatesRef.current.entries()) {
+	      const nodes = Array.isArray(state?.nodes) ? state.nodes : [];
+	      for (const n of nodes) {
+	        if (!n || n.kind !== 'text') continue;
+	        const textNode = n as Extract<ChatNode, { kind: 'text' }>;
+	        if (!textNode.isGenerating || textNode.author !== 'assistant') continue;
+
+	        const task = textNode.llmTask;
+	        const taskProvider = typeof task?.provider === 'string' ? task.provider : '';
+	        const taskKind = typeof task?.kind === 'string' ? task.kind : '';
+	        const taskId = typeof task?.taskId === 'string' ? task.taskId.trim() : '';
+
+	        if (taskProvider === 'openai' && taskKind === 'response' && taskId) {
+	          resumeOpenAIBackgroundJob({ chatId, assistantNode: textNode, responseId: taskId });
+	          continue;
+	        }
+
+	        const modelId = typeof textNode.modelId === 'string' && textNode.modelId ? textNode.modelId : DEFAULT_MODEL_ID;
+	        const info = getModelInfo(modelId);
+	        if (info?.provider !== 'openai') continue;
+
+	        const msg = 'Interrupted (refresh). Enable Background mode to resume long-running requests.';
+	        updateStoredTextNode(chatId, textNode.id, { isGenerating: false, llmError: msg, llmTask: undefined });
+	        if (activeChatIdRef.current === chatId) {
+	          engineRef.current?.setTextNodeLlmState(textNode.id, { isGenerating: false, llmError: msg, llmTask: null } as any);
+	        }
+	      }
+	    }
+
+	    schedulePersistSoon();
+	  };
+
+	  useEffect(() => {
+	    const el = composerDockRef.current;
+	    if (!el) return;
+	    const rootEl = document.documentElement;
     const update = () => {
       const height = el.getBoundingClientRect().height;
       rootEl.style.setProperty('--composer-dock-height', `${Math.ceil(height)}px`);
@@ -1410,11 +1828,12 @@ export default function App() {
       setReplyContextAttachments([]);
     }
     setComposerModelId(meta.llm.modelId || DEFAULT_MODEL_ID);
-    setComposerWebSearch(Boolean(meta.llm.webSearchEnabled));
+	    setComposerWebSearch(Boolean(meta.llm.webSearchEnabled));
 
-    applyVisualSettings(resolvedActive);
-    schedulePersistSoon();
-  };
+	    applyVisualSettings(resolvedActive);
+	    resumeInProgressLlmJobs();
+	    schedulePersistSoon();
+	  };
 
   useEffect(() => {
     void (async () => {
@@ -2006,13 +2425,14 @@ export default function App() {
 	            chatStatesRef.current.set(activeChatId, snapshot);
 	            const modelSettings =
 	              modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
-	            const settings: OpenAIChatSettings = {
-	              modelId: selectedModelId,
-	              verbosity: modelSettings?.verbosity,
-              webSearchEnabled: composerWebSearch,
-              reasoningSummary: modelSettings?.reasoningSummary,
-              stream: modelSettings?.streaming,
-            };
+		            const settings: OpenAIChatSettings = {
+		              modelId: selectedModelId,
+		              verbosity: modelSettings?.verbosity,
+	              webSearchEnabled: composerWebSearch,
+	              reasoningSummary: modelSettings?.reasoningSummary,
+	              stream: modelSettings?.streaming,
+	              background: modelSettings?.background,
+	            };
             startOpenAIGeneration({
               chatId: activeChatId,
               userNodeId: res.userNodeId,

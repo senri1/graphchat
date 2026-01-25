@@ -11,10 +11,12 @@ export interface ModelInfo {
   parameters: {
     webSearch: boolean;
     streaming: boolean;
+    background: boolean;
   };
   defaults?: {
     webSearch: boolean;
     streaming: boolean;
+    background: boolean;
     verbosity?: TextVerbosity;
   };
   effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
@@ -29,8 +31,8 @@ const REGISTRY: ModelInfo[] = [
     apiModel: 'gpt-5.2',
     label: 'OpenAI - GPT-5.2 (xHigh)',
     shortLabel: 'GPT 5.2 xHigh',
-    parameters: { webSearch: true, streaming: true },
-    defaults: { webSearch: true, streaming: true, verbosity: 'medium' },
+    parameters: { webSearch: true, streaming: true, background: true },
+    defaults: { webSearch: true, streaming: true, background: true, verbosity: 'medium' },
     effort: 'xhigh',
     reasoningSummary: true,
   },
@@ -40,8 +42,8 @@ const REGISTRY: ModelInfo[] = [
     apiModel: 'gpt-5.2',
     label: 'OpenAI - GPT-5.2 (High)',
     shortLabel: 'GPT 5.2 High ',
-    parameters: { webSearch: true, streaming: true },
-    defaults: { webSearch: true, streaming: true, verbosity: 'medium' },
+    parameters: { webSearch: true, streaming: true, background: true },
+    defaults: { webSearch: true, streaming: true, background: true, verbosity: 'medium' },
     effort: 'high',
     reasoningSummary: true,
   },
@@ -51,8 +53,8 @@ const REGISTRY: ModelInfo[] = [
     apiModel: 'gpt-5.2',
     label: 'OpenAI - GPT-5.2 (Medium)',
     shortLabel: 'GPT 5.2 Medium',
-    parameters: { webSearch: true, streaming: true },
-    defaults: { webSearch: true, streaming: true, verbosity: 'medium' },
+    parameters: { webSearch: true, streaming: true, background: true },
+    defaults: { webSearch: true, streaming: true, background: true, verbosity: 'medium' },
     effort: 'medium',
     reasoningSummary: true,
   },
@@ -62,8 +64,8 @@ const REGISTRY: ModelInfo[] = [
     apiModel: 'gpt-5.2',
     label: 'OpenAI - GPT-5.2 (Low)',
     shortLabel: 'GPT 5.2 Low',
-    parameters: { webSearch: true, streaming: true },
-    defaults: { webSearch: true, streaming: true, verbosity: 'medium' },
+    parameters: { webSearch: true, streaming: true, background: true },
+    defaults: { webSearch: true, streaming: true, background: false, verbosity: 'medium' },
     effort: 'low',
     reasoningSummary: true,
   },
@@ -73,8 +75,8 @@ const REGISTRY: ModelInfo[] = [
     apiModel: 'gpt-5.2',
     label: 'OpenAI - GPT-5.2 (None)',
     shortLabel: 'GPT 5.2 None',
-    parameters: { webSearch: true, streaming: true },
-    defaults: { webSearch: true, streaming: true, verbosity: 'medium' },
+    parameters: { webSearch: true, streaming: true, background: true },
+    defaults: { webSearch: true, streaming: true, background: false, verbosity: 'medium' },
     effort: 'none',
     reasoningSummary: true,
   },
@@ -89,4 +91,3 @@ export function listModels(): ModelInfo[] {
 }
 
 export const DEFAULT_MODEL_ID: string = 'gpt-5.2-high';
-

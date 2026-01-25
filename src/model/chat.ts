@@ -14,6 +14,15 @@ export type CanonicalAssistantMessage = {
 
 export type ThinkingSummaryChunk = { summaryIndex: number; text: string; done: boolean };
 
+export type ChatLlmTask = {
+  provider: string;
+  kind: string;
+  taskId?: string;
+  cancelable?: boolean;
+  background?: boolean;
+  lastEventSeq?: number;
+};
+
 export type ChatAttachment =
   | {
       kind: 'image';
@@ -60,6 +69,7 @@ export type ChatNode =
       modelId?: string | null;
       llmParams?: ChatLlmParams;
       llmError?: string | null;
+      llmTask?: ChatLlmTask;
       apiRequest?: unknown;
       apiRequestKey?: string;
       apiResponse?: unknown;
