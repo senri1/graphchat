@@ -1058,7 +1058,7 @@ export default function App() {
 	      const streamingEnabled = typeof settings.stream === 'boolean' ? settings.stream : true;
 	      const backgroundEnabled = Boolean(settings.background);
 	      const sentRequest = backgroundEnabled
-	        ? { ...(request ?? {}), background: true }
+	        ? { ...(request ?? {}), background: true, ...(streamingEnabled ? { stream: true } : {}) }
 	        : streamingEnabled
 	          ? { ...(request ?? {}), stream: true }
 	          : { ...(request ?? {}) };
@@ -1082,14 +1082,28 @@ export default function App() {
 	          job.fullText = fullText;
 	          scheduleJobFlush(job);
 	        },
-	        onEvent: (evt: any) => {
-	          if (job.closed) return;
+		        onEvent: (evt: any) => {
+		          if (job.closed) return;
 
-	          const seq = typeof evt?.sequence_number === 'number' ? evt.sequence_number : null;
-	          if (seq != null) job.lastEventSeq = seq;
+		          const seq = typeof evt?.sequence_number === 'number' ? evt.sequence_number : null;
+		          if (seq != null) job.lastEventSeq = seq;
+		          if (seq != null && job.background && typeof job.taskId === 'string' && job.taskId) {
+		            const llmTask = {
+		              provider: 'openai',
+		              kind: 'response',
+		              taskId: job.taskId,
+		              background: true,
+		              cancelable: true,
+		              lastEventSeq: seq,
+		            };
+		            updateStoredTextNode(chatId, job.assistantNodeId, { llmTask } as any);
+		            if (activeChatIdRef.current === chatId) {
+		              engineRef.current?.setTextNodeLlmState(job.assistantNodeId, { llmTask } as any);
+		            }
+		          }
 
-	          const t = typeof evt?.type === 'string' ? String(evt.type) : '';
-	          if (t === 'response.reasoning_summary_text.delta') {
+		          const t = typeof evt?.type === 'string' ? String(evt.type) : '';
+		          if (t === 'response.reasoning_summary_text.delta') {
 	            const idx = typeof evt?.summary_index === 'number' ? evt.summary_index : 0;
 	            const delta = typeof evt?.delta === 'string' ? evt.delta : '';
 	            if (!delta) return;
@@ -1148,12 +1162,12 @@ export default function App() {
 	          const got = await retrieveOpenAIResponse({ apiKey, responseId, signal: job.abortController.signal });
 	          if (!got.ok) return { ok: false as const, text: job.fullText, error: got.error, cancelled: got.cancelled, response: got.response };
 
-	          const raw: any = got.response as any;
-	          const outputText = typeof raw?.output_text === 'string' ? String(raw.output_text) : '';
-	          if (outputText && outputText !== job.fullText) {
-	            job.fullText = outputText;
-	            scheduleJobFlush(job);
-	          }
+		          const raw: any = got.response as any;
+		          const outputText = typeof raw?.output_text === 'string' ? String(raw.output_text) : '';
+		          if (outputText && outputText !== job.fullText && outputText.length >= job.fullText.length) {
+		            job.fullText = outputText;
+		            scheduleJobFlush(job);
+		          }
 
 	          const status = typeof got.status === 'string' ? got.status : typeof raw?.status === 'string' ? String(raw.status) : '';
 	          if (status === 'completed') return { ok: true as const, text: outputText || job.fullText, response: got.response };
@@ -1169,51 +1183,228 @@ export default function App() {
 	        return { ok: false as const, text: job.fullText, error: 'Canceled', cancelled: true };
 	      };
 
-	      const res = backgroundEnabled
-	        ? await (async () => {
-	            const started = await startOpenAIBackgroundResponse({
-	              apiKey,
-	              request: sentRequest,
-	              signal: job.abortController.signal,
-	            });
+		      const res = backgroundEnabled
+		        ? await (async () => {
+		            const startNonStreamingBackground = async () => {
+		              const started = await startOpenAIBackgroundResponse({
+		                apiKey,
+		                request: sentRequest,
+		                signal: job.abortController.signal,
+		              });
 
-	            if (!started.ok) return { ok: false as const, text: job.fullText, error: started.error, cancelled: started.cancelled, response: started.response };
-	            if (job.closed || job.abortController.signal.aborted) return { ok: false as const, text: job.fullText, error: 'Canceled', cancelled: true };
+		              if (!started.ok)
+		                return {
+		                  ok: false as const,
+		                  text: job.fullText,
+		                  error: started.error,
+		                  cancelled: started.cancelled,
+		                  response: started.response,
+		                };
+		              if (job.closed || job.abortController.signal.aborted)
+		                return { ok: false as const, text: job.fullText, error: 'Canceled', cancelled: true };
 
-	            job.taskId = started.responseId;
+		              job.taskId = started.responseId;
 
-	            updateStoredTextNode(chatId, job.assistantNodeId, {
-	              ...(job.background
-	                ? { llmTask: { provider: 'openai', kind: 'response', taskId: started.responseId, background: true, cancelable: true } }
-	                : {}),
-	            } as any);
-	            if (activeChatIdRef.current === chatId) {
-	              engineRef.current?.setTextNodeLlmState(job.assistantNodeId, {
-	                llmTask: { provider: 'openai', kind: 'response', taskId: started.responseId, background: true, cancelable: true },
-	              } as any);
-	            }
-	            schedulePersistSoon();
+		              updateStoredTextNode(chatId, job.assistantNodeId, {
+		                llmTask: { provider: 'openai', kind: 'response', taskId: started.responseId, background: true, cancelable: true },
+		              } as any);
+		              if (activeChatIdRef.current === chatId) {
+		                engineRef.current?.setTextNodeLlmState(job.assistantNodeId, {
+		                  llmTask: { provider: 'openai', kind: 'response', taskId: started.responseId, background: true, cancelable: true },
+		                } as any);
+		              }
+		              schedulePersistSoon();
 
-	            if (started.status === 'completed') {
-	              const raw: any = started.response as any;
-	              const text = typeof raw?.output_text === 'string' ? String(raw.output_text) : job.fullText;
-	              return { ok: true as const, text, response: started.response };
-	            }
+		              if (started.status === 'completed') {
+		                const raw: any = started.response as any;
+		                const text = typeof raw?.output_text === 'string' ? String(raw.output_text) : job.fullText;
+		                return { ok: true as const, text, response: started.response };
+		              }
 
-	            return streamingEnabled
-	              ? await streamOpenAIResponseById({
-	                  apiKey,
-	                  responseId: started.responseId,
-	                  startingAfter: job.lastEventSeq ?? undefined,
-	                  initialText: job.fullText,
-	                  signal: job.abortController.signal,
-	                  callbacks,
-	                })
-	              : await pollResponseUntilDone(started.responseId);
-	          })()
-	        : streamingEnabled
-	          ? await streamOpenAIResponse({
-	              apiKey,
+		              return await pollResponseUntilDone(started.responseId);
+		            };
+
+			            if (!streamingEnabled) return await startNonStreamingBackground();
+
+			            let responseIdResolve!: (id: string) => void;
+			            let responseIdSettled = false;
+			            const responseIdPromise = new Promise<string>((resolve) => {
+			              responseIdResolve = resolve;
+			            });
+
+		            const backgroundCallbacks = {
+		              ...callbacks,
+		              onEvent: (evt: any) => {
+		                if (job.closed) return;
+		                const t = typeof evt?.type === 'string' ? String(evt.type) : '';
+		                if (t === 'response.created') {
+		                  const responseId = typeof evt?.response?.id === 'string' ? String(evt.response.id) : '';
+		                  if (responseId && !responseIdSettled) {
+		                    responseIdSettled = true;
+		                    responseIdResolve(responseId);
+		                  }
+		                  if (responseId && !job.taskId) {
+		                    job.taskId = responseId;
+
+		                    updateStoredTextNode(chatId, job.assistantNodeId, {
+		                      llmTask: {
+		                        provider: 'openai',
+		                        kind: 'response',
+		                        taskId: responseId,
+		                        background: true,
+		                        cancelable: true,
+		                      },
+		                    } as any);
+		                    if (activeChatIdRef.current === chatId) {
+		                      engineRef.current?.setTextNodeLlmState(job.assistantNodeId, {
+		                        llmTask: {
+		                          provider: 'openai',
+		                          kind: 'response',
+		                          taskId: responseId,
+		                          background: true,
+		                          cancelable: true,
+		                        },
+		                      } as any);
+		                    }
+		                    schedulePersistSoon();
+		                  }
+		                }
+
+		                callbacks.onEvent?.(evt);
+		              },
+		            };
+
+		            let streamAbort: AbortController | null = new AbortController();
+		            if (job.abortController.signal.aborted) {
+		              try {
+		                streamAbort.abort();
+		              } catch {
+		                // ignore
+		              }
+		            } else {
+		              job.abortController.signal.addEventListener(
+		                'abort',
+		                () => {
+		                  try {
+		                    streamAbort?.abort();
+		                  } catch {
+		                    // ignore
+		                  }
+		                },
+		                { once: true },
+		              );
+		            }
+
+			            const streamPromise = streamOpenAIResponse({
+			              apiKey,
+			              request: sentRequest,
+			              signal: streamAbort.signal,
+			              callbacks: backgroundCallbacks,
+			            });
+
+			            const first = await Promise.race([
+			              responseIdPromise.then((id) => ({ kind: 'id' as const, id })),
+			              streamPromise.then((result) => ({ kind: 'result' as const, result })),
+			            ]);
+
+			            if (first.kind === 'result') {
+			              if (streamAbort) {
+			                try {
+			                  streamAbort.abort();
+			                } catch {
+			                  // ignore
+			                }
+			              }
+			              streamAbort = null;
+			              return first.result as any;
+			            }
+
+			            const responseId = first.id;
+			            let activeStreamAbort: AbortController | null = streamAbort;
+
+			            const startStreamById = (startingAfter?: number) => {
+			              const nextAbort = new AbortController();
+			              activeStreamAbort = nextAbort;
+			              if (job.abortController.signal.aborted) {
+			                try {
+			                  nextAbort.abort();
+			                } catch {
+			                  // ignore
+			                }
+			              } else {
+			                job.abortController.signal.addEventListener(
+			                  'abort',
+			                  () => {
+			                    try {
+			                      nextAbort.abort();
+			                    } catch {
+			                      // ignore
+			                    }
+			                  },
+			                  { once: true },
+			                );
+			              }
+
+			              return streamOpenAIResponseById({
+			                apiKey,
+			                responseId,
+			                startingAfter,
+			                initialText: job.fullText,
+			                signal: nextAbort.signal,
+			                callbacks,
+			              });
+			            };
+
+			            let pollDone = false;
+			            const polledPromise = (async () => {
+			              const res = await pollResponseUntilDone(responseId);
+			              pollDone = true;
+			              return res;
+			            })();
+
+			            void (async () => {
+			              let attempts = 0;
+			              let currentPromise: Promise<any> = streamPromise;
+			              while (!pollDone && !job.closed && !job.abortController.signal.aborted) {
+			                const r: any = await currentPromise;
+			                if (pollDone || job.closed || job.abortController.signal.aborted) return;
+			                if (r?.cancelled) return;
+			                const status = typeof r?.response?.status === 'string' ? String(r.response.status) : '';
+			                const terminal = status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'incomplete';
+			                if (r?.ok && terminal) return;
+
+			                if (attempts >= 2) return;
+			                attempts += 1;
+			                const startingAfter = typeof job.lastEventSeq === 'number' && Number.isFinite(job.lastEventSeq) ? job.lastEventSeq : undefined;
+			                await sleepMs(250 * attempts);
+			                currentPromise = startStreamById(startingAfter);
+			              }
+			            })();
+
+			            if (job.closed || job.abortController.signal.aborted) {
+			              if (activeStreamAbort) {
+			                try {
+			                  activeStreamAbort.abort();
+			                } catch {
+			                  // ignore
+			                }
+			              }
+			              return { ok: false as const, text: job.fullText, error: 'Canceled', cancelled: true };
+			            }
+
+			            const polled = await polledPromise;
+			            if (activeStreamAbort) {
+			              try {
+			                activeStreamAbort.abort();
+			              } catch {
+			                // ignore
+			              }
+			            }
+			            return polled;
+		          })()
+		        : streamingEnabled
+		          ? await streamOpenAIResponse({
+		              apiKey,
 	              request,
 	              signal: job.abortController.signal,
 	              callbacks,
@@ -1305,32 +1496,36 @@ export default function App() {
 	    }
 
 	    const modelId = typeof args.assistantNode.modelId === 'string' && args.assistantNode.modelId ? args.assistantNode.modelId : DEFAULT_MODEL_ID;
-	    const llmParams =
-	      args.assistantNode.llmParams && typeof args.assistantNode.llmParams === 'object'
-	        ? (args.assistantNode.llmParams as NonNullable<Extract<ChatNode, { kind: 'text' }>['llmParams']>)
-	        : {};
-	    const userNodeId = typeof args.assistantNode.parentId === 'string' ? args.assistantNode.parentId : '';
+		    const llmParams =
+		      args.assistantNode.llmParams && typeof args.assistantNode.llmParams === 'object'
+		        ? (args.assistantNode.llmParams as NonNullable<Extract<ChatNode, { kind: 'text' }>['llmParams']>)
+		        : {};
+		    const userNodeId = typeof args.assistantNode.parentId === 'string' ? args.assistantNode.parentId : '';
 
-	    const modelSettings = modelUserSettingsRef.current[modelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
-	    const streamingEnabled = typeof modelSettings?.streaming === 'boolean' ? modelSettings.streaming : true;
+		    const modelSettings = modelUserSettingsRef.current[modelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
+		    const streamingEnabled = typeof modelSettings?.streaming === 'boolean' ? modelSettings.streaming : true;
+		    const resetStreamState = false;
+		    const storedLastEventSeq = (() => {
+		      const raw = (args.assistantNode.llmTask as any)?.lastEventSeq;
+		      const n = Number(raw);
+		      return Number.isFinite(n) ? n : null;
+		    })();
 
-	    const resetStreamState = streamingEnabled;
-
-	    const job: GenerationJob = {
-	      chatId,
-	      userNodeId,
-	      assistantNodeId,
-	      modelId,
-	      llmParams,
-	      startedAt: Date.now(),
-	      abortController: new AbortController(),
-	      background: true,
-	      taskId: responseId,
-	      lastEventSeq: null,
-	      fullText: resetStreamState ? '' : String(args.assistantNode.content ?? ''),
-	      thinkingSummary: resetStreamState ? [] : (Array.isArray(args.assistantNode.thinkingSummary) ? args.assistantNode.thinkingSummary : []),
-	      lastFlushedText: '',
-	      lastFlushAt: 0,
+		    const job: GenerationJob = {
+		      chatId,
+		      userNodeId,
+		      assistantNodeId,
+		      modelId,
+		      llmParams,
+		      startedAt: Date.now(),
+		      abortController: new AbortController(),
+		      background: true,
+		      taskId: responseId,
+		      lastEventSeq: storedLastEventSeq,
+		      fullText: resetStreamState ? '' : String(args.assistantNode.content ?? ''),
+		      thinkingSummary: resetStreamState ? [] : (Array.isArray(args.assistantNode.thinkingSummary) ? args.assistantNode.thinkingSummary : []),
+		      lastFlushedText: '',
+		      lastFlushAt: 0,
 	      flushTimer: null,
 	      closed: false,
 	    };
@@ -1361,18 +1556,34 @@ export default function App() {
 	    schedulePersistSoon();
 
 	    void (async () => {
-	      const callbacks = {
-	        onDelta: (_delta: string, fullText: string) => {
-	          if (job.closed) return;
-	          job.fullText = fullText;
-	          scheduleJobFlush(job);
-	        },
-	        onEvent: (evt: any) => {
-	          if (job.closed) return;
-	          const t = typeof evt?.type === 'string' ? String(evt.type) : '';
-	          if (t === 'response.reasoning_summary_text.delta') {
-	            const idx = typeof evt?.summary_index === 'number' ? evt.summary_index : 0;
-	            const delta = typeof evt?.delta === 'string' ? evt.delta : '';
+		      const callbacks = {
+		        onDelta: (_delta: string, fullText: string) => {
+		          if (job.closed) return;
+		          job.fullText = fullText;
+		          scheduleJobFlush(job);
+		        },
+			        onEvent: (evt: any) => {
+			          if (job.closed) return;
+			          const seq = typeof evt?.sequence_number === 'number' ? evt.sequence_number : null;
+			          if (seq != null) job.lastEventSeq = seq;
+			          if (seq != null && typeof job.taskId === 'string' && job.taskId) {
+			            const llmTask = {
+			              provider: 'openai',
+			              kind: 'response',
+			              taskId: job.taskId,
+			              background: true,
+			              cancelable: true,
+			              lastEventSeq: seq,
+			            };
+			            updateStoredTextNode(chatId, assistantNodeId, { llmTask } as any);
+			            if (activeChatIdRef.current === chatId) {
+			              engineRef.current?.setTextNodeLlmState(assistantNodeId, { llmTask } as any);
+			            }
+			          }
+			          const t = typeof evt?.type === 'string' ? String(evt.type) : '';
+			          if (t === 'response.reasoning_summary_text.delta') {
+		            const idx = typeof evt?.summary_index === 'number' ? evt.summary_index : 0;
+		            const delta = typeof evt?.delta === 'string' ? evt.delta : '';
 	            if (!delta) return;
 
 	            const chunks = job.thinkingSummary ?? [];
@@ -1427,12 +1638,12 @@ export default function App() {
 	          const got = await retrieveOpenAIResponse({ apiKey, responseId, signal: job.abortController.signal });
 	          if (!got.ok) return { ok: false as const, text: job.fullText, error: got.error, cancelled: got.cancelled, response: got.response };
 
-	          const raw: any = got.response as any;
-	          const outputText = typeof raw?.output_text === 'string' ? String(raw.output_text) : '';
-	          if (outputText && outputText !== job.fullText) {
-	            job.fullText = outputText;
-	            scheduleJobFlush(job);
-	          }
+		          const raw: any = got.response as any;
+		          const outputText = typeof raw?.output_text === 'string' ? String(raw.output_text) : '';
+		          if (outputText && outputText !== job.fullText && outputText.length >= job.fullText.length) {
+		            job.fullText = outputText;
+		            scheduleJobFlush(job);
+		          }
 
 	          const status = typeof got.status === 'string' ? got.status : typeof raw?.status === 'string' ? String(raw.status) : '';
 	          if (status === 'completed') return { ok: true as const, text: outputText || job.fullText, response: got.response };
@@ -1445,21 +1656,54 @@ export default function App() {
 	          delayMs = Math.min(maxDelayMs, Math.round(delayMs * 1.25));
 	        }
 
-	        return { ok: false as const, text: job.fullText, error: 'Canceled', cancelled: true };
-	      };
+		        return { ok: false as const, text: job.fullText, error: 'Canceled', cancelled: true };
+		      };
 
-	      const res = streamingEnabled
-	        ? await streamOpenAIResponseById({
-	            apiKey,
-	            responseId,
-	            startingAfter: undefined,
-	            initialText: job.fullText,
-	            signal: job.abortController.signal,
-	            callbacks,
-	          })
-	        : await pollResponseUntilDone();
+		      let streamAbort: AbortController | null = null;
+		      if (streamingEnabled) {
+		        streamAbort = new AbortController();
+		        if (job.abortController.signal.aborted) {
+		          try {
+		            streamAbort.abort();
+		          } catch {
+		            // ignore
+		          }
+		        } else {
+		          job.abortController.signal.addEventListener(
+		            'abort',
+		            () => {
+		              try {
+		                streamAbort?.abort();
+		              } catch {
+		                // ignore
+		              }
+		            },
+		            { once: true },
+		          );
+		        }
 
-	      if (!generationJobsByAssistantIdRef.current.has(assistantNodeId)) return;
+		        void streamOpenAIResponseById({
+		          apiKey,
+		          responseId,
+		          startingAfter: job.lastEventSeq ?? undefined,
+		          initialText: job.fullText,
+		          signal: streamAbort.signal,
+		          callbacks,
+		        }).catch(() => {
+		          // ignore; poll loop below is responsible for completion
+		        });
+		      }
+
+		      const res = await pollResponseUntilDone();
+		      if (streamAbort) {
+		        try {
+		          streamAbort.abort();
+		        } catch {
+		          // ignore
+		        }
+		      }
+
+		      if (!generationJobsByAssistantIdRef.current.has(assistantNodeId)) return;
 
 	      const usedWebSearch = Boolean(job.llmParams?.webSearchEnabled);
 	      const effort = getModelInfo(modelId)?.effort;
