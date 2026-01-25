@@ -88,7 +88,7 @@ const TEXT_NODE_HEADER_H_PX = 50;
 // Spawn + streaming auto-grow bounds (manual resizing can exceed these).
 const TEXT_NODE_SPAWN_MIN_W_PX = 260;
 const TEXT_NODE_SPAWN_MAX_W_PX = 640;
-const TEXT_NODE_SPAWN_MIN_H_PX = 110;
+const TEXT_NODE_SPAWN_MIN_H_PX = 120;
 const TEXT_NODE_SPAWN_MAX_H_PX = 420;
 
 type ReasoningSummaryBlock = { type: 'summary_text'; text: string };
@@ -3325,7 +3325,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
             this.textLod2HtmlCache = { nodeId: node.id, displayHash: node.displayHash, html: nextHtml };
             return nextHtml;
           })();
-    const interactive = target.mode === 'select' && this.textSelectNodeId !== node.id && !node.isGenerating;
+    const isHovered = this.hoverTextNodeId === node.id;
+    const interactive =
+      target.mode === 'select' && this.textSelectNodeId !== node.id && (!node.isGenerating || isHovered);
     const desiredScrollTop = this.getTextNodeScrollY(node);
     lod2.show({
       nodeId: node.id,
