@@ -7,6 +7,7 @@ type Props = {
   title: string | null;
   initialValue: string;
   anchorRect: Rect | null;
+  getScreenRect?: () => Rect | null;
   viewport: { w: number; h: number };
   zoom: number;
   baseFontSizePx: number;
@@ -19,11 +20,12 @@ type Props = {
 type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
 
 export default function TextNodeEditor(props: Props) {
-  const { nodeId, title, initialValue, anchorRect, viewport, zoom, baseFontSizePx, onResize, onResizeEnd, onCommit, onCancel } = props;
+  const { nodeId, title, initialValue, anchorRect, getScreenRect, viewport, zoom, baseFontSizePx, onResize, onResizeEnd, onCommit, onCancel } = props;
   const [draft, setDraft] = useState(() => initialValue ?? '');
   const [previewEnabled, setPreviewEnabled] = useState(true);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const anchorRectRef = useRef<Rect | null>(anchorRect ?? null);
   const committedRef = useRef(false);
   const draftRef = useRef(draft);
   const onCommitRef = useRef(onCommit);
@@ -37,6 +39,7 @@ export default function TextNodeEditor(props: Props) {
     startRect: Rect;
     startZoom: number;
   } | null>(null);
+  const getScreenRectRef = useRef<Props['getScreenRect']>(getScreenRect);
 
   const [liveRect, setLiveRect] = useState<Rect | null>(() => anchorRect ?? null);
   const deferredDraft = useDeferredValue(draft);
@@ -59,11 +62,55 @@ export default function TextNodeEditor(props: Props) {
   useEffect(() => {
     if (resizeRef.current) return;
     setLiveRect(anchorRect ?? null);
+    anchorRectRef.current = anchorRect ?? null;
   }, [anchorRect?.x, anchorRect?.y, anchorRect?.w, anchorRect?.h, nodeId]);
+
+  useEffect(() => {
+    getScreenRectRef.current = getScreenRect;
+  }, [getScreenRect]);
 
   useEffect(() => {
     draftRef.current = draft;
   }, [draft]);
+
+  const followEnabled = typeof getScreenRect === 'function';
+
+  useEffect(() => {
+    if (!followEnabled) return;
+    let raf = 0;
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled) return;
+      raf = requestAnimationFrame(tick);
+      if (resizeRef.current) return;
+
+      const el = rootRef.current;
+      const fn = getScreenRectRef.current;
+      if (!el || !fn) return;
+      const r = fn();
+      if (!r) return;
+      anchorRectRef.current = r;
+
+      const x = Math.round(r.x);
+      const y = Math.round(r.y);
+      const w = Math.max(1, Math.round(r.w));
+      const h = Math.max(1, Math.round(r.h));
+
+      el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+      el.style.width = `${w}px`;
+      el.style.height = `${h}px`;
+    };
+
+    raf = requestAnimationFrame(tick);
+    return () => {
+      cancelled = true;
+      try {
+        cancelAnimationFrame(raf);
+      } catch {
+        // ignore
+      }
+    };
+  }, [followEnabled]);
 
   useEffect(() => {
     const onPointerDownCapture = (e: PointerEvent) => {
@@ -152,7 +199,7 @@ export default function TextNodeEditor(props: Props) {
 
   const beginResize = (corner: ResizeCorner) => (e: React.PointerEvent<HTMLElement>) => {
     if (resizeRef.current) return;
-    const startRect = liveRect ?? anchorRect;
+    const startRect = liveRect ?? anchorRectRef.current;
     if (!startRect) return;
     e.preventDefault();
     e.stopPropagation();
@@ -203,6 +250,18 @@ export default function TextNodeEditor(props: Props) {
 
   const style = useMemo<React.CSSProperties>(() => {
     if (activeAnchorRect) {
+      if (followEnabled) {
+        return {
+          left: 0,
+          top: 0,
+          width: activeAnchorRect.w,
+          height: activeAnchorRect.h,
+          transform: `translate3d(${Math.round(activeAnchorRect.x)}px, ${Math.round(activeAnchorRect.y)}px, 0)`,
+          borderRadius: `${18 * z}px`,
+          willChange: 'transform',
+        };
+      }
+
       return {
         left: activeAnchorRect.x,
         top: activeAnchorRect.y,
@@ -218,7 +277,7 @@ export default function TextNodeEditor(props: Props) {
     const w = Math.min(740, vpW - margin * 2);
     const h = Math.min(Math.round(vpH * 0.72), vpH - margin * 2);
     return { left: (vpW - w) * 0.5, top: margin, width: w, height: h };
-  }, [activeAnchorRect, viewport.h, viewport.w, z]);
+  }, [activeAnchorRect, followEnabled, viewport.h, viewport.w, z]);
 
   const previewStyle = useMemo<React.CSSProperties>(
     () => ({

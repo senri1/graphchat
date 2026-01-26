@@ -1849,6 +1849,28 @@ body {
   touch-action: auto;
 }
 
+.editor--raw {
+  background: rgba(0, 0, 0, 0.5);
+  border-color: rgba(255, 255, 255, 0.14);
+  box-shadow: 0 18px 55px rgba(0, 0, 0, 0.45);
+}
+
+.editor--raw .editor__topbar {
+  height: 42px;
+}
+
+.editor--raw .editor__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.editor--raw .editor__textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .editor__topbar {
   display: flex;
   align-items: center;

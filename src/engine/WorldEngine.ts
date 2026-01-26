@@ -404,6 +404,7 @@ export class WorldEngine {
 
   private selectedNodeId: string | null = null;
   private editingNodeId: string | null = null;
+  private rawViewerNodeId: string | null = null;
   private allowEditingAllTextNodes = false;
   private tool: Tool = 'select';
   private activeGesture: ActiveGesture | null = null;
@@ -1059,6 +1060,17 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
   setAllowEditingAllTextNodes(enabled: boolean): void {
     this.allowEditingAllTextNodes = Boolean(enabled);
+  }
+
+  setRawViewerNodeId(nodeId: string | null): void {
+    const next = typeof nodeId === 'string' ? nodeId : null;
+    if (this.rawViewerNodeId === next) return;
+    this.rawViewerNodeId = next;
+
+    // Close any text selection / menus on the node being covered.
+    if (next && this.textSelectNodeId === next) this.clearTextSelection({ suppressOverlayCallback: true });
+
+    this.requestRender();
   }
 
   setEdgeRouter(id: unknown): void {
@@ -2116,6 +2128,15 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y };
   }
 
+  getTextNodeContentScreenRect(nodeId: string): Rect | null {
+    const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === nodeId) ?? null;
+    if (!node) return null;
+    const content = this.textContentRect(node.rect);
+    const tl = this.camera.worldToScreen({ x: content.x, y: content.y });
+    const br = this.camera.worldToScreen({ x: content.x + content.w, y: content.y + content.h });
+    return { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y };
+  }
+
   getNodeMenuButtonScreenRect(nodeId: string): Rect | null {
     const node = this.nodes.find((n) => n.id === nodeId);
     if (!node) return null;
@@ -2438,6 +2459,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     if (this.selectedNodeId === id) this.selectedNodeId = null;
     if (this.editingNodeId === id) this.editingNodeId = null;
+    if (this.rawViewerNodeId === id) this.rawViewerNodeId = null;
     if (this.hoverTextNodeId === id) this.hoverTextNodeId = null;
     if (this.hoverPdfPage?.nodeId === id) this.hoverPdfPage = null;
     if (this.textLod2Target?.nodeId === id) this.textLod2Target = null;
@@ -3338,19 +3360,20 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
   private computeTextLod2Target(): { nodeId: string; mode: TextLod2Mode } | null {
     if (this.editingNodeId) return null;
+    const rawId = this.rawViewerNodeId;
 
     const g = this.activeGesture;
     if (g?.kind === 'resize') return { nodeId: g.nodeId, mode: 'resize' };
 
-    if (this.textSelectNodeId) return { nodeId: this.textSelectNodeId, mode: 'select' };
+    if (this.textSelectNodeId && this.textSelectNodeId !== rawId) return { nodeId: this.textSelectNodeId, mode: 'select' };
 
     const overlay = this.textLod2;
     if (overlay?.isMenuOpen()) {
       const nodeId = overlay.getNodeId();
-      if (nodeId) return { nodeId, mode: 'select' };
+      if (nodeId && nodeId !== rawId) return { nodeId, mode: 'select' };
     }
 
-    if (this.hoverTextNodeId) return { nodeId: this.hoverTextNodeId, mode: 'select' };
+    if (this.hoverTextNodeId && this.hoverTextNodeId !== rawId) return { nodeId: this.hoverTextNodeId, mode: 'select' };
 
     // While an assistant is streaming, pin the LOD2 overlay to the generating node so
     // the canvas doesn't flicker to the LOD0 placeholder between raster updates.
@@ -3358,12 +3381,13 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const selected = this.selectedNodeId
       ? (this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === this.selectedNodeId) ?? null)
       : null;
-    if (selected?.isGenerating && rectsIntersect(selected.rect, view)) return { nodeId: selected.id, mode: 'select' };
+    if (selected?.isGenerating && selected.id !== rawId && rectsIntersect(selected.rect, view)) return { nodeId: selected.id, mode: 'select' };
 
     for (let i = this.nodes.length - 1; i >= 0; i -= 1) {
       const n = this.nodes[i];
       if (n.kind !== 'text') continue;
       if (!n.isGenerating) continue;
+      if (n.id === rawId) continue;
       if (!rectsIntersect(n.rect, view)) continue;
       return { nodeId: n.id, mode: 'select' };
     }
@@ -3375,6 +3399,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       if (best || now > hold.expiresAt) {
         this.textResizeHold = null;
       } else {
+        if (hold.nodeId === rawId) return null;
         return { nodeId: hold.nodeId, mode: 'resize' };
       }
     }
@@ -3386,12 +3411,13 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     interactiveTarget: { nodeId: string; mode: TextLod2Mode } | null,
   ): { nodeId: string; mode: TextLod2Mode } | null {
     const editingId = this.editingNodeId;
+    const rawId = this.rawViewerNodeId;
     const view = this.worldViewportRect({ overscan: 280 });
     const selected = this.selectedNodeId
       ? (this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === this.selectedNodeId) ?? null)
       : null;
 
-    if (selected?.isGenerating && selected.id !== editingId && rectsIntersect(selected.rect, view)) {
+    if (selected?.isGenerating && selected.id !== editingId && selected.id !== rawId && rectsIntersect(selected.rect, view)) {
       if (interactiveTarget?.nodeId === selected.id) return null;
       return { nodeId: selected.id, mode: 'select' };
     }
@@ -3400,6 +3426,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       const n = this.nodes[i];
       if (n.kind !== 'text') continue;
       if (n.id === editingId) continue;
+      if (n.id === rawId) continue;
       if (!n.isGenerating) continue;
       if (!rectsIntersect(n.rect, view)) continue;
       if (interactiveTarget?.nodeId === n.id) return null;
@@ -5424,7 +5451,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         // When a text node is covered by a LOD2 DOM overlay, the overlay is responsible for the content.
         const hasLod2 =
           this.textLod2Target?.nodeId === node.id || this.textStreamLod2Target?.nodeId === node.id;
-        if (!hasLod2) {
+        const suppressContent = node.id === this.rawViewerNodeId;
+        if (!hasLod2 && !suppressContent) {
 	          const sig = this.textRasterSigForNode(node, contentRect).sig;
 	          const raster = this.getBestTextRaster(sig);
 	          if (raster) {

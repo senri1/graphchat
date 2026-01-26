@@ -648,6 +648,11 @@ export default function App() {
     setNodeMenuId(null);
   }, [activeChatId]);
 
+  useEffect(() => {
+    engineRef.current?.setRawViewerNodeId(rawViewer?.nodeId ?? null);
+    return () => engineRef.current?.setRawViewerNodeId(null);
+  }, [rawViewer?.nodeId]);
+
   const getNodeMenuButtonRect = React.useCallback((nodeId: string): { left: number; top: number; right: number; bottom: number } | null => {
     const engine = engineRef.current;
     const canvas = canvasRef.current;
@@ -2132,7 +2137,7 @@ export default function App() {
   const editorAnchor = ui.editingNodeId ? engineRef.current?.getNodeScreenRect(ui.editingNodeId) ?? null : null;
   const editorTitle = ui.editingNodeId ? engineRef.current?.getNodeTitle(ui.editingNodeId) ?? null : null;
   const editorZoom = debug?.zoom ?? engineRef.current?.camera.zoom ?? 1;
-  const rawAnchor = rawViewer ? engineRef.current?.getNodeScreenRect(rawViewer.nodeId) ?? null : null;
+  const rawAnchor = rawViewer ? engineRef.current?.getTextNodeContentScreenRect(rawViewer.nodeId) ?? null : null;
   const nodeMenuButtonRect = nodeMenuId ? getNodeMenuButtonRect(nodeMenuId) : null;
   const nodeMenuRawEnabled = useMemo(() => {
     const nodeId = nodeMenuId;
@@ -2748,6 +2753,7 @@ export default function App() {
 	            title={editorTitle}
 	            initialValue={ui.editingText}
 	            anchorRect={editorAnchor}
+              getScreenRect={() => engineRef.current?.getNodeScreenRect(ui.editingNodeId as string) ?? null}
 	            viewport={viewport}
 	            zoom={editorZoom}
 	            baseFontSizePx={nodeFontSizePx}
@@ -2767,6 +2773,7 @@ export default function App() {
             kind={rawViewer.kind}
             payload={rawViewer.payload}
             anchorRect={rawAnchor}
+            getScreenRect={() => engineRef.current?.getTextNodeContentScreenRect(rawViewer.nodeId) ?? null}
             viewport={viewport}
             zoom={editorZoom}
             onClose={() => setRawViewer(null)}

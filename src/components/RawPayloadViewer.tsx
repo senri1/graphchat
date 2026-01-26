@@ -7,6 +7,7 @@ type Props = {
   kind: 'request' | 'response';
   payload: unknown;
   anchorRect: Rect | null;
+  getScreenRect?: () => Rect | null;
   viewport: { w: number; h: number };
   zoom: number;
   onClose: () => void;
@@ -50,13 +51,18 @@ function stringifyPayload(payload: unknown): string {
 }
 
 export default function RawPayloadViewer(props: Props) {
-  const { nodeId, title, kind, payload, anchorRect, viewport, zoom, onClose } = props;
+  const { nodeId, title, kind, payload, anchorRect, getScreenRect, viewport, zoom, onClose } = props;
   const rootRef = useRef<HTMLDivElement | null>(null);
   const onCloseRef = useRef(onClose);
+  const getScreenRectRef = useRef<Props['getScreenRect']>(getScreenRect);
 
   useEffect(() => {
     onCloseRef.current = onClose;
   }, [onClose]);
+
+  useEffect(() => {
+    getScreenRectRef.current = getScreenRect;
+  }, [getScreenRect]);
 
   useEffect(() => {
     const onPointerDownCapture = (e: PointerEvent) => {
@@ -84,8 +90,23 @@ export default function RawPayloadViewer(props: Props) {
   const z = Math.max(0.001, Number.isFinite(zoom) ? zoom : 1);
   const displayTitle = title ?? (kind === 'request' ? 'Raw request' : 'Raw response');
   const text = useMemo(() => stringifyPayload(payload), [payload]);
+  const followEnabled = typeof getScreenRect === 'function';
 
   const style = useMemo<React.CSSProperties>(() => {
+    if (followEnabled) {
+      const initial = anchorRect;
+      return {
+        left: 0,
+        top: 0,
+        width: Math.max(1, Math.round(initial?.w ?? 1)),
+        height: Math.max(1, Math.round(initial?.h ?? 1)),
+        transform: initial ? `translate3d(${Math.round(initial.x)}px, ${Math.round(initial.y)}px, 0)` : undefined,
+        borderRadius: `${14 * z}px`,
+        zIndex: 40,
+        willChange: 'transform',
+      };
+    }
+
     if (anchorRect) {
       return {
         left: anchorRect.x,
@@ -103,7 +124,42 @@ export default function RawPayloadViewer(props: Props) {
     const w = Math.min(820, vpW - margin * 2);
     const h = Math.min(Math.round(vpH * 0.78), vpH - margin * 2);
     return { left: (vpW - w) * 0.5, top: margin, width: w, height: h, zIndex: 40 };
-  }, [anchorRect, viewport.h, viewport.w, z]);
+  }, [anchorRect, followEnabled, viewport.h, viewport.w, z]);
+
+  useEffect(() => {
+    if (!followEnabled) return;
+    let raf = 0;
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled) return;
+      raf = requestAnimationFrame(tick);
+
+      const el = rootRef.current;
+      const fn = getScreenRectRef.current;
+      if (!el || !fn) return;
+      const r = fn();
+      if (!r) return;
+
+      const x = Math.round(r.x);
+      const y = Math.round(r.y);
+      const w = Math.max(1, Math.round(r.w));
+      const h = Math.max(1, Math.round(r.h));
+
+      el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+      el.style.width = `${w}px`;
+      el.style.height = `${h}px`;
+    };
+
+    raf = requestAnimationFrame(tick);
+    return () => {
+      cancelled = true;
+      try {
+        cancelAnimationFrame(raf);
+      } catch {
+        // ignore
+      }
+    };
+  }, [followEnabled]);
 
   const copyDisabled = !text;
   const copy = async () => {
@@ -120,7 +176,7 @@ export default function RawPayloadViewer(props: Props) {
   return (
     <div
       ref={rootRef}
-      className="editor"
+      className="editor editor--raw"
       style={style}
       onPointerDown={(e) => e.stopPropagation()}
       onPointerMove={(e) => e.stopPropagation()}
@@ -156,4 +212,3 @@ export default function RawPayloadViewer(props: Props) {
     </div>
   );
 }
-
