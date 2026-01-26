@@ -8,6 +8,7 @@ import WorkspaceSidebar from './components/WorkspaceSidebar';
 import { Icons } from './components/Icons';
 import SettingsModal from './components/SettingsModal';
 import { createEmptyChatState, type WorldEngineChatState } from './engine/WorldEngine';
+import { DEFAULT_EDGE_ROUTER_ID, listEdgeRouters, normalizeEdgeRouterId, type EdgeRouterId } from './engine/edgeRouting';
 import {
   type WorkspaceChat,
   type WorkspaceFolder,
@@ -105,10 +106,23 @@ const DEFAULT_NODE_FONT_SIZE_PX = 14;
 const DEFAULT_SIDEBAR_FONT_FAMILY: FontFamilyKey = 'ui-sans-serif';
 const DEFAULT_SIDEBAR_FONT_SIZE_PX = 12;
 
+const DEFAULT_REPLY_ARROW_COLOR = '#93c5fd';
+const DEFAULT_REPLY_ARROW_OPACITY = 1;
+
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.min(max, n));
+}
+
+function normalizeHexColor(value: unknown, fallback: string): string {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) return fallback;
+  if (/^#[0-9a-fA-F]{6}$/.test(raw)) return raw.toLowerCase();
+  if (/^#[0-9a-fA-F]{3}$/.test(raw)) {
+    return `#${raw[1]}${raw[1]}${raw[2]}${raw[2]}${raw[3]}${raw[3]}`.toLowerCase();
+  }
+  return fallback;
 }
 
 function fileSignature(file: File): string {
@@ -355,6 +369,9 @@ export default function App() {
     };
     visual: {
       glassNodesEnabled: boolean;
+      edgeRouterId: EdgeRouterId;
+      replyArrowColor: string;
+      replyArrowOpacity: number;
       glassNodesBlurCssPxWebgl: number;
       glassNodesSaturatePctWebgl: number;
       glassNodesBlurCssPxCanvas: number;
@@ -408,6 +425,9 @@ export default function App() {
   const [glassNodesSaturatePctCanvas, setGlassNodesSaturatePctCanvas] = useState<number>(() => 140);
   const [glassNodesUnderlayAlpha, setGlassNodesUnderlayAlpha] = useState<number>(() => 0.95);
   const [glassNodesBlurBackend, setGlassNodesBlurBackend] = useState<GlassBlurBackend>(() => 'webgl');
+  const [edgeRouterId, setEdgeRouterId] = useState<EdgeRouterId>(() => DEFAULT_EDGE_ROUTER_ID);
+  const [replyArrowColor, setReplyArrowColor] = useState<string>(() => DEFAULT_REPLY_ARROW_COLOR);
+  const [replyArrowOpacity, setReplyArrowOpacity] = useState<number>(() => DEFAULT_REPLY_ARROW_OPACITY);
   const [uiGlassBlurCssPxWebgl, setUiGlassBlurCssPxWebgl] = useState<number>(() => 10);
   const [uiGlassSaturatePctWebgl, setUiGlassSaturatePctWebgl] = useState<number>(() => 140);
   const [composerFontFamily, setComposerFontFamily] = useState<FontFamilyKey>(() => DEFAULT_COMPOSER_FONT_FAMILY);
@@ -423,6 +443,9 @@ export default function App() {
   const glassNodesSaturatePctCanvasRef = useRef<number>(glassNodesSaturatePctCanvas);
   const glassNodesUnderlayAlphaRef = useRef<number>(glassNodesUnderlayAlpha);
   const glassNodesBlurBackendRef = useRef<GlassBlurBackend>(glassNodesBlurBackend);
+  const edgeRouterIdRef = useRef<EdgeRouterId>(edgeRouterId);
+  const replyArrowColorRef = useRef<string>(replyArrowColor);
+  const replyArrowOpacityRef = useRef<number>(replyArrowOpacity);
   const uiGlassBlurCssPxWebglRef = useRef<number>(uiGlassBlurCssPxWebgl);
   const uiGlassSaturatePctWebglRef = useRef<number>(uiGlassSaturatePctWebgl);
   const composerFontFamilyRef = useRef<FontFamilyKey>(composerFontFamily);
@@ -433,6 +456,10 @@ export default function App() {
   const sidebarFontSizePxRef = useRef<number>(sidebarFontSizePx);
   const backgroundLoadSeqRef = useRef(0);
   const allModels = useMemo(() => listModels(), []);
+  const edgeRouterOptions = useMemo(
+    () => listEdgeRouters().map((r) => ({ id: r.id as EdgeRouterId, label: r.label, description: r.description })),
+    [],
+  );
   const [modelUserSettings, setModelUserSettings] = useState<ModelUserSettingsById>(() => buildModelUserSettings(allModels, null));
   const modelUserSettingsRef = useRef<ModelUserSettingsById>(modelUserSettings);
   const composerModelOptions = useMemo(
@@ -513,6 +540,21 @@ export default function App() {
     allowEditingAllTextNodesRef.current = allowEditingAllTextNodes;
     engineRef.current?.setAllowEditingAllTextNodes(allowEditingAllTextNodes);
   }, [allowEditingAllTextNodes]);
+
+  useEffect(() => {
+    edgeRouterIdRef.current = edgeRouterId;
+    engineRef.current?.setEdgeRouter(edgeRouterId);
+  }, [edgeRouterId]);
+
+  useEffect(() => {
+    replyArrowColorRef.current = replyArrowColor;
+    engineRef.current?.setReplyArrowColor(replyArrowColor);
+  }, [replyArrowColor]);
+
+  useEffect(() => {
+    replyArrowOpacityRef.current = replyArrowOpacity;
+    engineRef.current?.setReplyArrowOpacity(replyArrowOpacity);
+  }, [replyArrowOpacity]);
 
   useEffect(() => {
     glassNodesEnabledRef.current = glassNodesEnabled;
@@ -660,6 +702,11 @@ export default function App() {
             llm: { modelUserSettings: modelUserSettingsRef.current as any },
             visual: {
               glassNodesEnabled: Boolean(glassNodesEnabledRef.current),
+              edgeRouterId: edgeRouterIdRef.current,
+              replyArrowColor: replyArrowColorRef.current,
+              replyArrowOpacity: Number.isFinite(replyArrowOpacityRef.current)
+                ? Math.max(0, Math.min(1, replyArrowOpacityRef.current))
+                : DEFAULT_REPLY_ARROW_OPACITY,
               glassNodesBlurCssPx:
                 glassNodesBlurBackendRef.current === 'canvas'
                   ? Math.max(0, Math.min(30, glassNodesBlurCssPxCanvasRef.current))
@@ -761,6 +808,9 @@ export default function App() {
     if (!engine) return;
 
     const meta = ensureChatMeta(chatId);
+    engine.setEdgeRouter(edgeRouterIdRef.current);
+    engine.setReplyArrowColor(replyArrowColorRef.current);
+    engine.setReplyArrowOpacity(replyArrowOpacityRef.current);
     const blurBackend = glassNodesBlurBackendRef.current === 'canvas' ? 'canvas' : 'webgl';
     const blurCssPx =
       blurBackend === 'canvas' ? glassNodesBlurCssPxCanvasRef.current : glassNodesBlurCssPxWebglRef.current;
@@ -1822,6 +1872,9 @@ export default function App() {
     const engine = new WorldEngine({ canvas });
     engine.setNodeTextFontFamily(fontFamilyCss(nodeFontFamilyRef.current));
     engine.setNodeTextFontSizePx(nodeFontSizePxRef.current);
+    engine.setEdgeRouter(edgeRouterIdRef.current);
+    engine.setReplyArrowColor(replyArrowColorRef.current);
+    engine.setReplyArrowOpacity(replyArrowOpacityRef.current);
     engine.setAllowEditingAllTextNodes(allowEditingAllTextNodesRef.current);
     engine.onDebug = setDebug;
     engine.onUiState = setUi;
@@ -2010,6 +2063,9 @@ export default function App() {
       : glassNodesSaturatePctWebglRef.current;
     glassNodesUnderlayAlphaRef.current = Number.isFinite(visual.glassNodesUnderlayAlpha) ? visual.glassNodesUnderlayAlpha : 0.95;
     glassNodesBlurBackendRef.current = visual.glassNodesBlurBackend === 'canvas' ? 'canvas' : 'webgl';
+    edgeRouterIdRef.current = visual.edgeRouterId;
+    replyArrowColorRef.current = visual.replyArrowColor;
+    replyArrowOpacityRef.current = visual.replyArrowOpacity;
     setGlassNodesEnabled(glassNodesEnabledRef.current);
     setGlassNodesBlurCssPxWebgl(glassNodesBlurCssPxWebglRef.current);
     setGlassNodesSaturatePctWebgl(glassNodesSaturatePctWebglRef.current);
@@ -2017,6 +2073,9 @@ export default function App() {
     setGlassNodesSaturatePctCanvas(glassNodesSaturatePctCanvasRef.current);
     setGlassNodesUnderlayAlpha(glassNodesUnderlayAlphaRef.current);
     setGlassNodesBlurBackend(glassNodesBlurBackendRef.current);
+    setEdgeRouterId(edgeRouterIdRef.current);
+    setReplyArrowColor(replyArrowColorRef.current);
+    setReplyArrowOpacity(replyArrowOpacityRef.current);
     setUiGlassBlurCssPxWebgl(uiGlassBlurCssPxWebglRef.current);
     setUiGlassSaturatePctWebgl(uiGlassSaturatePctWebglRef.current);
     composerFontFamilyRef.current = visual.composerFontFamily;
@@ -2047,6 +2106,9 @@ export default function App() {
       engine.setGlassNodesBlurCssPx(Number.isFinite(blurCssPx) ? Math.max(0, Math.min(30, blurCssPx)) : 10);
       engine.setGlassNodesSaturatePct(Number.isFinite(saturatePct) ? Math.max(100, Math.min(200, saturatePct)) : 140);
       engine.setGlassNodesUnderlayAlpha(glassNodesUnderlayAlphaRef.current);
+      engine.setEdgeRouter(edgeRouterIdRef.current);
+      engine.setReplyArrowColor(replyArrowColorRef.current);
+      engine.setReplyArrowOpacity(replyArrowOpacityRef.current);
       engine.setNodeTextFontFamily(fontFamilyCss(nodeFontFamilyRef.current));
       engine.setNodeTextFontSizePx(nodeFontSizePxRef.current);
       engine.cancelEditing();
@@ -2218,6 +2280,9 @@ export default function App() {
         : glassNodesSaturatePctWebgl;
       const visual = {
         glassNodesEnabled: Boolean(visualSrc?.glassNodesEnabled),
+        edgeRouterId: normalizeEdgeRouterId((visualSrc as any)?.edgeRouterId),
+        replyArrowColor: normalizeHexColor((visualSrc as any)?.replyArrowColor, DEFAULT_REPLY_ARROW_COLOR),
+        replyArrowOpacity: clampNumber((visualSrc as any)?.replyArrowOpacity, 0, 1, DEFAULT_REPLY_ARROW_OPACITY),
         glassNodesBlurCssPxWebgl,
         glassNodesSaturatePctWebgl,
         glassNodesBlurCssPxCanvas,
@@ -2872,6 +2937,32 @@ export default function App() {
             setSidebarFontSizePx(Math.round(clampNumber(raw, 8, 24, DEFAULT_SIDEBAR_FONT_SIZE_PX)));
             schedulePersistSoon();
           }}
+          edgeRouterId={edgeRouterId}
+          edgeRouterOptions={edgeRouterOptions}
+          onChangeEdgeRouterId={(raw) => {
+            const next = normalizeEdgeRouterId(raw);
+            edgeRouterIdRef.current = next;
+            setEdgeRouterId(next);
+            engineRef.current?.setEdgeRouter(next);
+            schedulePersistSoon();
+          }}
+          replyArrowColor={replyArrowColor}
+          onChangeReplyArrowColor={(raw) => {
+            const next = normalizeHexColor(raw, replyArrowColorRef.current);
+            replyArrowColorRef.current = next;
+            setReplyArrowColor(next);
+            engineRef.current?.setReplyArrowColor(next);
+            schedulePersistSoon();
+          }}
+          replyArrowOpacityPct={replyArrowOpacity * 100}
+          onChangeReplyArrowOpacityPct={(raw) => {
+            const pct = Number.isFinite(raw) ? Math.max(0, Math.min(100, raw)) : DEFAULT_REPLY_ARROW_OPACITY * 100;
+            const next = pct / 100;
+            replyArrowOpacityRef.current = next;
+            setReplyArrowOpacity(next);
+            engineRef.current?.setReplyArrowOpacity(next);
+            schedulePersistSoon();
+          }}
           glassNodesEnabled={glassNodesEnabled}
           onToggleGlassNodes={() => {
             const next = !glassNodesEnabledRef.current;
@@ -3043,6 +3134,14 @@ export default function App() {
             setUiGlassBlurCssPxWebgl(10);
             setUiGlassSaturatePctWebgl(140);
 
+            edgeRouterIdRef.current = DEFAULT_EDGE_ROUTER_ID;
+            setEdgeRouterId(DEFAULT_EDGE_ROUTER_ID);
+
+            replyArrowColorRef.current = DEFAULT_REPLY_ARROW_COLOR;
+            replyArrowOpacityRef.current = DEFAULT_REPLY_ARROW_OPACITY;
+            setReplyArrowColor(DEFAULT_REPLY_ARROW_COLOR);
+            setReplyArrowOpacity(DEFAULT_REPLY_ARROW_OPACITY);
+
             composerFontFamilyRef.current = DEFAULT_COMPOSER_FONT_FAMILY;
             composerFontSizePxRef.current = DEFAULT_COMPOSER_FONT_SIZE_PX;
             nodeFontFamilyRef.current = DEFAULT_NODE_FONT_FAMILY;
@@ -3076,6 +3175,9 @@ export default function App() {
               engine.setGlassNodesSaturatePct(140);
               engine.setGlassNodesUnderlayAlpha(0.95);
               engine.setGlassNodesBlurBackend('webgl');
+              engine.setEdgeRouter(DEFAULT_EDGE_ROUTER_ID);
+              engine.setReplyArrowColor(DEFAULT_REPLY_ARROW_COLOR);
+              engine.setReplyArrowOpacity(DEFAULT_REPLY_ARROW_OPACITY);
               engine.setNodeTextFontFamily(fontFamilyCss(DEFAULT_NODE_FONT_FAMILY));
               engine.setNodeTextFontSizePx(DEFAULT_NODE_FONT_SIZE_PX);
               setUi(engine.getUiState());

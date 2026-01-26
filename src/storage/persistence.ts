@@ -15,6 +15,9 @@ export type PersistedWorkspaceSnapshot = {
   visual?: {
     glassNodesEnabled: boolean;
     glassNodesUnderlayAlpha: number;
+    edgeRouterId?: string;
+    replyArrowColor?: string;
+    replyArrowOpacity?: number;
     glassNodesBlurCssPx?: number;
     glassNodesSaturatePct?: number;
     glassNodesBlurCssPxWebgl?: number;

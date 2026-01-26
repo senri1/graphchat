@@ -8,6 +8,7 @@ import { normalizeMathDelimitersFromCopyTex } from '../markdown/mathDelimiters';
 import { TextLod2Overlay, type HighlightRect, type TextLod2Action, type TextLod2Mode } from './TextLod2Overlay';
 import { PdfTextLod2Overlay, type HighlightRect as PdfHighlightRect } from './PdfTextLod2Overlay';
 import { WebGLPreblur } from './WebGLPreblur';
+import { DEFAULT_EDGE_ROUTER_ID, getEdgeRouter, normalizeEdgeRouterId, type EdgeRoute, type EdgeRouterId } from './edgeRouting';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import type { PDFPageProxy, PageViewport } from 'pdfjs-dist';
 import { loadPdfDocument } from './pdf/pdfjs';
@@ -363,6 +364,9 @@ export class WorldEngine {
   private glassSaturatePct = 140;
   private glassUnderlayAlpha = 0.95;
   private glassBlurBackend: GlassBlurBackend = 'webgl';
+  private edgeRouterId: EdgeRouterId = DEFAULT_EDGE_ROUTER_ID;
+  private replyArrowColor = '#93c5fd';
+  private replyArrowOpacity = 1;
   private webglPreblur: WebGLPreblur | null = null;
   private webglPreblurDisabled = false;
 
@@ -1038,6 +1042,37 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
   setAllowEditingAllTextNodes(enabled: boolean): void {
     this.allowEditingAllTextNodes = Boolean(enabled);
+  }
+
+  setEdgeRouter(id: unknown): void {
+    const next = normalizeEdgeRouterId(id);
+    if (this.edgeRouterId === next) return;
+    this.edgeRouterId = next;
+    this.requestRender();
+  }
+
+  setReplyArrowColor(color: string): void {
+    const raw = typeof color === 'string' ? color.trim() : '';
+    if (!raw) return;
+    let next = '';
+    if (/^#[0-9a-fA-F]{6}$/.test(raw)) {
+      next = raw.toLowerCase();
+    } else if (/^#[0-9a-fA-F]{3}$/.test(raw)) {
+      next = `#${raw[1]}${raw[1]}${raw[2]}${raw[2]}${raw[3]}${raw[3]}`.toLowerCase();
+    } else {
+      return;
+    }
+    if (this.replyArrowColor === next) return;
+    this.replyArrowColor = next;
+    this.requestRender();
+  }
+
+  setReplyArrowOpacity(opacity: number): void {
+    const raw = Number(opacity);
+    const next = clamp(Number.isFinite(raw) ? raw : 1, 0, 1);
+    if (Math.abs(next - this.replyArrowOpacity) < 0.001) return;
+    this.replyArrowOpacity = next;
+    this.requestRender();
   }
 
   setGlassNodesEnabled(enabled: boolean): void {
@@ -5135,10 +5170,48 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const byId = new Map<string, WorldNode>();
     for (const n of this.nodes) byId.set(n.id, n);
 
+    const router = getEdgeRouter(this.edgeRouterId);
+
     ctx.save();
     ctx.lineWidth = 2 / z;
-    ctx.strokeStyle = 'rgba(147,197,253,0.35)';
-    ctx.fillStyle = 'rgba(147,197,253,0.35)';
+    ctx.strokeStyle = this.replyArrowColor;
+    ctx.fillStyle = this.replyArrowColor;
+    ctx.globalAlpha = this.replyArrowOpacity;
+
+    const polylineEndDir = (pts: Vec2[]): Vec2 | null => {
+      for (let i = pts.length - 1; i >= 1; i--) {
+        const a = pts[i - 1]!;
+        const b = pts[i]!;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        if (Math.hypot(dx, dy) > 0.001) return { x: dx, y: dy };
+      }
+      return null;
+    };
+
+    const drawRoute = (route: EdgeRoute): { end: Vec2; endDir: Vec2 } | null => {
+      if (route.kind === 'polyline') {
+        const pts = route.points;
+        if (pts.length < 2) return null;
+        const endDir = polylineEndDir(pts);
+        if (!endDir) return null;
+        const end = pts[pts.length - 1]!;
+
+        ctx.beginPath();
+        ctx.moveTo(pts[0]!.x, pts[0]!.y);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i]!.x, pts[i]!.y);
+        ctx.stroke();
+        return { end, endDir };
+      }
+
+      const endDir: Vec2 = { x: route.p3.x - route.c2.x, y: route.p3.y - route.c2.y };
+      if (Math.hypot(endDir.x, endDir.y) <= 0.001) return null;
+      ctx.beginPath();
+      ctx.moveTo(route.p0.x, route.p0.y);
+      ctx.bezierCurveTo(route.c1.x, route.c1.y, route.c2.x, route.c2.y, route.p3.x, route.p3.y);
+      ctx.stroke();
+      return { end: route.p3, endDir };
+    };
 
     for (const child of this.nodes) {
       const pid = child.parentId;
@@ -5148,18 +5221,19 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
       if (!rectsIntersect(parent.rect, view) && !rectsIntersect(child.rect, view)) continue;
 
-      const startX = parent.rect.x + parent.rect.w * 0.5;
-      const startY = parent.rect.y + parent.rect.h;
-      const endX = child.rect.x + child.rect.w * 0.5;
-      const endY = child.rect.y;
+      const route = router.route({
+        parent: { id: parent.id, rect: parent.rect },
+        child: { id: child.id, rect: child.rect },
+      });
+      if (!route) continue;
 
-      ctx.beginPath();
-      ctx.moveTo(startX, startY);
-      ctx.lineTo(endX, endY);
-      ctx.stroke();
+      const drawn = drawRoute(route);
+      if (!drawn) continue;
+      const endX = drawn.end.x;
+      const endY = drawn.end.y;
 
-      const dx = endX - startX;
-      const dy = endY - startY;
+      const dx = drawn.endDir.x;
+      const dy = drawn.endDir.y;
       const len = Math.hypot(dx, dy);
       if (len < 0.001) continue;
       const ux = dx / len;

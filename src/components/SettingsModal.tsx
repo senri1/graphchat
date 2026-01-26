@@ -34,6 +34,15 @@ type Props = {
   sidebarFontSizePx: number;
   onChangeSidebarFontSizePx: (next: number) => void;
 
+  edgeRouterId: string;
+  edgeRouterOptions: Array<{ id: string; label: string; description: string }>;
+  onChangeEdgeRouterId: (next: string) => void;
+
+  replyArrowColor: string;
+  onChangeReplyArrowColor: (next: string) => void;
+  replyArrowOpacityPct: number;
+  onChangeReplyArrowOpacityPct: (next: number) => void;
+
   glassNodesEnabled: boolean;
   onToggleGlassNodes: () => void;
   glassBlurBackend: 'webgl' | 'canvas';
@@ -64,6 +73,11 @@ type Props = {
 export default function SettingsModal(props: Props) {
   const open = props.open;
   const onClose = props.onClose;
+
+  const edgeRouterDesc = useMemo(() => {
+    const desc = props.edgeRouterOptions?.find((r) => r.id === props.edgeRouterId)?.description ?? '';
+    return desc || 'Choose how reply arrows route between nodes.';
+  }, [props.edgeRouterId, props.edgeRouterOptions]);
 
   const providers = useMemo(() => {
     const byProvider = new Map<string, ModelInfo[]>();
@@ -303,6 +317,64 @@ export default function SettingsModal(props: Props) {
                     </div>
                   </div>
                 </details>
+
+                <div className="settingsCard">
+                  <div className="settingsRow">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Arrow routing</div>
+                      <div className="settingsRow__desc">{edgeRouterDesc}</div>
+                    </div>
+                    <div className="settingsRow__actions">
+                      <select
+                        className="settingsSelect"
+                        value={props.edgeRouterId}
+                        onChange={(e) => props.onChangeEdgeRouterId(e.currentTarget.value)}
+                        aria-label="Arrow routing"
+                      >
+                        {(props.edgeRouterOptions ?? []).map((opt) => (
+                          <option key={opt.id} value={opt.id}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="settingsRow">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Arrow color</div>
+                      <div className="settingsRow__desc">Adjust the color of reply arrows between nodes.</div>
+                    </div>
+                    <div className="settingsRow__actions">
+                      <div className="settingsColorPicker">
+                        <input
+                          className="settingsColorInput"
+                          type="color"
+                          value={props.replyArrowColor}
+                          onChange={(e) => props.onChangeReplyArrowColor(e.currentTarget.value)}
+                          aria-label="Reply arrow color"
+                        />
+                        <span className="settingsColorHex">{String(props.replyArrowColor || '').toUpperCase()}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="settingsSlider">
+                    <div className="settingsSlider__labelRow">
+                      <span>Arrow opacity</span>
+                      <span>{Math.round(props.replyArrowOpacityPct)}%</span>
+                    </div>
+                    <input
+                      className="settingsSlider__range"
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={Math.round(props.replyArrowOpacityPct)}
+                      onChange={(e) => props.onChangeReplyArrowOpacityPct(Number(e.currentTarget.value))}
+                    />
+                  </div>
+                </div>
 
                 <div className="settingsCard">
                   <div className="settingsRow">
