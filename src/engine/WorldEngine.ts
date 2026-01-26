@@ -5171,6 +5171,14 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     for (const n of this.nodes) byId.set(n.id, n);
 
     const router = getEdgeRouter(this.edgeRouterId);
+    const arrowHeadLen = 12 / z;
+    const arrowHalfW = 6 / z;
+    const routeStyle = {
+      arrowHeadLength: arrowHeadLen,
+      controlPointMin: 40 / z,
+      controlPointMax: 200 / z,
+      straightAlignThreshold: 4 / z,
+    };
 
     ctx.save();
     ctx.lineWidth = 2 / z;
@@ -5224,6 +5232,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       const route = router.route({
         parent: { id: parent.id, rect: parent.rect },
         child: { id: child.id, rect: child.rect },
+        style: routeStyle,
       });
       if (!route) continue;
 
@@ -5239,17 +5248,18 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       const ux = dx / len;
       const uy = dy / len;
 
-      const headLen = 12 / z;
-      const halfW = 6 / z;
-      const baseX = endX - ux * headLen;
-      const baseY = endY - uy * headLen;
       const px = -uy;
       const py = ux;
+      const baseAnchor = route.arrow?.anchor === 'base';
+      const baseX = baseAnchor ? endX : endX - ux * arrowHeadLen;
+      const baseY = baseAnchor ? endY : endY - uy * arrowHeadLen;
+      const tipX = baseAnchor ? endX + ux * arrowHeadLen : endX;
+      const tipY = baseAnchor ? endY + uy * arrowHeadLen : endY;
 
       ctx.beginPath();
-      ctx.moveTo(endX, endY);
-      ctx.lineTo(baseX + px * halfW, baseY + py * halfW);
-      ctx.lineTo(baseX - px * halfW, baseY - py * halfW);
+      ctx.moveTo(tipX, tipY);
+      ctx.lineTo(baseX + px * arrowHalfW, baseY + py * arrowHalfW);
+      ctx.lineTo(baseX - px * arrowHalfW, baseY - py * arrowHalfW);
       ctx.closePath();
       ctx.fill();
     }

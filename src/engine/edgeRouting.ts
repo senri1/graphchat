@@ -2,6 +2,7 @@ import { clamp } from './math';
 import type { Rect, Vec2 } from './types';
 
 type AnchorSide = 'top' | 'right' | 'bottom' | 'left';
+type ArrowAnchor = 'tip' | 'base';
 
 type Anchor = {
   side: AnchorSide;
@@ -9,14 +10,22 @@ type Anchor = {
   outward: Vec2;
 };
 
+export type EdgeRouteStyle = {
+  arrowHeadLength: number; // world units
+  controlPointMin: number; // world units
+  controlPointMax: number; // world units
+  straightAlignThreshold: number; // world units
+};
+
 export type EdgeRouteContext = {
   parent: { id: string; rect: Rect };
   child: { id: string; rect: Rect };
+  style: EdgeRouteStyle;
 };
 
 export type EdgeRoute =
-  | { kind: 'polyline'; points: Vec2[] }
-  | { kind: 'bezier'; p0: Vec2; c1: Vec2; c2: Vec2; p3: Vec2 };
+  | { kind: 'polyline'; points: Vec2[]; arrow?: { anchor: ArrowAnchor } }
+  | { kind: 'bezier'; p0: Vec2; c1: Vec2; c2: Vec2; p3: Vec2; arrow?: { anchor: ArrowAnchor } };
 
 export type EdgeRouter = {
   id: string;
@@ -26,6 +35,31 @@ export type EdgeRouter = {
 };
 
 const rectCenter = (r: Rect): Vec2 => ({ x: r.x + r.w * 0.5, y: r.y + r.h * 0.5 });
+
+function intersectRectPerimeter(rect: Rect, toward: Vec2): { point: Vec2; side: AnchorSide } {
+  const cx = rect.x + rect.w * 0.5;
+  const cy = rect.y + rect.h * 0.5;
+  const dx = toward.x - cx;
+  const dy = toward.y - cy;
+
+  // Handle degenerate vector
+  if (dx === 0 && dy === 0) return { point: { x: cx, y: rect.y }, side: 'top' };
+
+  const hw = rect.w * 0.5;
+  const hh = rect.h * 0.5;
+  const scale = 1 / Math.max(Math.abs(dx) / Math.max(1e-9, hw), Math.abs(dy) / Math.max(1e-9, hh));
+  const ix = cx + dx * scale;
+  const iy = cy + dy * scale;
+
+  const eps = 1e-6;
+  let side: AnchorSide;
+  if (Math.abs(ix - rect.x) < eps) side = 'left';
+  else if (Math.abs(ix - (rect.x + rect.w)) < eps) side = 'right';
+  else if (Math.abs(iy - rect.y) < eps) side = 'top';
+  else side = 'bottom';
+
+  return { point: { x: ix, y: iy }, side };
+}
 
 function makeAnchor(rect: Rect, side: AnchorSide): Anchor {
   const c = rectCenter(rect);
@@ -111,6 +145,67 @@ function curvedRoute(ctx: EdgeRouteContext): EdgeRoute | null {
   return { kind: 'bezier', p0, c1, c2, p3 };
 }
 
+function gemRoute(ctx: EdgeRouteContext): EdgeRoute | null {
+  const pRect = ctx.parent.rect;
+  const cRect = ctx.child.rect;
+  const pCenter = rectCenter(pRect);
+  const cCenter = rectCenter(cRect);
+
+  const { point: start, side: startSide } = intersectRectPerimeter(pRect, cCenter);
+  const { point: endTip, side: endSide } = intersectRectPerimeter(cRect, pCenter);
+
+  const endBase = { ...endTip };
+  const arrowLen = Math.max(0, ctx.style.arrowHeadLength);
+  switch (endSide) {
+    case 'left':
+      endBase.x -= arrowLen;
+      break;
+    case 'right':
+      endBase.x += arrowLen;
+      break;
+    case 'top':
+      endBase.y -= arrowLen;
+      break;
+    case 'bottom':
+      endBase.y += arrowLen;
+      break;
+  }
+
+  // Control point distance based on anchor separation (clamped)
+  const axisDistance = Math.hypot(endBase.x - start.x, endBase.y - start.y);
+  const cp = clamp(axisDistance * 0.5, ctx.style.controlPointMin, ctx.style.controlPointMax);
+
+  // Push control points outward along the normal of each side
+  let c1x = start.x;
+  let c1y = start.y;
+  let c2x = endBase.x;
+  let c2y = endBase.y;
+  if (startSide === 'left') c1x = start.x - cp;
+  if (startSide === 'right') c1x = start.x + cp;
+  if (startSide === 'top') c1y = start.y - cp;
+  if (startSide === 'bottom') c1y = start.y + cp;
+
+  if (endSide === 'left') c2x = endBase.x - cp;
+  if (endSide === 'right') c2x = endBase.x + cp;
+  if (endSide === 'top') c2y = endBase.y - cp;
+  if (endSide === 'bottom') c2y = endBase.y + cp;
+
+  // Draw straight if nearly horizontal or vertical
+  const nearHoriz = Math.abs(endBase.y - start.y) <= ctx.style.straightAlignThreshold;
+  const nearVert = Math.abs(endBase.x - start.x) <= ctx.style.straightAlignThreshold;
+
+  return nearHoriz || nearVert
+    ? { kind: 'polyline', points: [start, endBase], arrow: { anchor: 'base' } }
+    : {
+        kind: 'bezier',
+        p0: start,
+        c1: { x: c1x, y: c1y },
+        c2: { x: c2x, y: c2y },
+        p3: endBase,
+        arrow: { anchor: 'base' },
+      };
+}
+
 const EDGE_ROUTERS = [
   {
     id: 'straight',
@@ -136,6 +231,12 @@ const EDGE_ROUTERS = [
     description: 'Auto-anchors with a smooth Bézier curve.',
     route: curvedRoute,
   },
+  {
+    id: 'gem',
+    label: 'Gem (Perimeter Curve)',
+    description: 'Anchors at box perimeter with a cubic Bézier (graphchatgem-style).',
+    route: gemRoute,
+  },
 ] as const satisfies readonly EdgeRouter[];
 
 export type EdgeRouterId = (typeof EDGE_ROUTERS)[number]['id'];
@@ -156,4 +257,3 @@ export function getEdgeRouter(id: unknown): EdgeRouter {
   const normalized = normalizeEdgeRouterId(id);
   return EDGE_ROUTERS.find((r) => r.id === normalized) ?? EDGE_ROUTERS[0];
 }
-
