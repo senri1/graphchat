@@ -15,7 +15,8 @@ npm run dev
 Create `graphchatv1/.env.local`:
 
 ```bash
-VITE_OPENAI_API_KEY=...
+OPENAI_API_KEY=...
+GEMINI_API_KEY=...
 ```
 
 ## Controls (current skeleton)

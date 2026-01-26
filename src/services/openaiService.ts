@@ -16,7 +16,7 @@ export type OpenAIRetrieveResult =
   | { ok: false; error: string; cancelled?: boolean; response?: unknown };
 
 export function getOpenAIApiKey(): string | null {
-  const trimmed = (import.meta.env.VITE_OPENAI_API_KEY ?? '').trim();
+  const trimmed = String(import.meta.env.OPENAI_API_KEY ?? import.meta.env.VITE_OPENAI_API_KEY ?? '').trim();
   return trimmed ? trimmed : null;
 }
 

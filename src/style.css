@@ -545,6 +545,57 @@ body {
   background: rgba(0, 0, 0, 0.6);
 }
 
+.confirmOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  pointer-events: auto;
+  touch-action: auto;
+}
+
+.confirmOverlay__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.confirmDialog {
+  position: relative;
+  width: min(420px, calc(100% - 20px));
+  border-radius: 16px;
+  padding: 16px;
+  background: rgba(0, 0, 0, var(--ui-glass-bg-alpha));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
+  box-shadow: 0 24px 65px rgba(0, 0, 0, 0.55);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.confirmDialog__title {
+  font-size: 15px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.confirmDialog__message {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.74);
+  line-height: 1.35;
+  margin-bottom: 14px;
+}
+
+.confirmDialog__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .settingsModal {
   position: relative;
   width: min(980px, calc(100% - 20px));

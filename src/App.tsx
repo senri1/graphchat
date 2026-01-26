@@ -7,6 +7,7 @@ import TextNodeEditor from './components/TextNodeEditor';
 import WorkspaceSidebar from './components/WorkspaceSidebar';
 import { Icons } from './components/Icons';
 import SettingsModal from './components/SettingsModal';
+import ConfirmDialog from './components/ConfirmDialog';
 import { createEmptyChatState, type WorldEngineChatState } from './engine/WorldEngine';
 import { DEFAULT_EDGE_ROUTER_ID, listEdgeRouters, normalizeEdgeRouterId, type EdgeRouterId } from './engine/edgeRouting';
 import {
@@ -30,8 +31,10 @@ import {
   streamOpenAIResponse,
   streamOpenAIResponseById,
 } from './services/openaiService';
+import { getGeminiApiKey, sendGeminiResponse } from './services/geminiService';
 import type { ChatAttachment, ChatNode, ThinkingSummaryChunk } from './model/chat';
 import { buildOpenAIResponseRequest, type OpenAIChatSettings } from './llm/openai';
+import { buildGeminiContext, type GeminiChatSettings } from './llm/gemini';
 import { DEFAULT_MODEL_ID, getModelInfo, listModels } from './llm/registry';
 import { extractCanonicalMessage, extractCanonicalMeta } from './llm/openaiCanonical';
 import { buildModelUserSettings, normalizeModelUserSettings, type ModelUserSettingsById } from './llm/modelUserSettings';
@@ -167,6 +170,10 @@ type RawViewerState = {
   kind: 'request' | 'response';
   payload: unknown;
 };
+
+type ConfirmDeleteState =
+  | { kind: 'tree-item'; itemId: string; itemType: 'chat' | 'folder'; name: string }
+  | { kind: 'node'; nodeId: string };
 
 function genId(prefix: string): string {
   const p = prefix.replace(/[^a-z0-9_-]/gi, '').slice(0, 8) || 'id';
@@ -403,6 +410,7 @@ export default function App() {
   }));
   const [rawViewer, setRawViewer] = useState<RawViewerState | null>(null);
   const [nodeMenuId, setNodeMenuId] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<ConfirmDeleteState | null>(null);
   const [viewport, setViewport] = useState(() => ({ w: 1, h: 1 }));
   const [composerDraft, setComposerDraft] = useState('');
   const [composerDraftAttachments, setComposerDraftAttachments] = useState<ChatAttachment[]>(() => []);
@@ -1038,7 +1046,7 @@ export default function App() {
 
     const apiKey = getOpenAIApiKey();
     if (!apiKey) {
-      const msg = 'OpenAI API key missing. Set VITE_OPENAI_API_KEY in graphchatv1/.env.local';
+      const msg = 'OpenAI API key missing. Set OPENAI_API_KEY in graphchatv1/.env.local';
       updateStoredTextNode(chatId, args.assistantNodeId, { content: msg, isGenerating: false, llmError: msg });
       if (activeChatIdRef.current === chatId) {
         engineRef.current?.setTextNodeContent(args.assistantNodeId, msg, { streaming: false });
@@ -1522,6 +1530,135 @@ export default function App() {
     })();
 	  };
 
+  const startGeminiGeneration = (args: {
+    chatId: string;
+    userNodeId: string;
+    assistantNodeId: string;
+    settings: GeminiChatSettings;
+  }) => {
+    const chatId = args.chatId;
+    if (!chatId) return;
+    if (generationJobsByAssistantIdRef.current.has(args.assistantNodeId)) return;
+
+    const apiKey = getGeminiApiKey();
+    if (!apiKey) {
+      const msg = 'Gemini API key missing. Set GEMINI_API_KEY in graphchatv1/.env.local';
+      updateStoredTextNode(chatId, args.assistantNodeId, { content: msg, isGenerating: false, llmError: msg });
+      if (activeChatIdRef.current === chatId) {
+        engineRef.current?.setTextNodeContent(args.assistantNodeId, msg, { streaming: false });
+        engineRef.current?.setTextNodeLlmState(args.assistantNodeId, {
+          isGenerating: false,
+          modelId: args.settings.modelId,
+          llmError: msg,
+        });
+      }
+      return;
+    }
+
+    const state = chatStatesRef.current.get(chatId);
+    const settings = args.settings;
+    const llmParams = { webSearchEnabled: settings.webSearchEnabled };
+
+    const job: GenerationJob = {
+      chatId,
+      userNodeId: args.userNodeId,
+      assistantNodeId: args.assistantNodeId,
+      modelId: settings.modelId,
+      llmParams,
+      startedAt: Date.now(),
+      abortController: new AbortController(),
+      background: false,
+      taskId: null,
+      lastEventSeq: null,
+      fullText: '',
+      thinkingSummary: [],
+      lastFlushedText: '',
+      lastFlushAt: 0,
+      flushTimer: null,
+      closed: false,
+    };
+
+    generationJobsByAssistantIdRef.current.set(job.assistantNodeId, job);
+    updateStoredTextNode(chatId, job.assistantNodeId, {
+      isGenerating: true,
+      modelId: job.modelId,
+      llmParams: job.llmParams,
+      llmError: null,
+    });
+    if (activeChatIdRef.current === chatId) {
+      engineRef.current?.setTextNodeLlmState(job.assistantNodeId, {
+        isGenerating: true,
+        modelId: job.modelId,
+        llmParams: job.llmParams,
+        llmError: null,
+      });
+    }
+
+    void (async () => {
+      let request: any;
+      let requestSnapshot: any;
+      try {
+        const ctx = await buildGeminiContext({
+          nodes: state?.nodes ?? [],
+          leafUserNodeId: args.userNodeId,
+          settings,
+        });
+        request = ctx.request;
+        requestSnapshot = ctx.requestSnapshot;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        finishJob(job.assistantNodeId, { finalText: job.fullText, error: msg });
+        return;
+      }
+      if (job.closed || job.abortController.signal.aborted) return;
+
+      const persistedRequest = requestSnapshot ?? request;
+      const storedRequest = cloneRawPayloadForDisplay(persistedRequest);
+      updateStoredTextNode(chatId, job.userNodeId, { apiRequest: storedRequest });
+      if (activeChatIdRef.current === chatId) {
+        engineRef.current?.setTextNodeApiPayload(job.userNodeId, { apiRequest: storedRequest });
+      }
+      try {
+        const key = `${chatId}/${job.userNodeId}/req`;
+        await putPayload({ key, json: persistedRequest });
+        updateStoredTextNode(chatId, job.userNodeId, { apiRequestKey: key });
+      } catch {
+        // ignore
+      }
+      schedulePersistSoon();
+
+      const res = await sendGeminiResponse({ request });
+      if (job.closed || job.abortController.signal.aborted) return;
+      if (!generationJobsByAssistantIdRef.current.has(job.assistantNodeId)) return;
+
+      const canonicalMessage = res.canonicalMessage;
+      const canonicalMeta = res.canonicalMeta;
+      const finalText = (typeof res.text === 'string' ? res.text : '') || canonicalMessage?.text || '';
+      const isError = res.raw == null;
+
+      const storedResponse = res.raw != null ? cloneRawPayloadForDisplay(res.raw) : undefined;
+      let responseKey: string | undefined = undefined;
+      if (res.raw != null) {
+        try {
+          const key = `${chatId}/${job.assistantNodeId}/res`;
+          await putPayload({ key, json: res.raw });
+          responseKey = key;
+        } catch {
+          // ignore
+        }
+      }
+
+      finishJob(job.assistantNodeId, {
+        finalText,
+        error: isError ? (finalText.trim() ? finalText : 'Gemini request failed') : null,
+        apiResponse: storedResponse,
+        apiResponseKey: responseKey,
+        canonicalMessage,
+        canonicalMeta,
+      });
+    })();
+  };
+
 	  const resumeOpenAIBackgroundJob = (args: {
 	    chatId: string;
 	    assistantNode: Extract<ChatNode, { kind: 'text' }>;
@@ -1535,7 +1672,7 @@ export default function App() {
 
 	    const apiKey = getOpenAIApiKey();
 	    if (!apiKey) {
-	      const msg = 'OpenAI API key missing. Set VITE_OPENAI_API_KEY in graphchatv1/.env.local';
+	      const msg = 'OpenAI API key missing. Set OPENAI_API_KEY in graphchatv1/.env.local';
 	      updateStoredTextNode(chatId, assistantNodeId, { isGenerating: false, llmError: msg, llmTask: undefined });
 	      if (activeChatIdRef.current === chatId) {
 	        engineRef.current?.setTextNodeLlmState(assistantNodeId, { isGenerating: false, llmError: msg, llmTask: null } as any);
@@ -2371,14 +2508,19 @@ export default function App() {
     schedulePersistSoon();
   };
 
-  const deleteTreeItem = (itemId: string) => {
+  const requestDeleteTreeItem = (itemId: string) => {
     if (!itemId) return;
     const existing = findItem(treeRoot, itemId);
     if (!existing) return;
     if (itemId === treeRoot.id) return;
+    setConfirmDelete({ kind: 'tree-item', itemId, itemType: existing.kind, name: existing.name });
+  };
 
-    const label = existing.kind === 'folder' ? 'folder' : 'chat';
-    if (!window.confirm(`Delete this ${label}?`)) return;
+  const performDeleteTreeItem = (itemId: string) => {
+    if (!itemId) return;
+    const existing = findItem(treeRoot, itemId);
+    if (!existing) return;
+    if (itemId === treeRoot.id) return;
 
     const { root: nextRoot, removed } = deleteItem(treeRoot, itemId);
     const removedChatIds = removed ? collectChatIds(removed) : [];
@@ -2452,8 +2594,68 @@ export default function App() {
     schedulePersistSoon();
   };
 
+  const requestDeleteNode = (nodeId: string) => {
+    if (!nodeId) return;
+    setConfirmDelete({ kind: 'node', nodeId });
+  };
+
+  const performDeleteNode = (nodeId: string) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+
+    engine.deleteNode(nodeId);
+    attachmentsGcDirtyRef.current = true;
+    schedulePersistSoon();
+
+    setRawViewer((prev) => (prev?.nodeId === nodeId ? null : prev));
+    const chatId = activeChatIdRef.current;
+    const meta = ensureChatMeta(chatId);
+    if (meta.replyTo?.nodeId === nodeId) {
+      meta.replyTo = null;
+      meta.selectedAttachmentKeys = [];
+      setReplySelection(null);
+      setReplyContextAttachments([]);
+      setReplySelectedAttachmentKeys([]);
+    }
+  };
+
+  const confirmDeleteTitle =
+    confirmDelete?.kind === 'tree-item'
+      ? `Delete ${confirmDelete.itemType === 'chat' ? 'Chat' : 'Folder'}?`
+      : confirmDelete?.kind === 'node'
+        ? 'Delete Node?'
+        : '';
+
+  const confirmDeleteMessage =
+    confirmDelete?.kind === 'tree-item'
+      ? `${confirmDelete.name ? `"${confirmDelete.name}" ` : ''}This action cannot be undone.`
+      : confirmDelete?.kind === 'node'
+        ? 'This action cannot be undone.'
+        : '';
+
+  const confirmDeleteNow = () => {
+    const payload = confirmDelete;
+    setConfirmDelete(null);
+    if (!payload) return;
+    if (payload.kind === 'tree-item') {
+      performDeleteTreeItem(payload.itemId);
+    } else {
+      performDeleteNode(payload.nodeId);
+    }
+  };
+
   return (
     <div className="app">
+      <ConfirmDialog
+        open={confirmDelete != null}
+        title={confirmDeleteTitle}
+        message={confirmDeleteMessage}
+        cancelLabel="Cancel"
+        confirmLabel="Delete"
+        confirmDanger
+        onCancel={() => setConfirmDelete(null)}
+        onConfirm={confirmDeleteNow}
+      />
       <WorkspaceSidebar
         root={treeRoot}
         activeChatId={activeChatId}
@@ -2473,7 +2675,7 @@ export default function App() {
           setTreeRoot((prev) => renameItem(prev, itemId, name));
           schedulePersistSoon();
         }}
-        onDeleteItem={(itemId) => deleteTreeItem(itemId)}
+        onDeleteItem={(itemId) => requestDeleteTreeItem(itemId)}
         onMoveItem={(itemId, folderId) => {
           setTreeRoot((prev) => moveItem(prev, itemId, folderId));
           schedulePersistSoon();
@@ -2482,45 +2684,16 @@ export default function App() {
 
 	      <div className="workspace" ref={workspaceRef}>
 	        <canvas className="stage" ref={canvasRef} />
-          {nodeMenuId && nodeMenuButtonRect ? (
-            <NodeHeaderMenu
-              nodeId={nodeMenuId}
-              getButtonRect={getNodeMenuButtonRect}
-              rawEnabled={nodeMenuRawEnabled}
-              onRaw={() => toggleRawViewerForNode(nodeMenuId)}
-              onDelete={() => {
-                const engine = engineRef.current;
-                if (!engine) return;
-
-                let title = 'this node';
-                try {
-                  const snapshot = engine.exportChatState();
-                  const node = snapshot.nodes.find((n) => n.id === nodeMenuId) ?? null;
-                  if (node?.title) title = `“${node.title}”`;
-                } catch {
-                  // ignore
-                }
-
-                if (!window.confirm(`Delete ${title}?`)) return;
-
-                engine.deleteNode(nodeMenuId);
-                attachmentsGcDirtyRef.current = true;
-                schedulePersistSoon();
-
-                setRawViewer((prev) => (prev?.nodeId === nodeMenuId ? null : prev));
-                const chatId = activeChatIdRef.current;
-                const meta = ensureChatMeta(chatId);
-                if (meta.replyTo?.nodeId === nodeMenuId) {
-                  meta.replyTo = null;
-                  meta.selectedAttachmentKeys = [];
-                  setReplySelection(null);
-                  setReplyContextAttachments([]);
-                  setReplySelectedAttachmentKeys([]);
-                }
-              }}
-              onClose={() => setNodeMenuId(null)}
-            />
-          ) : null}
+	          {nodeMenuId && nodeMenuButtonRect ? (
+	            <NodeHeaderMenu
+	              nodeId={nodeMenuId}
+	              getButtonRect={getNodeMenuButtonRect}
+	              rawEnabled={nodeMenuRawEnabled}
+	              onRaw={() => toggleRawViewerForNode(nodeMenuId)}
+	              onDelete={() => requestDeleteNode(nodeMenuId)}
+	              onClose={() => setNodeMenuId(null)}
+	            />
+	          ) : null}
 	        {ui.editingNodeId ? (
 	          <TextNodeEditor
 	            nodeId={ui.editingNodeId}
@@ -2732,22 +2905,36 @@ export default function App() {
 
 	            const snapshot = engine.exportChatState();
 	            chatStatesRef.current.set(activeChatId, snapshot);
-	            const modelSettings =
-	              modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
-		            const settings: OpenAIChatSettings = {
-		              modelId: selectedModelId,
-		              verbosity: modelSettings?.verbosity,
-	              webSearchEnabled: composerWebSearch,
-	              reasoningSummary: modelSettings?.reasoningSummary,
-	              stream: modelSettings?.streaming,
-	              background: modelSettings?.background,
-	            };
-            startOpenAIGeneration({
-              chatId: activeChatId,
-              userNodeId: res.userNodeId,
-              assistantNodeId: res.assistantNodeId,
-              settings,
-            });
+              const provider = getModelInfo(selectedModelId)?.provider ?? 'openai';
+              if (provider === 'gemini') {
+                const settings: GeminiChatSettings = {
+                  modelId: selectedModelId,
+                  webSearchEnabled: composerWebSearch,
+                };
+                startGeminiGeneration({
+                  chatId: activeChatId,
+                  userNodeId: res.userNodeId,
+                  assistantNodeId: res.assistantNodeId,
+                  settings,
+                });
+              } else {
+	              const modelSettings =
+	                modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
+		              const settings: OpenAIChatSettings = {
+		                modelId: selectedModelId,
+		                verbosity: modelSettings?.verbosity,
+	                  webSearchEnabled: composerWebSearch,
+	                  reasoningSummary: modelSettings?.reasoningSummary,
+	                  stream: modelSettings?.streaming,
+	                  background: modelSettings?.background,
+	                };
+                startOpenAIGeneration({
+                  chatId: activeChatId,
+                  userNodeId: res.userNodeId,
+                  assistantNodeId: res.assistantNodeId,
+                  settings,
+                });
+              }
             schedulePersistSoon();
           }}
         />

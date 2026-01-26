@@ -21,7 +21,7 @@ export interface ModelInfo {
   };
   effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
   reasoningSummary?: boolean;
-  thinkingLevel?: 'low' | 'high';
+  thinkingLevel?: 'minimal' | 'low' | 'medium' | 'high';
 }
 
 const REGISTRY: ModelInfo[] = [
@@ -111,6 +111,84 @@ const REGISTRY: ModelInfo[] = [
     parameters: { webSearch: false, streaming: true, background: false },
     defaults: { webSearch: false, streaming: true, verbosity: 'medium', background: false },
     effort: 'none',
+  },
+  {
+    id: 'gemini-3-pro-high',
+    provider: 'gemini',
+    apiModel: 'gemini-3-pro-preview',
+    label: 'Gemini - 3 Pro (High)',
+    shortLabel: 'Gemini 3 Pro High',
+    parameters: { webSearch: true, streaming: false, background: false },
+    defaults: { webSearch: true, streaming: false, background: false },
+    thinkingLevel: 'high',
+  },
+  {
+    id: 'gemini-3-pro-low',
+    provider: 'gemini',
+    apiModel: 'gemini-3-pro-preview',
+    label: 'Gemini - 3 Pro (Low)',
+    shortLabel: 'Gemini 3 Pro Low',
+    parameters: { webSearch: true, streaming: false, background: false },
+    defaults: { webSearch: true, streaming: false, background: false },
+    thinkingLevel: 'low',
+  },
+  {
+    id: 'gemini-3-flash-high',
+    provider: 'gemini',
+    apiModel: 'gemini-3-flash-preview',
+    label: 'Gemini - 3 Pro (High)',
+    shortLabel: 'Gemini 3 Flash High',
+    parameters: { webSearch: true, streaming: false, background: false },
+    defaults: { webSearch: true, streaming: false, background: false },
+    thinkingLevel: 'high',
+  },
+  {
+    id: 'gemini-3-flash-medium',
+    provider: 'gemini',
+    apiModel: 'gemini-3-flash-preview',
+    label: 'Gemini - 3 Flash (Medium)',
+    shortLabel: 'Gemini 3 Flash Medium',
+    parameters: { webSearch: true, streaming: false, background: false },
+    defaults: { webSearch: true, streaming: false, background: false },
+    thinkingLevel: 'medium',
+  },
+  {
+    id: 'gemini-3-flash-low',
+    provider: 'gemini',
+    apiModel: 'gemini-3-flash-preview',
+    label: 'Gemini - 3 Flash (Low)',
+    shortLabel: 'Gemini 3 Flash Low',
+    parameters: { webSearch: true, streaming: false, background: false },
+    defaults: { webSearch: true, streaming: false, background: false },
+    thinkingLevel: 'low',
+  },
+  {
+    id: 'gemini-3-flash-minimal',
+    provider: 'gemini',
+    apiModel: 'gemini-3-flash-preview',
+    label: 'Gemini - 3 Flash (Minimal)',
+    shortLabel: 'Gemini 3 Flash Minimal',
+    parameters: { webSearch: true, streaming: false, background: false },
+    defaults: { webSearch: true, streaming: false, background: false },
+    thinkingLevel: 'minimal',
+  },
+  {
+    id: 'gemini-2.5-pro',
+    provider: 'gemini',
+    apiModel: 'gemini-2.5-pro',
+    label: 'Gemini - 2.5 Pro',
+    shortLabel: 'Gemini 2.5 Pro',
+    parameters: { webSearch: true, streaming: false, background: false },
+    defaults: { webSearch: true, streaming: false, background: false },
+  },
+  {
+    id: 'gemini-2.5-flash',
+    provider: 'gemini',
+    apiModel: 'gemini-2.5-flash',
+    label: 'Gemini - 2.5 Flash',
+    shortLabel: 'Gemini 2.5 Flash',
+    parameters: { webSearch: true, streaming: false, background: false },
+    defaults: { webSearch: true, streaming: false, background: false },
   },
 ];
 
