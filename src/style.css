@@ -348,6 +348,44 @@ body {
   z-index: 80;
 }
 
+.gc-selectionMenu {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, var(--ui-glass-bg-alpha));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
+  box-shadow: 0 24px 65px rgba(0, 0, 0, 0.45);
+}
+
+.gc-selectionMenu__btn {
+  width: 100%;
+  text-align: left;
+  appearance: none;
+  border: 0;
+  border-radius: 10px;
+  padding: 7px 10px;
+  background: var(--ui-control-bg);
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 12px;
+  cursor: pointer;
+  outline: none;
+  box-shadow: 0 0 0 1px var(--ui-control-ring);
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+.gc-selectionMenu__btn:hover {
+  background: var(--ui-control-bg-hover);
+}
+
+.gc-selectionMenu__btn:focus-visible {
+  box-shadow: 0 0 0 1px rgba(147, 197, 253, 0.55), 0 0 0 3px rgba(147, 197, 253, 0.18);
+}
+
 .treeRow__menuItem {
   width: 100%;
   text-align: left;
@@ -1135,6 +1173,7 @@ body {
 }
 
 .composerDock {
+  --composer-dock-gap: 10px;
   position: absolute;
   left: 50%;
   bottom: calc(10px + env(safe-area-inset-bottom, 0px));
@@ -1144,7 +1183,7 @@ body {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 10px;
+  gap: var(--composer-dock-gap);
   pointer-events: auto;
   touch-action: auto;
 }
@@ -1413,10 +1452,15 @@ body {
 }
 
 .composer__contextSelectionList {
+  --composer-context-gap: 4px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-top: 10px;
+  gap: var(--composer-context-gap);
+  margin-top: 0;
+}
+
+.composer__replyBanner + .composer__contextSelectionList {
+  margin-top: calc(var(--composer-context-gap) - var(--composer-dock-gap, 10px));
 }
 
 .composer__contextAttachments {

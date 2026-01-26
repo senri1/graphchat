@@ -169,7 +169,6 @@ export class PdfTextLod2Overlay {
   private readonly menuCopyBtn: HTMLButtonElement;
   private readonly menuReplyBtn: HTMLButtonElement;
   private readonly menuAddToContextBtn: HTMLButtonElement;
-  private readonly menuCloseBtn: HTMLButtonElement;
 
   private visibleKey: string | null = null;
   private visibleNodeId: string | null = null;
@@ -563,17 +562,9 @@ export class PdfTextLod2Overlay {
     });
     this.menuAddToContextBtn = addToContextBtn;
 
-    const closeBtn = document.createElement('button');
-    closeBtn.className = 'gc-selectionMenu__btn';
-    closeBtn.type = 'button';
-    closeBtn.textContent = 'Close';
-    closeBtn.addEventListener('click', () => this.closeMenu());
-    this.menuCloseBtn = closeBtn;
-
     menu.appendChild(copyBtn);
     menu.appendChild(replyBtn);
     menu.appendChild(addToContextBtn);
-    menu.appendChild(closeBtn);
     this.host.appendChild(menu);
 
     const stopMenuPointer = (e: Event) => e.stopPropagation();
@@ -862,7 +853,7 @@ export class PdfTextLod2Overlay {
 
     const rect = opts.anchorRect;
     const estW = 210;
-    const estH = 152;
+    const estH = 120;
     const margin = 8;
     let top = rect.top - estH - margin;
     if (top < margin) top = rect.bottom + margin;
@@ -872,33 +863,9 @@ export class PdfTextLod2Overlay {
     left = clamp(left, margin, window.innerWidth - estW - margin);
 
     this.menu.style.display = 'flex';
-    this.menu.style.flexDirection = 'column';
-    this.menu.style.gap = '6px';
-    this.menu.style.padding = '8px';
-    this.menu.style.borderRadius = '12px';
-    this.menu.style.background = 'rgba(11, 13, 18, 0.92)';
-    this.menu.style.border = '1px solid rgba(255,255,255,0.14)';
-    (this.menu.style as any).backdropFilter = 'blur(10px)';
-    this.menu.style.boxShadow = '0 16px 50px rgba(0,0,0,0.45)';
     this.menu.style.left = `${Math.round(left)}px`;
     this.menu.style.top = `${Math.round(top)}px`;
     this.menu.style.width = `${estW}px`;
-
-    const applyBtnStyle = (btn: HTMLButtonElement) => {
-      btn.style.width = '100%';
-      btn.style.textAlign = 'left';
-      btn.style.fontSize = '12px';
-      btn.style.padding = '7px 10px';
-      btn.style.borderRadius = '10px';
-      btn.style.border = '1px solid rgba(255,255,255,0.16)';
-      btn.style.background = 'rgba(0,0,0,0.25)';
-      btn.style.color = 'rgba(255,255,255,0.9)';
-      btn.style.cursor = 'pointer';
-    };
-    applyBtnStyle(this.menuCopyBtn);
-    applyBtnStyle(this.menuReplyBtn);
-    applyBtnStyle(this.menuAddToContextBtn);
-    applyBtnStyle(this.menuCloseBtn);
   }
 
   closeMenu(opts?: { suppressCallback?: boolean }): void {
