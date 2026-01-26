@@ -194,6 +194,7 @@ type TextNode = DemoNodeBase & {
   author: ChatAuthor;
   rect: Rect;
   content: string;
+  userPreface?: { replyTo?: string; contexts?: string[] };
   contentHash: string;
   displayHash: string;
   isGenerating?: boolean;
@@ -394,6 +395,8 @@ export class WorldEngine {
 
   onUiState?: (state: WorldEngineUiState) => void;
   onRequestReply?: (nodeId: string) => void;
+  onRequestReplyToSelection?: (nodeId: string, selectionText: string) => void;
+  onRequestAddToContextSelection?: (nodeId: string, selectionText: string) => void;
   onRequestRaw?: (nodeId: string) => void;
   onRequestNodeMenu?: (nodeId: string) => void;
   onRequestCancelGeneration?: (nodeId: string) => void;
@@ -713,6 +716,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           ...(n.isEditNode ? { isEditNode: true } : {}),
           author: n.author,
           content: n.content,
+          ...(n.userPreface ? { userPreface: n.userPreface } : {}),
           isGenerating: n.isGenerating,
           modelId: n.modelId ?? null,
           llmParams: n.llmParams,
@@ -832,6 +836,18 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
                 if (lt.includes('assistant')) return 'assistant';
                 return 'assistant';
                   })();
+        const userPreface = (() => {
+          const raw = (n as any)?.userPreface;
+          if (!raw || typeof raw !== 'object') return undefined;
+          const replyTo = typeof (raw as any)?.replyTo === 'string' ? String((raw as any).replyTo).trim() : '';
+          const ctxRaw = Array.isArray((raw as any)?.contexts) ? ((raw as any).contexts as any[]) : [];
+          const contexts = ctxRaw.map((t) => String(t ?? '').trim()).filter(Boolean);
+          if (!replyTo && contexts.length === 0) return undefined;
+          return {
+            ...(replyTo ? { replyTo } : {}),
+            ...(contexts.length ? { contexts } : {}),
+          };
+        })();
         const thinkingSummary = (() => {
           const raw = (n as any)?.thinkingSummary;
           if (!Array.isArray(raw)) return undefined;
@@ -898,6 +914,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           ...(isEditNode ? { isEditNode: true } : {}),
           author,
           content,
+          ...(userPreface ? { userPreface } : {}),
           contentHash: fingerprintText(content),
           displayHash: '',
           isGenerating: Boolean((n as any)?.isGenerating),
@@ -1307,6 +1324,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   spawnChatTurn(args: {
     userText: string;
     parentNodeId: string | null;
+    userPreface?: { replyTo?: string; contexts?: string[] };
     userAttachments?: ChatAttachment[];
     selectedAttachmentKeys?: string[];
     assistantTitle?: string;
@@ -1314,6 +1332,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   }): { userNodeId: string; assistantNodeId: string } {
     const userText = String(args.userText ?? '');
     const parentNodeId = args.parentNodeId ?? null;
+    const userPreface = args.userPreface ?? undefined;
     const userAttachments = Array.isArray(args.userAttachments) ? args.userAttachments : [];
     const selectedAttachmentKeys = Array.isArray(args.selectedAttachmentKeys) ? args.selectedAttachmentKeys : [];
     const assistantTitle = typeof args.assistantTitle === 'string' ? args.assistantTitle : '';
@@ -1328,6 +1347,18 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     const gapY = 26;
 
+    const normalizedPreface = (() => {
+      if (!userPreface || typeof userPreface !== 'object') return undefined;
+      const replyTo = typeof userPreface.replyTo === 'string' ? userPreface.replyTo.trim() : '';
+      const ctxRaw = Array.isArray(userPreface.contexts) ? userPreface.contexts : [];
+      const contexts = ctxRaw.map((t) => String(t ?? '').trim()).filter(Boolean);
+      if (!replyTo && contexts.length === 0) return undefined;
+      return {
+        ...(replyTo ? { replyTo } : {}),
+        ...(contexts.length ? { contexts } : {}),
+      };
+    })();
+
     const userNode: TextNode = {
       kind: 'text',
       id: userNodeId,
@@ -1336,6 +1367,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       title: 'User',
       author: 'user',
       content: userText,
+      ...(normalizedPreface ? { userPreface: normalizedPreface } : {}),
       contentHash: fingerprintText(userText),
       displayHash: '',
       attachments: userAttachments.length ? userAttachments : undefined,
@@ -2658,6 +2690,14 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       parts.push(`att:${attSig}`);
     }
 
+    if (node.author === 'user') {
+      const replyTo = (node.userPreface?.replyTo ?? '').trim();
+      if (replyTo) parts.push(`replyTo:${replyTo}`);
+      const ctxRaw = Array.isArray(node.userPreface?.contexts) ? node.userPreface!.contexts! : [];
+      const ctx = ctxRaw.map((t) => String(t ?? '').trim()).filter(Boolean);
+      if (ctx.length > 0) parts.push(`contexts:${ctx.join('\n')}`);
+    }
+
     if (node.author === 'assistant') {
       const expanded = node.expandedSummaryChunks ?? {};
       const expandedKeys = Object.keys(expanded)
@@ -2910,6 +2950,39 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       }
     }
 
+    if (isUser) {
+      const replyTo = (node.userPreface?.replyTo ?? '').trim();
+      const ctxRaw = Array.isArray(node.userPreface?.contexts) ? node.userPreface!.contexts! : [];
+      const ctx = ctxRaw.map((t) => String(t ?? '').trim()).filter(Boolean);
+      if (replyTo || ctx.length > 0) {
+        parts.push(
+          '<div style="margin:8px 0 10px;padding:8px 10px;border:1px solid rgba(255,255,255,0.12);' +
+            'border-radius:12px;background:rgba(0,0,0,0.18);font-size:0.85em;color:rgba(255,255,255,0.88);">',
+        );
+        if (replyTo) {
+          parts.push(
+            '<div style="margin:0 0 6px;">' +
+              '<span style="opacity:0.75;">Replying to:</span> ' +
+              '<span style="font-style:italic;white-space:pre-wrap;">' +
+              escapeHtml(replyTo) +
+              '</span>' +
+              '</div>',
+          );
+        }
+        for (let i = 0; i < ctx.length; i += 1) {
+          parts.push(
+            '<div style="margin:0 0 6px;">' +
+              `<span style="opacity:0.75;">Context ${i + 1}:</span> ` +
+              '<span style="font-style:italic;white-space:pre-wrap;">' +
+              escapeHtml(ctx[i]) +
+              '</span>' +
+              '</div>',
+          );
+        }
+        parts.push('</div>');
+      }
+    }
+
     const atts = Array.isArray(node.attachments) ? node.attachments : [];
     if (atts.length > 0) {
       parts.push('<div style="display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 10px;">');
@@ -3061,6 +3134,20 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         this.clearTextSelection({ suppressOverlayCallback: true });
         this.requestRender();
       },
+      onRequestReplyToSelection: (nodeId, selectionText) => {
+        try {
+          this.onRequestReplyToSelection?.(nodeId, selectionText);
+        } catch {
+          // ignore
+        }
+      },
+      onRequestAddToContext: (nodeId, selectionText) => {
+        try {
+          this.onRequestAddToContextSelection?.(nodeId, selectionText);
+        } catch {
+          // ignore
+        }
+      },
       onRequestSelect: (nodeId) => {
         if (!nodeId) return;
         if (!this.nodes.some((n) => n.id === nodeId)) return;
@@ -3170,6 +3257,20 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       onRequestCloseSelection: () => {
         this.clearPdfTextSelection({ suppressOverlayCallback: true });
         this.requestRender();
+      },
+      onRequestReplyToSelection: (nodeId, selectionText) => {
+        try {
+          this.onRequestReplyToSelection?.(nodeId, selectionText);
+        } catch {
+          // ignore
+        }
+      },
+      onRequestAddToContext: (nodeId, selectionText) => {
+        try {
+          this.onRequestAddToContextSelection?.(nodeId, selectionText);
+        } catch {
+          // ignore
+        }
       },
       onTextLayerReady: () => {
         if (this.pdfSelectLastClient && this.pdfSelectTarget) this.schedulePdfPenSelectionUpdate();

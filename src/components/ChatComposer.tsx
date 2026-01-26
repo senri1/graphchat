@@ -22,6 +22,8 @@ type Props = {
   containerRef?: React.Ref<HTMLDivElement>;
   replyPreview?: string | null;
   onCancelReply?: () => void;
+  contextSelections?: string[];
+  onRemoveContextSelection?: (index: number) => void;
   placeholder?: string;
   sendDisabled?: boolean;
   disabled?: boolean;
@@ -57,7 +59,7 @@ function labelForAttachment(att: ChatAttachment): string {
 }
 
 export default function ChatComposer(props: Props) {
-  const { value, onChange, onSend, modelId, modelOptions, onChangeModelId, webSearchEnabled, onChangeWebSearchEnabled, containerRef, replyPreview, onCancelReply, placeholder, sendDisabled, disabled, draftAttachments, onAddAttachmentFiles, onRemoveDraftAttachment, contextAttachments, selectedContextAttachmentKeys, onToggleContextAttachmentKey } = props;
+  const { value, onChange, onSend, modelId, modelOptions, onChangeModelId, webSearchEnabled, onChangeWebSearchEnabled, containerRef, replyPreview, onCancelReply, contextSelections, onRemoveContextSelection, placeholder, sendDisabled, disabled, draftAttachments, onAddAttachmentFiles, onRemoveDraftAttachment, contextAttachments, selectedContextAttachmentKeys, onToggleContextAttachmentKey } = props;
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const onSendRef = useRef(onSend);
@@ -211,6 +213,12 @@ export default function ChatComposer(props: Props) {
     const raf = requestAnimationFrame(() => taRef.current?.focus());
     return () => cancelAnimationFrame(raf);
   }, [replyPreview]);
+
+  const previewSnippet = (text: string, maxLen = 80) => {
+    const t = String(text ?? '').replace(/\s+/g, ' ').trim();
+    if (!t) return '';
+    return t.length > maxLen ? `${t.substring(0, maxLen)}...` : t;
+  };
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -485,6 +493,28 @@ export default function ChatComposer(props: Props) {
               ✕
             </button>
           ) : null}
+        </div>
+      ) : null}
+      {Array.isArray(contextSelections) && contextSelections.length > 0 ? (
+        <div className="composer__contextSelectionList">
+          {contextSelections.map((t, i) => (
+            <div className="composerSurface composer__replyBanner" key={`${i}-${String(t ?? '').slice(0, 12)}`}>
+              <div className="composer__replyText">
+                Context {i + 1}: "<span className="composer__replySnippet">{previewSnippet(t)}</span>"
+              </div>
+              {onRemoveContextSelection ? (
+                <button
+                  className="composer__replyCancel"
+                  type="button"
+                  onClick={() => onRemoveContextSelection(i)}
+                  aria-label={`Remove context ${i + 1}`}
+                  title="Remove context"
+                >
+                  ✕
+                </button>
+              ) : null}
+            </div>
+          ))}
         </div>
       ) : null}
       {replyPreview && Array.isArray(contextAttachments) && contextAttachments.length > 0 ? (

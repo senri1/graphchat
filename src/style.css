@@ -1412,6 +1412,13 @@ body {
   background: rgba(255, 255, 255, 0.06);
 }
 
+.composer__contextSelectionList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 .composer__contextAttachments {
   padding: 10px 12px;
   color: rgba(255, 255, 255, 0.9);

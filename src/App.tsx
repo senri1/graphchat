@@ -62,12 +62,13 @@ type ChatTurnMeta = {
   attachmentNodeIds: string[];
 };
 
-type ReplySelection = { nodeId: string; preview: string };
+type ReplySelection = { nodeId: string; preview: string; text?: string };
 
 type ChatRuntimeMeta = {
   draft: string;
   draftAttachments: ChatAttachment[];
   replyTo: ReplySelection | null;
+  contextSelections: string[];
   selectedAttachmentKeys: string[];
   headNodeId: string | null;
   turns: ChatTurnMeta[];
@@ -417,6 +418,7 @@ export default function App() {
   const lastAddAttachmentFilesRef = useRef<{ sig: string; at: number }>({ sig: '', at: 0 });
   const draftAttachmentDedupeRef = useRef<Map<string, DraftAttachmentDedupeState>>(new Map());
   const [replySelection, setReplySelection] = useState<ReplySelection | null>(null);
+  const [contextSelections, setContextSelections] = useState<string[]>(() => []);
   const [replyContextAttachments, setReplyContextAttachments] = useState<ContextAttachmentItem[]>(() => []);
   const [replySelectedAttachmentKeys, setReplySelectedAttachmentKeys] = useState<string[]>(() => []);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -493,6 +495,7 @@ export default function App() {
       draft: '',
       draftAttachments: [],
       replyTo: null,
+      contextSelections: [],
       selectedAttachmentKeys: [],
       headNodeId: null,
       turns: [],
@@ -518,6 +521,7 @@ export default function App() {
       draft: '',
       draftAttachments: [],
       replyTo: null,
+      contextSelections: [],
       selectedAttachmentKeys: [],
       headNodeId: null,
       turns: [],
@@ -2028,6 +2032,36 @@ export default function App() {
       setReplySelection(next);
       setReplyContextAttachments(ctx);
       setReplySelectedAttachmentKeys(keys);
+      schedulePersistSoon();
+    };
+    engine.onRequestReplyToSelection = (nodeId, selectionText) => {
+      const chatId = activeChatIdRef.current;
+      const meta = ensureChatMeta(chatId);
+      const raw = String(selectionText ?? '');
+      const collapsed = raw.replace(/\s+/g, ' ').trim();
+      if (!collapsed) return;
+      const max = 90;
+      const preview = collapsed.length <= max ? collapsed : `${collapsed.slice(0, max - 1).trimEnd()}…`;
+      const next: ReplySelection = { nodeId, preview, text: raw };
+      const snapshot = engine.exportChatState();
+      const ctx = collectContextAttachments(snapshot.nodes, nodeId);
+      const keys = ctx.map((it) => it.key);
+      meta.replyTo = next;
+      meta.selectedAttachmentKeys = keys;
+      setReplySelection(next);
+      setReplyContextAttachments(ctx);
+      setReplySelectedAttachmentKeys(keys);
+      schedulePersistSoon();
+    };
+    engine.onRequestAddToContextSelection = (_nodeId, selectionText) => {
+      const chatId = activeChatIdRef.current;
+      const meta = ensureChatMeta(chatId);
+      const t = String(selectionText ?? '').trim();
+      if (!t) return;
+      const next = [...(meta.contextSelections ?? []), t];
+      meta.contextSelections = next;
+      setContextSelections(next);
+      schedulePersistSoon();
     };
     engine.onRequestNodeMenu = (nodeId) => setNodeMenuId((prev) => (prev === nodeId ? null : nodeId));
     engine.onRequestCancelGeneration = (nodeId) => cancelJob(nodeId);
@@ -2127,6 +2161,7 @@ export default function App() {
         existingMeta.draft = composerDraft;
         existingMeta.draftAttachments = composerDraftAttachments.slice();
         existingMeta.replyTo = replySelection;
+        existingMeta.contextSelections = contextSelections.slice();
         existingMeta.selectedAttachmentKeys = replySelectedAttachmentKeys;
         existingMeta.llm = {
           modelId: composerModelId,
@@ -2153,6 +2188,7 @@ export default function App() {
     setComposerDraft(meta.draft);
     setComposerDraftAttachments(Array.isArray(meta.draftAttachments) ? meta.draftAttachments.slice() : []);
     setReplySelection(meta.replyTo);
+    setContextSelections(Array.isArray(meta.contextSelections) ? meta.contextSelections : []);
     setReplySelectedAttachmentKeys(Array.isArray(meta.selectedAttachmentKeys) ? meta.selectedAttachmentKeys : []);
     setBackgroundStorageKey(typeof meta.backgroundStorageKey === 'string' ? meta.backgroundStorageKey : null);
     if (meta.replyTo?.nodeId) {
@@ -2262,6 +2298,7 @@ export default function App() {
 	    setComposerDraft(meta.draft);
 	    setComposerDraftAttachments(Array.isArray(meta.draftAttachments) ? meta.draftAttachments.slice() : []);
 	    setReplySelection(meta.replyTo);
+      setContextSelections(Array.isArray(meta.contextSelections) ? meta.contextSelections : []);
     setReplySelectedAttachmentKeys(Array.isArray(meta.selectedAttachmentKeys) ? meta.selectedAttachmentKeys : []);
     setBackgroundStorageKey(typeof meta.backgroundStorageKey === 'string' ? meta.backgroundStorageKey : null);
     if (meta.replyTo?.nodeId) {
@@ -2356,8 +2393,17 @@ export default function App() {
             draftAttachments: Array.isArray(raw?.draftAttachments) ? (raw.draftAttachments as ChatAttachment[]) : [],
             replyTo:
               raw?.replyTo && typeof raw.replyTo === 'object' && typeof raw.replyTo.nodeId === 'string'
-                ? { nodeId: raw.replyTo.nodeId, preview: String(raw.replyTo.preview ?? '') }
+                ? {
+                    nodeId: raw.replyTo.nodeId,
+                    preview: String(raw.replyTo.preview ?? ''),
+                    ...(typeof raw.replyTo.text === 'string' && raw.replyTo.text.trim()
+                      ? { text: raw.replyTo.text }
+                      : {}),
+                  }
                 : null,
+            contextSelections: Array.isArray(raw?.contextSelections)
+              ? (raw.contextSelections as any[]).map((t) => String(t ?? '').trim()).filter(Boolean)
+              : [],
             selectedAttachmentKeys: Array.isArray(raw?.selectedAttachmentKeys)
               ? (raw.selectedAttachmentKeys as any[]).filter((k) => typeof k === 'string')
               : [],
@@ -2491,6 +2537,7 @@ export default function App() {
       draft: '',
       draftAttachments: [],
       replyTo: null,
+      contextSelections: [],
       selectedAttachmentKeys: [],
       headNodeId: null,
       turns: [],
@@ -2578,6 +2625,7 @@ export default function App() {
           draft: '',
           draftAttachments: [],
           replyTo: null,
+          contextSelections: [],
           selectedAttachmentKeys: [],
           headNodeId: null,
           turns: [],
@@ -2848,6 +2896,15 @@ export default function App() {
             ensureChatMeta(activeChatId).llm.webSearchEnabled = next;
           }}
           replyPreview={replySelection?.preview ?? null}
+          contextSelections={contextSelections}
+          onRemoveContextSelection={(index) => {
+            const idx = Math.max(0, Math.floor(index));
+            const meta = ensureChatMeta(activeChatId);
+            const next = (meta.contextSelections ?? []).filter((_t, i) => i !== idx);
+            meta.contextSelections = next;
+            setContextSelections(next);
+            schedulePersistSoon();
+          }}
           onCancelReply={() => {
             const meta = ensureChatMeta(activeChatId);
             meta.replyTo = null;
@@ -2855,13 +2912,22 @@ export default function App() {
             setReplySelection(null);
             setReplyContextAttachments([]);
             setReplySelectedAttachmentKeys([]);
+            schedulePersistSoon();
           }}
-          sendDisabled={!composerDraft.trim() && composerDraftAttachments.length === 0}
+          sendDisabled={
+            !composerDraft.trim() &&
+            composerDraftAttachments.length === 0 &&
+            !(typeof replySelection?.text === 'string' && replySelection.text.trim()) &&
+            (contextSelections ?? []).every((t) => !String(t ?? '').trim())
+          }
 	          onSend={() => {
 	            const engine = engineRef.current;
 	            if (!engine) return;
 	            const raw = composerDraft;
-	            if (!raw.trim() && composerDraftAttachments.length === 0) return;
+              const replyToText = typeof replySelection?.text === 'string' ? replySelection.text.trim() : '';
+              const contextTexts = (contextSelections ?? []).map((t) => String(t ?? '').trim()).filter(Boolean);
+              const hasPreface = Boolean(replyToText || contextTexts.length > 0);
+	            if (!raw.trim() && composerDraftAttachments.length === 0 && !hasPreface) return;
 
 	            const selectedModelId = composerModelId || DEFAULT_MODEL_ID;
 	            const assistantTitle = (() => {
@@ -2874,9 +2940,16 @@ export default function App() {
 
 	            const meta = ensureChatMeta(activeChatId);
 	            const desiredParentId = replySelection?.nodeId && engine.hasNode(replySelection.nodeId) ? replySelection.nodeId : null;
+              const userPreface = hasPreface
+                ? {
+                    ...(replyToText ? { replyTo: replyToText } : {}),
+                    ...(contextTexts.length ? { contexts: contextTexts } : {}),
+                  }
+                : undefined;
 	            const res = engine.spawnChatTurn({
 	              userText: raw,
 	              parentNodeId: desiredParentId,
+                userPreface,
 	              userAttachments: composerDraftAttachments.length ? composerDraftAttachments : undefined,
 	              selectedAttachmentKeys: replySelectedAttachmentKeys.length ? replySelectedAttachmentKeys : undefined,
 	              assistantTitle,
@@ -2892,12 +2965,14 @@ export default function App() {
             });
             meta.headNodeId = res.assistantNodeId;
 	            meta.replyTo = null;
+              meta.contextSelections = [];
 	            meta.draft = '';
 	            meta.draftAttachments = [];
 	            meta.selectedAttachmentKeys = [];
 	            draftAttachmentDedupeRef.current.delete(activeChatId);
 	            lastAddAttachmentFilesRef.current = { sig: '', at: 0 };
 	            setReplySelection(null);
+              setContextSelections([]);
 	            setReplyContextAttachments([]);
 	            setReplySelectedAttachmentKeys([]);
             setComposerDraft('');
@@ -3273,6 +3348,7 @@ export default function App() {
               draft: '',
               draftAttachments: [],
               replyTo: null,
+              contextSelections: [],
               selectedAttachmentKeys: [],
               headNodeId: null,
               turns: [],

@@ -101,6 +101,8 @@ export class TextLod2Overlay {
 
   private readonly menu: HTMLDivElement;
   private readonly menuCopyBtn: HTMLButtonElement;
+  private readonly menuReplyBtn: HTMLButtonElement;
+  private readonly menuAddToContextBtn: HTMLButtonElement;
   private readonly menuCloseBtn: HTMLButtonElement;
 
   private visibleNodeId: string | null = null;
@@ -117,6 +119,8 @@ export class TextLod2Overlay {
   onRequestAction?: (action: TextLod2Action) => void;
   onRequestSelect?: (nodeId: string) => void;
   onRequestEdit?: (nodeId: string) => boolean;
+  onRequestReplyToSelection?: (nodeId: string, selectionText: string) => void;
+  onRequestAddToContext?: (nodeId: string, selectionText: string) => void;
   onScroll?: (nodeId: string, scrollTop: number) => void;
 
   setBaseTextStyle(style: { fontFamily?: string; fontSizePx?: number; lineHeight?: number; color?: string }): void {
@@ -296,6 +300,8 @@ export class TextLod2Overlay {
     onRequestAction?: (action: TextLod2Action) => void;
     onRequestSelect?: (nodeId: string) => void;
     onRequestEdit?: (nodeId: string) => boolean;
+    onRequestReplyToSelection?: (nodeId: string, selectionText: string) => void;
+    onRequestAddToContext?: (nodeId: string, selectionText: string) => void;
     zIndex?: number;
     textStyle?: { fontFamily?: string; fontSizePx?: number; lineHeight?: number; color?: string };
   }) {
@@ -304,6 +310,8 @@ export class TextLod2Overlay {
     this.onRequestAction = opts.onRequestAction;
     this.onRequestSelect = opts.onRequestSelect;
     this.onRequestEdit = opts.onRequestEdit;
+    this.onRequestReplyToSelection = opts.onRequestReplyToSelection;
+    this.onRequestAddToContext = opts.onRequestAddToContext;
 
     const root = document.createElement('div');
     root.className = 'gc-textLod2';
@@ -396,6 +404,46 @@ export class TextLod2Overlay {
     });
     this.menuCopyBtn = copyBtn;
 
+    const replyBtn = document.createElement('button');
+    replyBtn.className = 'gc-selectionMenu__btn';
+    replyBtn.type = 'button';
+    replyBtn.textContent = 'Reply to';
+    replyBtn.addEventListener('click', () => {
+      const nodeId = this.visibleNodeId;
+      const text = (this.menuText ?? '').trim();
+      if (!nodeId || !text) {
+        this.closeMenu();
+        return;
+      }
+      try {
+        this.onRequestReplyToSelection?.(nodeId, text);
+      } catch {
+        // ignore
+      }
+      this.closeMenu();
+    });
+    this.menuReplyBtn = replyBtn;
+
+    const addToContextBtn = document.createElement('button');
+    addToContextBtn.className = 'gc-selectionMenu__btn';
+    addToContextBtn.type = 'button';
+    addToContextBtn.textContent = 'Add to context';
+    addToContextBtn.addEventListener('click', () => {
+      const nodeId = this.visibleNodeId;
+      const text = (this.menuText ?? '').trim();
+      if (!nodeId || !text) {
+        this.closeMenu();
+        return;
+      }
+      try {
+        this.onRequestAddToContext?.(nodeId, text);
+      } catch {
+        // ignore
+      }
+      this.closeMenu();
+    });
+    this.menuAddToContextBtn = addToContextBtn;
+
     const closeBtn = document.createElement('button');
     closeBtn.className = 'gc-selectionMenu__btn';
     closeBtn.type = 'button';
@@ -404,6 +452,8 @@ export class TextLod2Overlay {
     this.menuCloseBtn = closeBtn;
 
     menu.appendChild(copyBtn);
+    menu.appendChild(replyBtn);
+    menu.appendChild(addToContextBtn);
     menu.appendChild(closeBtn);
     this.host.appendChild(menu);
 
@@ -617,8 +667,8 @@ export class TextLod2Overlay {
     this.menuText = t;
 
     const rect = opts.anchorRect;
-    const estW = 192;
-    const estH = 44;
+    const estW = 210;
+    const estH = 152;
     const margin = 8;
     let top = rect.top - estH - margin;
     if (top < margin) top = rect.bottom + margin;
@@ -628,8 +678,8 @@ export class TextLod2Overlay {
     left = clamp(left, margin, window.innerWidth - estW - margin);
 
     this.menu.style.display = 'flex';
-    this.menu.style.flexDirection = 'row';
-    this.menu.style.gap = '8px';
+    this.menu.style.flexDirection = 'column';
+    this.menu.style.gap = '6px';
     this.menu.style.padding = '8px';
     this.menu.style.borderRadius = '12px';
     this.menu.style.background = 'rgba(11, 13, 18, 0.92)';
@@ -638,21 +688,24 @@ export class TextLod2Overlay {
     this.menu.style.boxShadow = '0 16px 50px rgba(0,0,0,0.45)';
     this.menu.style.left = `${Math.round(left)}px`;
     this.menu.style.top = `${Math.round(top)}px`;
+    this.menu.style.width = `${estW}px`;
 
     // Ensure buttons are readable even if global styles change.
-    this.menuCopyBtn.style.fontSize = '12px';
-    this.menuCopyBtn.style.padding = '6px 10px';
-    this.menuCopyBtn.style.borderRadius = '10px';
-    this.menuCopyBtn.style.border = '1px solid rgba(255,255,255,0.16)';
-    this.menuCopyBtn.style.background = 'rgba(0,0,0,0.25)';
-    this.menuCopyBtn.style.color = 'rgba(255,255,255,0.9)';
-
-    this.menuCloseBtn.style.fontSize = '12px';
-    this.menuCloseBtn.style.padding = '6px 10px';
-    this.menuCloseBtn.style.borderRadius = '10px';
-    this.menuCloseBtn.style.border = '1px solid rgba(255,255,255,0.16)';
-    this.menuCloseBtn.style.background = 'rgba(0,0,0,0.25)';
-    this.menuCloseBtn.style.color = 'rgba(255,255,255,0.9)';
+    const applyBtnStyle = (btn: HTMLButtonElement) => {
+      btn.style.width = '100%';
+      btn.style.textAlign = 'left';
+      btn.style.fontSize = '12px';
+      btn.style.padding = '7px 10px';
+      btn.style.borderRadius = '10px';
+      btn.style.border = '1px solid rgba(255,255,255,0.16)';
+      btn.style.background = 'rgba(0,0,0,0.25)';
+      btn.style.color = 'rgba(255,255,255,0.9)';
+      btn.style.cursor = 'pointer';
+    };
+    applyBtnStyle(this.menuCopyBtn);
+    applyBtnStyle(this.menuReplyBtn);
+    applyBtnStyle(this.menuAddToContextBtn);
+    applyBtnStyle(this.menuCloseBtn);
   }
 
   closeMenu(opts?: { suppressCallback?: boolean }): void {

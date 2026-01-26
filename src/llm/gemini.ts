@@ -184,6 +184,21 @@ async function buildAttachmentPartsForUserNode(args: {
   return parts;
 }
 
+function buildUserTurnText(node: Extract<ChatNode, { kind: 'text' }>): string {
+  const lines: string[] = [];
+  const replyTo = (node.userPreface?.replyTo ?? '').trim();
+  if (replyTo) lines.push(`Replying to: ${replyTo}`);
+
+  const ctxRaw = Array.isArray(node.userPreface?.contexts) ? node.userPreface!.contexts! : [];
+  const ctx = ctxRaw.map((t) => String(t ?? '').trim()).filter(Boolean);
+  for (let i = 0; i < ctx.length; i += 1) lines.push(`Context ${i + 1}: ${ctx[i]}`);
+
+  const body = typeof node.content === 'string' ? node.content : '';
+  if (lines.length === 0) return body;
+  if (body.trim()) return `${lines.join('\n')}\n\n${body}`;
+  return lines.join('\n');
+}
+
 async function buildGeminiHistory(args: {
   nodes: ChatNode[];
   leafUserNodeId: string;
@@ -215,10 +230,10 @@ async function buildGeminiHistory(args: {
   for (const n of chain) {
     if (n.kind !== 'text') continue;
 
-    const text = typeof n.content === 'string' ? n.content : String((n as any)?.content ?? '');
     if (n.author === 'user') {
       const parts: any[] = [];
-      if (text.trim()) parts.push({ text });
+      const userText = buildUserTurnText(n);
+      if (userText.trim()) parts.push({ text: userText });
       const includeOwn = n.id === args.leafUserNodeId;
       const attParts = await buildAttachmentPartsForUserNode({
         node: n,
@@ -231,6 +246,7 @@ async function buildGeminiHistory(args: {
       continue;
     }
 
+    const text = typeof n.content === 'string' ? n.content : String((n as any)?.content ?? '');
     const modelId = typeof (n as any)?.modelId === 'string' ? String((n as any).modelId) : '';
     const info = modelId ? getModelInfo(modelId) : undefined;
     const provider = info?.provider ?? 'openai';
@@ -309,4 +325,3 @@ export async function buildGeminiContext(args: {
 
   return { request, requestSnapshot };
 }
-

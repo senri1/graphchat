@@ -64,6 +64,10 @@ export type ChatNode =
       rect: Rect;
       author: ChatAuthor;
       content: string;
+      userPreface?: {
+        replyTo?: string;
+        contexts?: string[];
+      };
       isEditNode?: boolean;
       isGenerating?: boolean;
       modelId?: string | null;
