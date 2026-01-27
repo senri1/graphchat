@@ -339,14 +339,14 @@ export default function TextNodeEditor(props: Props) {
       <div className="editor__topbar">
         <div className="editor__title">{title ?? 'Edit node'}</div>
         <div className="editor__actions">
-          <label className="editor__toggle">
-            <span>Preview</span>
-            <input
-              type="checkbox"
-              checked={previewEnabled}
-              onChange={(e) => setPreviewEnabled(Boolean((e.currentTarget as HTMLInputElement).checked))}
-            />
-          </label>
+          <button
+            className={`editor__btn ${previewEnabled ? 'editor__btn--toggleOn' : ''}`}
+            type="button"
+            aria-pressed={previewEnabled}
+            onClick={() => setPreviewEnabled((v) => !v)}
+          >
+            Preview
+          </button>
           <button className="editor__btn" type="button" onClick={cancel}>
             Cancel
           </button>

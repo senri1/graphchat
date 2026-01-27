@@ -1896,9 +1896,9 @@ body {
 }
 
 .editor--edit .editor__topbar {
-  height: calc(50px * var(--editor-scale, 1));
-  padding: calc(12px * var(--editor-scale, 1)) calc(14px * var(--editor-scale, 1)) 0 calc(14px * var(--editor-scale, 1));
-  align-items: flex-start;
+  height: calc(44px * var(--editor-scale, 1));
+  padding: 0 calc(14px * var(--editor-scale, 1));
+  align-items: center;
 }
 
 .editor__topbar {
@@ -1912,8 +1912,8 @@ body {
 
 .editor__title {
   font-size: calc(14px * var(--editor-scale, 1));
-  font-weight: 650;
-  letter-spacing: calc(0.2px * var(--editor-scale, 1));
+  font-weight: 600;
+  letter-spacing: 0;
   color: rgba(255, 255, 255, 0.85);
 }
 
@@ -1935,19 +1935,16 @@ body {
 .editor__actions {
   display: flex;
   gap: calc(8px * var(--editor-scale, 1));
-}
-
-.editor__toggle {
-  display: inline-flex;
   align-items: center;
-  gap: calc(8px * var(--editor-scale, 1));
-  font-size: calc(12px * var(--editor-scale, 1));
-  color: rgba(255, 255, 255, 0.86);
-  user-select: none;
 }
 
-.editor__toggle input {
-  accent-color: rgba(147, 197, 253, 0.85);
+.editor__btn--toggleOn {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.editor__btn--toggleOn:hover {
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .editor__btn--primary {
