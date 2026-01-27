@@ -365,6 +365,96 @@ html.gc-ink-drawing * {
   margin: 4px 6px;
 }
 
+.treeRow__bgPicker {
+  position: fixed;
+  width: min(420px, calc(100vw - 16px));
+  max-height: 70vh;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 10px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, var(--ui-glass-bg-alpha));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
+  box-shadow: 0 24px 65px rgba(0, 0, 0, 0.45);
+  z-index: 90;
+}
+
+.treeRow__bgGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.treeRow__bgTile {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 12px;
+  padding: 0;
+  cursor: pointer;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.84);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.treeRow__bgTile:hover {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.treeRow__bgTile:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.treeRow__bgTile:disabled:hover {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.treeRow__bgTile--selected {
+  border-color: rgba(147, 197, 253, 0.65);
+  box-shadow: 0 0 0 3px rgba(147, 197, 253, 0.14);
+}
+
+.treeRow__bgThumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.treeRow__bgCaption {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 6px 7px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.92);
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.65), rgba(0, 0, 0, 0));
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.treeRow__bgTile:hover .treeRow__bgCaption,
+.treeRow__bgTile:focus-visible .treeRow__bgCaption,
+.treeRow__bgTile--selected .treeRow__bgCaption {
+  opacity: 1;
+}
+
 .gc-selectionMenu {
   display: flex;
   flex-direction: column;
@@ -1098,6 +1188,41 @@ html.gc-ink-drawing * {
 
 .settingsBgList__row {
   align-items: flex-start;
+}
+
+.settingsBgList__text {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+
+.settingsBgThumbWrap {
+  width: 64px;
+  height: 44px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  flex: 0 0 auto;
+}
+
+.settingsBgThumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.settingsBgThumb--placeholder {
+  background: radial-gradient(circle at 24px 16px, rgba(255, 255, 255, 0.16) 1px, transparent 1px) 0 0 / 16px 16px,
+    rgba(255, 255, 255, 0.06);
+}
+
+.settingsBgMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 
 .settingsColorPicker {

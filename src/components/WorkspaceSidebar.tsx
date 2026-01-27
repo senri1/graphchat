@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { BackgroundLibraryItem } from '../model/backgrounds';
+import { useAttachmentObjectUrls } from '../ui/useAttachmentObjectUrls';
 import type { WorkspaceFolder, WorkspaceItem } from '../workspace/tree';
 
 type Props = {
@@ -59,9 +60,16 @@ export default function WorkspaceSidebar(props: Props) {
   const [openItemMenuId, setOpenItemMenuId] = useState<string | null>(null);
   const [itemMenuPos, setItemMenuPos] = useState<{ left: number; top: number } | null>(null);
   const [revealedItemMenuId, setRevealedItemMenuId] = useState<string | null>(null);
+  const [openBackgroundPickerChatId, setOpenBackgroundPickerChatId] = useState<string | null>(null);
+  const [backgroundPickerPos, setBackgroundPickerPos] = useState<{ left: number; top: number } | null>(null);
   const sidebarRef = React.useRef<HTMLDivElement | null>(null);
   const itemMenuButtonRefs = React.useRef(new Map<string, HTMLButtonElement | null>());
   const itemMenuRef = React.useRef<HTMLDivElement | null>(null);
+  const backgroundPickerRef = React.useRef<HTMLDivElement | null>(null);
+
+  const backgroundThumbUrls = useAttachmentObjectUrls(
+    openBackgroundPickerChatId ? (backgroundLibrary ?? []).map((b) => b.storageKey) : [],
+  );
 
   const beginRename = (item: WorkspaceItem) => {
     setOpenItemMenuId(null);
@@ -106,6 +114,30 @@ export default function WorkspaceSidebar(props: Props) {
     setItemMenuPos({ left, top });
   }, []);
 
+  const updateBackgroundPickerPosition = React.useCallback((chatId: string) => {
+    const btn = itemMenuButtonRefs.current.get(chatId);
+    if (!btn) return;
+    const rect = btn.getBoundingClientRect();
+
+    const gap = 10;
+    const viewportPadding = 8;
+    const pickerRect = backgroundPickerRef.current?.getBoundingClientRect?.();
+    const estimatedWidth = Math.ceil(pickerRect?.width ?? 360);
+    const estimatedHeight = Math.ceil(pickerRect?.height ?? 360);
+
+    let left = rect.right + gap;
+    let top = rect.top;
+
+    if (left + estimatedWidth > window.innerWidth - viewportPadding) {
+      left = Math.max(viewportPadding, rect.left - gap - estimatedWidth);
+    }
+    if (top + estimatedHeight > window.innerHeight - viewportPadding) {
+      top = Math.max(viewportPadding, window.innerHeight - viewportPadding - estimatedHeight);
+    }
+
+    setBackgroundPickerPos({ left, top });
+  }, []);
+
   React.useEffect(() => {
     if (!openItemMenuId) return;
 
@@ -138,6 +170,39 @@ export default function WorkspaceSidebar(props: Props) {
       window.removeEventListener('scroll', onReposition, true);
     };
   }, [openItemMenuId, updateItemMenuPosition]);
+
+  React.useEffect(() => {
+    if (!openBackgroundPickerChatId) return;
+
+    const onPointerDownCapture = (e: PointerEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      const btn = itemMenuButtonRefs.current.get(openBackgroundPickerChatId);
+      const picker = backgroundPickerRef.current;
+      if (btn && btn.contains(target)) return;
+      if (picker && picker.contains(target)) return;
+      setOpenBackgroundPickerChatId(null);
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpenBackgroundPickerChatId(null);
+    };
+
+    const onReposition = () => updateBackgroundPickerPosition(openBackgroundPickerChatId);
+
+    window.addEventListener('pointerdown', onPointerDownCapture, true);
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('resize', onReposition);
+    window.addEventListener('scroll', onReposition, true);
+
+    updateBackgroundPickerPosition(openBackgroundPickerChatId);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDownCapture, true);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('resize', onReposition);
+      window.removeEventListener('scroll', onReposition, true);
+    };
+  }, [openBackgroundPickerChatId, updateBackgroundPickerPosition]);
 
   React.useEffect(() => {
     if (!revealedItemMenuId) return;
@@ -273,6 +338,7 @@ export default function WorkspaceSidebar(props: Props) {
                     e.preventDefault();
                     e.stopPropagation();
                     setRevealedItemMenuId(item.id);
+                    setOpenBackgroundPickerChatId(null);
                     const nextId = openItemMenuId === item.id ? null : item.id;
                     setOpenItemMenuId(nextId);
                     if (nextId) updateItemMenuPosition(nextId);
@@ -388,6 +454,7 @@ export default function WorkspaceSidebar(props: Props) {
                 e.preventDefault();
                 e.stopPropagation();
                 setRevealedItemMenuId(item.id);
+                setOpenBackgroundPickerChatId(null);
                 const nextId = openItemMenuId === item.id ? null : item.id;
                 setOpenItemMenuId(nextId);
                 if (nextId) updateItemMenuPosition(nextId);
@@ -416,7 +483,6 @@ export default function WorkspaceSidebar(props: Props) {
                     >
                       Rename
                     </button>
-                    <div className="treeRow__menuDivider" role="presentation" />
                     <button
                       className="treeRow__menuItem"
                       type="button"
@@ -425,35 +491,12 @@ export default function WorkspaceSidebar(props: Props) {
                         e.preventDefault();
                         e.stopPropagation();
                         setOpenItemMenuId(null);
-                        onSetChatBackgroundStorageKey(item.id, null);
+                        setOpenBackgroundPickerChatId(item.id);
+                        updateBackgroundPickerPosition(item.id);
                       }}
                     >
-                      {(chatBackgroundKey ? '' : '✓ ')}No background
+                      Change background
                     </button>
-                    {(backgroundLibrary ?? []).length ? (
-                      backgroundLibrary.map((bg) => (
-                        <button
-                          key={bg.id}
-                          className="treeRow__menuItem"
-                          type="button"
-                          role="menuitem"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setOpenItemMenuId(null);
-                            onSetChatBackgroundStorageKey(item.id, bg.storageKey);
-                          }}
-                        >
-                          {chatBackgroundKey === bg.storageKey ? '✓ ' : ''}
-                          {bg.name}
-                        </button>
-                      ))
-                    ) : (
-                      <button className="treeRow__menuItem" type="button" role="menuitem" disabled>
-                        No backgrounds uploaded
-                      </button>
-                    )}
-                    <div className="treeRow__menuDivider" role="presentation" />
                     <button
                       className="treeRow__menuItem treeRow__menuItem--danger"
                       type="button"
@@ -473,6 +516,62 @@ export default function WorkspaceSidebar(props: Props) {
               : null}
           </div>
         ) : null}
+        {openBackgroundPickerChatId === item.id && backgroundPickerPos && typeof document !== 'undefined'
+          ? createPortal(
+              <div
+                className="treeRow__bgPicker"
+                role="dialog"
+                aria-label="Change background"
+                ref={backgroundPickerRef}
+                style={{ left: backgroundPickerPos.left, top: backgroundPickerPos.top }}
+              >
+                <div className="treeRow__bgGrid">
+                  <button
+                    className={`treeRow__bgTile ${!chatBackgroundKey ? 'treeRow__bgTile--selected' : ''}`}
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setOpenBackgroundPickerChatId(null);
+                      onSetChatBackgroundStorageKey(item.id, null);
+                    }}
+                    title="No background"
+                    aria-label="No background"
+                  >
+                    None
+                  </button>
+                  {(backgroundLibrary ?? []).map((bg) => {
+                    const thumbUrl = backgroundThumbUrls[bg.storageKey] || '';
+                    const selected = chatBackgroundKey === bg.storageKey;
+                    return (
+                      <button
+                        key={bg.id}
+                        className={`treeRow__bgTile ${selected ? 'treeRow__bgTile--selected' : ''}`}
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setOpenBackgroundPickerChatId(null);
+                          onSetChatBackgroundStorageKey(item.id, bg.storageKey);
+                        }}
+                        title={bg.name}
+                        aria-label={bg.name}
+                      >
+                        {thumbUrl ? <img className="treeRow__bgThumb" src={thumbUrl} alt="" /> : null}
+                        <div className="treeRow__bgCaption">{bg.name}</div>
+                      </button>
+                    );
+                  })}
+                  {(backgroundLibrary ?? []).length === 0 ? (
+                    <button className="treeRow__bgTile" type="button" disabled aria-label="No backgrounds uploaded">
+                      No backgrounds
+                    </button>
+                  ) : null}
+                </div>
+              </div>,
+              document.body,
+            )
+          : null}
       </div>
     );
   };

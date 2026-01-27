@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { BackgroundLibraryItem } from '../model/backgrounds';
 import { FONT_FAMILY_OPTIONS, type FontFamilyKey } from '../ui/typography';
+import { useAttachmentObjectUrls } from '../ui/useAttachmentObjectUrls';
 import type { ModelInfo } from '../llm/registry';
 import type { ModelUserSettings, ModelUserSettingsById, ReasoningSummarySetting } from '../llm/modelUserSettings';
 
@@ -77,6 +78,9 @@ export default function SettingsModal(props: Props) {
   const onClose = props.onClose;
   const [renamingBackgroundId, setRenamingBackgroundId] = useState<string | null>(null);
   const [renameBackgroundDraft, setRenameBackgroundDraft] = useState('');
+  const backgroundThumbUrls = useAttachmentObjectUrls(
+    open && props.activePanel === 'appearance' ? (props.backgroundLibrary ?? []).map((b) => b.storageKey) : [],
+  );
 
   const beginRenameBackground = (bg: BackgroundLibraryItem) => {
     setRenamingBackgroundId(bg.id);
@@ -211,32 +215,42 @@ export default function SettingsModal(props: Props) {
                       <div className="settingsBgList" role="list" aria-label="Uploaded backgrounds">
                         {props.backgroundLibrary.map((bg) => {
                           const isRenaming = renamingBackgroundId === bg.id;
+                          const thumbUrl = backgroundThumbUrls[bg.storageKey] || '';
                           return (
                             <div key={bg.id} className="settingsRow settingsBgList__row" role="listitem">
-                              <div className="settingsRow__text">
-                                {isRenaming ? (
-                                  <input
-                                    className="settingsTextInput"
-                                    value={renameBackgroundDraft}
-                                    onChange={(e) => setRenameBackgroundDraft(e.target.value)}
-                                    onBlur={commitRenameBackground}
-                                    onKeyDown={(e) => {
-                                      if (e.key === 'Enter') {
-                                        e.preventDefault();
-                                        commitRenameBackground();
-                                      } else if (e.key === 'Escape') {
-                                        e.preventDefault();
-                                        cancelRenameBackground();
-                                      }
-                                    }}
-                                    autoFocus
-                                  />
-                                ) : (
-                                  <div className="settingsRow__title">{bg.name}</div>
-                                )}
-                                <div className="settingsRow__desc">
-                                  {bg.mimeType ? bg.mimeType : 'Image attachment'}
-                                  {typeof bg.size === 'number' ? ` • ${Math.round(bg.size / 1024)} KB` : ''}
+                              <div className="settingsRow__text settingsBgList__text">
+                                <div className="settingsBgThumbWrap" aria-hidden="true">
+                                  {thumbUrl ? (
+                                    <img className="settingsBgThumb" src={thumbUrl} alt="" />
+                                  ) : (
+                                    <div className="settingsBgThumb settingsBgThumb--placeholder" />
+                                  )}
+                                </div>
+                                <div className="settingsBgMeta">
+                                  {isRenaming ? (
+                                    <input
+                                      className="settingsTextInput"
+                                      value={renameBackgroundDraft}
+                                      onChange={(e) => setRenameBackgroundDraft(e.target.value)}
+                                      onBlur={commitRenameBackground}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                          e.preventDefault();
+                                          commitRenameBackground();
+                                        } else if (e.key === 'Escape') {
+                                          e.preventDefault();
+                                          cancelRenameBackground();
+                                        }
+                                      }}
+                                      autoFocus
+                                    />
+                                  ) : (
+                                    <div className="settingsRow__title">{bg.name}</div>
+                                  )}
+                                  <div className="settingsRow__desc">
+                                    {bg.mimeType ? bg.mimeType : 'Image attachment'}
+                                    {typeof bg.size === 'number' ? ` • ${Math.round(bg.size / 1024)} KB` : ''}
+                                  </div>
                                 </div>
                               </div>
                               <div className="settingsRow__actions">
