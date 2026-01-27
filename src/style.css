@@ -346,6 +346,9 @@ html.gc-ink-drawing * {
 .treeRow__menu {
   position: fixed;
   min-width: 120px;
+  max-height: 70vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 6px;
   border-radius: 12px;
   background: rgba(0, 0, 0, var(--ui-glass-bg-alpha));
@@ -354,6 +357,12 @@ html.gc-ink-drawing * {
   -webkit-backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
   box-shadow: 0 24px 65px rgba(0, 0, 0, 0.45);
   z-index: 80;
+}
+
+.treeRow__menuDivider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.12);
+  margin: 4px 6px;
 }
 
 .gc-selectionMenu {
@@ -1066,6 +1075,29 @@ html.gc-ink-drawing * {
   font-size: 12px;
   width: 92px;
   outline: none;
+}
+
+.settingsTextInput {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.25);
+  color: rgba(255, 255, 255, 0.92);
+  border-radius: 10px;
+  padding: 7px 10px;
+  font-size: 12px;
+  width: min(320px, 60vw);
+  max-width: 100%;
+  outline: none;
+}
+
+.settingsBgList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settingsBgList__row {
+  align-items: flex-start;
 }
 
 .settingsColorPicker {

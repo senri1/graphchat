@@ -39,6 +39,7 @@ import {
 } from './services/openaiService';
 import { getGeminiApiKey, sendGeminiResponse } from './services/geminiService';
 import type { ChatAttachment, ChatNode, ThinkingSummaryChunk } from './model/chat';
+import { normalizeBackgroundLibrary, type BackgroundLibraryItem } from './model/backgrounds';
 import { buildOpenAIResponseRequest, type OpenAIChatSettings } from './llm/openai';
 import { buildGeminiContext, type GeminiChatSettings } from './llm/gemini';
 import { DEFAULT_MODEL_ID, getModelInfo, listModels } from './llm/registry';
@@ -180,7 +181,14 @@ type RawViewerState = {
 
 type ConfirmDeleteState =
   | { kind: 'tree-item'; itemId: string; itemType: 'chat' | 'folder'; name: string }
-  | { kind: 'node'; nodeId: string };
+  | { kind: 'node'; nodeId: string }
+  | { kind: 'background'; backgroundId: string; name: string };
+
+type ConfirmApplyBackgroundState = {
+  chatId: string;
+  backgroundId: string;
+  backgroundName: string;
+};
 
 function genId(prefix: string): string {
   const p = prefix.replace(/[^a-z0-9_-]/gi, '').slice(0, 8) || 'id';
@@ -336,9 +344,15 @@ function collectAllReferencedAttachmentKeys(args: {
   chatIds: string[];
   chatStates: Map<string, WorldEngineChatState>;
   chatMeta: Map<string, ChatRuntimeMeta>;
+  backgroundLibrary: BackgroundLibraryItem[];
 }): Set<string> {
   const referenced = new Set<string>();
   const chatIds = args.chatIds ?? [];
+
+  for (const bg of args.backgroundLibrary ?? []) {
+    const key = typeof bg?.storageKey === 'string' ? bg.storageKey : '';
+    if (key) referenced.add(key);
+  }
 
   for (const chatId of chatIds) {
     const state = args.chatStates.get(chatId);
@@ -378,6 +392,7 @@ export default function App() {
     root: WorkspaceFolder;
     activeChatId: string;
     focusedFolderId: string;
+    backgroundLibrary: BackgroundLibraryItem[];
     llm: {
       modelUserSettings: ModelUserSettingsById;
     };
@@ -418,6 +433,7 @@ export default function App() {
   const [rawViewer, setRawViewer] = useState<RawViewerState | null>(null);
   const [nodeMenuId, setNodeMenuId] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<ConfirmDeleteState | null>(null);
+  const [confirmApplyBackground, setConfirmApplyBackground] = useState<ConfirmApplyBackgroundState | null>(null);
   const [viewport, setViewport] = useState(() => ({ w: 1, h: 1 }));
   const [composerDraft, setComposerDraft] = useState('');
   const [composerDraftAttachments, setComposerDraftAttachments] = useState<ChatAttachment[]>(() => []);
@@ -433,6 +449,7 @@ export default function App() {
   const [allowEditingAllTextNodes, setAllowEditingAllTextNodes] = useState(false);
   const allowEditingAllTextNodesRef = useRef<boolean>(allowEditingAllTextNodes);
   const [stressSpawnCount, setStressSpawnCount] = useState<number>(50);
+  const [backgroundLibrary, setBackgroundLibrary] = useState<BackgroundLibraryItem[]>(() => []);
   const [backgroundStorageKey, setBackgroundStorageKey] = useState<string | null>(() => null);
   const [glassNodesEnabled, setGlassNodesEnabled] = useState<boolean>(() => false);
   const [glassNodesBlurCssPxWebgl, setGlassNodesBlurCssPxWebgl] = useState<number>(() => 10);
@@ -452,6 +469,7 @@ export default function App() {
   const [nodeFontSizePx, setNodeFontSizePx] = useState<number>(() => DEFAULT_NODE_FONT_SIZE_PX);
   const [sidebarFontFamily, setSidebarFontFamily] = useState<FontFamilyKey>(() => DEFAULT_SIDEBAR_FONT_FAMILY);
   const [sidebarFontSizePx, setSidebarFontSizePx] = useState<number>(() => DEFAULT_SIDEBAR_FONT_SIZE_PX);
+  const backgroundLibraryRef = useRef<BackgroundLibraryItem[]>(backgroundLibrary);
   const glassNodesEnabledRef = useRef<boolean>(glassNodesEnabled);
   const glassNodesBlurCssPxWebglRef = useRef<number>(glassNodesBlurCssPxWebgl);
   const glassNodesSaturatePctWebglRef = useRef<number>(glassNodesSaturatePctWebgl);
@@ -553,6 +571,10 @@ export default function App() {
   useEffect(() => {
     modelUserSettingsRef.current = modelUserSettings;
   }, [modelUserSettings]);
+
+  useEffect(() => {
+    backgroundLibraryRef.current = backgroundLibrary;
+  }, [backgroundLibrary]);
 
   useEffect(() => {
     allowEditingAllTextNodesRef.current = allowEditingAllTextNodes;
@@ -722,6 +744,7 @@ export default function App() {
             root,
             activeChatId: active,
             focusedFolderId: focused,
+            backgroundLibrary: backgroundLibraryRef.current,
             llm: { modelUserSettings: modelUserSettingsRef.current as any },
             visual: {
               glassNodesEnabled: Boolean(glassNodesEnabledRef.current),
@@ -793,6 +816,7 @@ export default function App() {
                 chatIds,
                 chatStates: chatStatesRef.current,
                 chatMeta: chatMetaRef.current,
+                backgroundLibrary: backgroundLibraryRef.current,
               });
               const allKeys = await listAttachmentKeys();
               const toDelete = allKeys.filter((k) => !referenced.has(k));
@@ -867,6 +891,93 @@ export default function App() {
         return;
       }
       await engine.setBackgroundFromBlob(rec.blob);
+    })();
+  };
+
+  const setChatBackgroundStorageKey = (chatId: string, storageKey: string | null) => {
+    if (!chatId) return;
+    const key = typeof storageKey === 'string' ? storageKey : null;
+    const meta = ensureChatMeta(chatId);
+    meta.backgroundStorageKey = key;
+    if (activeChatIdRef.current === chatId) {
+      setBackgroundStorageKey(key);
+      applyVisualSettings(chatId);
+    }
+    attachmentsGcDirtyRef.current = true;
+    schedulePersistSoon();
+  };
+
+  const setBackgroundLibraryNext = (next: BackgroundLibraryItem[]) => {
+    backgroundLibraryRef.current = next;
+    setBackgroundLibrary(next);
+  };
+
+  const upsertBackgroundLibraryItem = (item: BackgroundLibraryItem) => {
+    const storageKey = typeof item?.storageKey === 'string' ? item.storageKey : '';
+    if (!storageKey) return;
+    const prev = backgroundLibraryRef.current ?? [];
+    const idx = prev.findIndex((b) => b.storageKey === storageKey);
+    const normalized: BackgroundLibraryItem = {
+      id: storageKey,
+      storageKey,
+      name: String(item.name ?? '').trim() || `Background ${storageKey.slice(-6)}`,
+      createdAt: Number.isFinite(item.createdAt) ? Math.max(0, Math.floor(item.createdAt)) : Date.now(),
+      ...(item.mimeType ? { mimeType: item.mimeType } : {}),
+      ...(typeof item.size === 'number' ? { size: item.size } : {}),
+    };
+    const next = idx >= 0 ? prev.map((b, i) => (i === idx ? { ...b, ...normalized } : b)) : [normalized, ...prev];
+    next.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0) || a.name.localeCompare(b.name));
+    setBackgroundLibraryNext(next);
+    attachmentsGcDirtyRef.current = true;
+    schedulePersistSoon();
+  };
+
+  const renameBackgroundLibraryItem = (backgroundId: string, name: string) => {
+    const id = String(backgroundId ?? '').trim();
+    const nextName = String(name ?? '').trim();
+    if (!id || !nextName) return;
+    const prev = backgroundLibraryRef.current ?? [];
+    const next = prev.map((b) => (b.id === id ? { ...b, name: nextName } : b));
+    setBackgroundLibraryNext(next);
+    schedulePersistSoon();
+  };
+
+  const requestDeleteBackgroundLibraryItem = (backgroundId: string) => {
+    const id = String(backgroundId ?? '').trim();
+    if (!id) return;
+    const bg = (backgroundLibraryRef.current ?? []).find((b) => b.id === id);
+    if (!bg) return;
+    setConfirmDelete({ kind: 'background', backgroundId: id, name: bg.name });
+  };
+
+  const performDeleteBackgroundLibraryItem = (backgroundId: string) => {
+    const id = String(backgroundId ?? '').trim();
+    if (!id) return;
+
+    setConfirmApplyBackground((prev) => (prev?.backgroundId === id ? null : prev));
+
+    const prevLib = backgroundLibraryRef.current ?? [];
+    const nextLib = prevLib.filter((b) => b.id !== id);
+    setBackgroundLibraryNext(nextLib);
+
+    for (const [chatId, meta] of Array.from(chatMetaRef.current.entries())) {
+      if (meta?.backgroundStorageKey !== id) continue;
+      meta.backgroundStorageKey = null;
+      if (activeChatIdRef.current === chatId) {
+        setBackgroundStorageKey(null);
+        applyVisualSettings(chatId);
+      }
+    }
+
+    attachmentsGcDirtyRef.current = true;
+    void (async () => {
+      try {
+        await deleteAttachment(id);
+      } catch {
+        // ignore
+      } finally {
+        schedulePersistSoon();
+      }
     })();
   };
 
@@ -2230,6 +2341,8 @@ export default function App() {
     chatMetaRef.current = chatMeta;
     setModelUserSettings(payload.llm.modelUserSettings);
     modelUserSettingsRef.current = payload.llm.modelUserSettings;
+    backgroundLibraryRef.current = payload.backgroundLibrary;
+    setBackgroundLibrary(payload.backgroundLibrary);
 
     const chatIds = collectChatIds(root);
     const active = chatIds.includes(desiredActive) ? desiredActive : findFirstChatId(root) ?? desiredActive;
@@ -2360,6 +2473,8 @@ export default function App() {
 
       const chatStates = new Map<string, WorldEngineChatState>();
       const chatMeta = new Map<string, ChatRuntimeMeta>();
+      const backgroundLibraryFromWorkspace = normalizeBackgroundLibrary((ws as any)?.backgroundLibrary);
+      const backgroundKeysInChats = new Set<string>();
 
       for (const chatId of chatIds) {
         try {
@@ -2383,6 +2498,8 @@ export default function App() {
           const metaRec = await getChatMetaRecord(chatId);
           const raw = (metaRec?.meta ?? null) as any;
           const llmRaw = raw?.llm ?? null;
+          const backgroundStorageKey = typeof raw?.backgroundStorageKey === 'string' ? raw.backgroundStorageKey : null;
+          if (backgroundStorageKey) backgroundKeysInChats.add(backgroundStorageKey);
 
           if (chatId === desiredActiveChatId) {
             legacyVisualFromActive = {
@@ -2424,13 +2541,48 @@ export default function App() {
               modelId: typeof llmRaw?.modelId === 'string' ? llmRaw.modelId : DEFAULT_MODEL_ID,
               webSearchEnabled: Boolean(llmRaw?.webSearchEnabled),
             },
-            backgroundStorageKey: typeof raw?.backgroundStorageKey === 'string' ? raw.backgroundStorageKey : null,
+            backgroundStorageKey: backgroundStorageKey,
           };
           chatMeta.set(chatId, meta);
         } catch {
           // ignore missing meta
         }
       }
+
+      const backgroundLibraryByKey = new Set(backgroundLibraryFromWorkspace.map((b) => b.storageKey));
+      const backgroundLibrary = backgroundLibraryFromWorkspace.slice();
+      for (const key of backgroundKeysInChats) {
+        if (backgroundLibraryByKey.has(key)) continue;
+        let name = '';
+        let createdAt = 0;
+        let mimeType = '';
+        let size: number | undefined = undefined;
+        try {
+          const rec = await getAttachment(key);
+          if (rec) {
+            name = typeof rec.name === 'string' ? rec.name : '';
+            createdAt = Number.isFinite(Number(rec.createdAt)) ? Number(rec.createdAt) : 0;
+            mimeType = typeof rec.mimeType === 'string' ? rec.mimeType : '';
+            size = Number.isFinite(Number(rec.size)) ? Number(rec.size) : undefined;
+          }
+        } catch {
+          // ignore
+        }
+
+        const trimmedName = String(name ?? '').trim();
+        const baseName = trimmedName ? trimmedName.replace(/\.[^/.]+$/, '') : `Background ${key.slice(-6)}`;
+        const item: BackgroundLibraryItem = {
+          id: key,
+          storageKey: key,
+          name: baseName,
+          createdAt: Number.isFinite(createdAt) ? Math.max(0, createdAt) : 0,
+          ...(mimeType ? { mimeType } : {}),
+          ...(typeof size === 'number' ? { size } : {}),
+        };
+        backgroundLibrary.push(item);
+        backgroundLibraryByKey.add(key);
+      }
+      backgroundLibrary.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0) || a.name.localeCompare(b.name));
 
       const visualRaw = (ws as any)?.visual ?? null;
       const visualSrc =
@@ -2517,6 +2669,7 @@ export default function App() {
         root,
         activeChatId: desiredActiveChatId,
         focusedFolderId: typeof ws.focusedFolderId === 'string' ? ws.focusedFolderId : root.id,
+        backgroundLibrary,
         llm: { modelUserSettings },
         visual,
         chatStates,
@@ -2592,30 +2745,6 @@ export default function App() {
     }
 
     for (const chatId of removedChatIds) {
-      const state = chatStatesRef.current.get(chatId);
-      const nodeKeys = state ? collectAttachmentStorageKeys(state.nodes ?? []) : [];
-      const meta = chatMetaRef.current.get(chatId);
-      const bgKey = typeof meta?.backgroundStorageKey === 'string' ? meta.backgroundStorageKey : '';
-      const draftKeys =
-        meta?.draftAttachments
-          ?.map((att) => {
-            if (!att) return '';
-            if (att.kind !== 'image' && att.kind !== 'pdf') return '';
-            return typeof att.storageKey === 'string' ? att.storageKey : '';
-          })
-          .filter(Boolean) ?? [];
-      const keys = Array.from(new Set([...nodeKeys, ...draftKeys, ...(bgKey ? [bgKey] : [])]));
-      if (keys.length) {
-        void (async () => {
-          for (const key of keys) {
-            try {
-              await deleteAttachment(key);
-            } catch {
-              // ignore
-            }
-          }
-        })();
-      }
       chatStatesRef.current.delete(chatId);
       chatMetaRef.current.delete(chatId);
       void deleteChatStateRecord(chatId);
@@ -2683,6 +2812,8 @@ export default function App() {
       ? `Delete ${confirmDelete.itemType === 'chat' ? 'Chat' : 'Folder'}?`
       : confirmDelete?.kind === 'node'
         ? 'Delete Node?'
+        : confirmDelete?.kind === 'background'
+          ? 'Delete Background?'
         : '';
 
   const confirmDeleteMessage =
@@ -2690,6 +2821,8 @@ export default function App() {
       ? `${confirmDelete.name ? `"${confirmDelete.name}" ` : ''}This action cannot be undone.`
       : confirmDelete?.kind === 'node'
         ? 'This action cannot be undone.'
+        : confirmDelete?.kind === 'background'
+          ? `${confirmDelete.name ? `"${confirmDelete.name}" ` : ''}This will remove it from the library and clear it from any chats using it.`
         : '';
 
   const confirmDeleteNow = () => {
@@ -2698,8 +2831,10 @@ export default function App() {
     if (!payload) return;
     if (payload.kind === 'tree-item') {
       performDeleteTreeItem(payload.itemId);
-    } else {
+    } else if (payload.kind === 'node') {
       performDeleteNode(payload.nodeId);
+    } else {
+      performDeleteBackgroundLibraryItem(payload.backgroundId);
     }
   };
 
@@ -2715,10 +2850,34 @@ export default function App() {
         onCancel={() => setConfirmDelete(null)}
         onConfirm={confirmDeleteNow}
       />
+      <ConfirmDialog
+        open={confirmApplyBackground != null}
+        title="Apply background?"
+        message={
+          confirmApplyBackground
+            ? `Apply "${confirmApplyBackground.backgroundName}" to this chat?`
+            : ''
+        }
+        cancelLabel="No"
+        confirmLabel="Apply"
+        onCancel={() => setConfirmApplyBackground(null)}
+        onConfirm={() => {
+          const payload = confirmApplyBackground;
+          setConfirmApplyBackground(null);
+          if (!payload) return;
+          setChatBackgroundStorageKey(payload.chatId, payload.backgroundId);
+        }}
+      />
       <WorkspaceSidebar
         root={treeRoot}
         activeChatId={activeChatId}
         focusedFolderId={focusedFolderId}
+        backgroundLibrary={backgroundLibrary}
+        getChatBackgroundStorageKey={(chatId) => {
+          const meta = chatMetaRef.current.get(chatId);
+          return typeof meta?.backgroundStorageKey === 'string' ? meta.backgroundStorageKey : null;
+        }}
+        onSetChatBackgroundStorageKey={setChatBackgroundStorageKey}
         onFocusFolder={(folderId) => {
           setFocusedFolderId(folderId);
           schedulePersistSoon();
@@ -3068,8 +3227,8 @@ export default function App() {
             if (!file) return;
             const chatId = activeChatIdRef.current;
             void (async () => {
+              let storageKey: string | null = null;
               try {
-                let storageKey: string | null = null;
                 try {
                   storageKey = await putAttachment({
                     blob: file,
@@ -3081,12 +3240,21 @@ export default function App() {
                   storageKey = null;
                 }
 
-                const meta = ensureChatMeta(chatId);
-                meta.backgroundStorageKey = storageKey;
-                if (activeChatIdRef.current === chatId) setBackgroundStorageKey(storageKey);
-                attachmentsGcDirtyRef.current = true;
+                if (!storageKey) return;
 
-                await engineRef.current?.setBackgroundFromBlob(file);
+                const rawName = String(file.name ?? '').trim();
+                const baseName = rawName ? rawName.replace(/\.[^/.]+$/, '') : '';
+                const backgroundName = baseName || `Background ${storageKey.slice(-6)}`;
+                upsertBackgroundLibraryItem({
+                  id: storageKey,
+                  storageKey,
+                  name: backgroundName,
+                  createdAt: Date.now(),
+                  mimeType: file.type || 'image/png',
+                  size: Number.isFinite(file.size) ? file.size : undefined,
+                });
+
+                setConfirmApplyBackground({ chatId, backgroundId: storageKey, backgroundName });
               } finally {
                 schedulePersistSoon();
               }
@@ -3183,17 +3351,10 @@ export default function App() {
             });
             schedulePersistSoon();
           }}
-          backgroundEnabled={Boolean(backgroundStorageKey)}
-          onImportBackground={() => backgroundInputRef.current?.click()}
-	          onClearBackground={() => {
-	            const chatId = activeChatIdRef.current;
-	            const meta = ensureChatMeta(chatId);
-	            meta.backgroundStorageKey = null;
-	            setBackgroundStorageKey(null);
-	            attachmentsGcDirtyRef.current = true;
-	            engineRef.current?.clearBackground();
-	            schedulePersistSoon();
-	          }}
+          backgroundLibrary={backgroundLibrary}
+          onUploadBackground={() => backgroundInputRef.current?.click()}
+          onRenameBackground={(backgroundId, name) => renameBackgroundLibraryItem(backgroundId, name)}
+          onDeleteBackground={(backgroundId) => requestDeleteBackgroundLibraryItem(backgroundId)}
 	          composerFontFamily={composerFontFamily}
 	          onChangeComposerFontFamily={(next) => {
 	            setComposerFontFamily(next);
@@ -3342,7 +3503,7 @@ export default function App() {
           onResetToDefaults={() => {
             if (
               !window.confirm(
-                'Reset to defaults?\n\nThis will remove the background and delete all chats (including stored attachments and payload logs).',
+                'Reset to defaults?\n\nThis will clear the background library and delete all chats (including stored attachments and payload logs).',
               )
             ) {
               return;
@@ -3350,6 +3511,8 @@ export default function App() {
 
             setSettingsOpen(false);
             setRawViewer(null);
+            setConfirmDelete(null);
+            setConfirmApplyBackground(null);
 
             for (const assistantNodeId of Array.from(generationJobsByAssistantIdRef.current.keys())) {
               cancelJob(assistantNodeId);
@@ -3395,6 +3558,8 @@ export default function App() {
             setReplySelection(null);
             setReplyContextAttachments([]);
             setReplySelectedAttachmentKeys([]);
+            backgroundLibraryRef.current = [];
+            setBackgroundLibrary([]);
             setBackgroundStorageKey(null);
             setComposerModelId(DEFAULT_MODEL_ID);
             setComposerWebSearch(false);

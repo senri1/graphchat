@@ -1,11 +1,15 @@
 import React, { useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
+import type { BackgroundLibraryItem } from '../model/backgrounds';
 import type { WorkspaceFolder, WorkspaceItem } from '../workspace/tree';
 
 type Props = {
   root: WorkspaceFolder;
   activeChatId: string | null;
   focusedFolderId: string;
+  backgroundLibrary: BackgroundLibraryItem[];
+  getChatBackgroundStorageKey: (chatId: string) => string | null;
+  onSetChatBackgroundStorageKey: (chatId: string, storageKey: string | null) => void;
   onFocusFolder: (folderId: string) => void;
   onToggleFolder: (folderId: string) => void;
   onSelectChat: (chatId: string) => void;
@@ -34,6 +38,9 @@ export default function WorkspaceSidebar(props: Props) {
     root,
     activeChatId,
     focusedFolderId,
+    backgroundLibrary,
+    getChatBackgroundStorageKey,
+    onSetChatBackgroundStorageKey,
     onFocusFolder,
     onToggleFolder,
     onSelectChat,
@@ -82,8 +89,9 @@ export default function WorkspaceSidebar(props: Props) {
 
     const gap = 10;
     const viewportPadding = 8;
-    const estimatedWidth = 150;
-    const estimatedHeight = 100;
+    const menuRect = itemMenuRef.current?.getBoundingClientRect?.();
+    const estimatedWidth = Math.ceil(menuRect?.width ?? 220);
+    const estimatedHeight = Math.ceil(menuRect?.height ?? 240);
 
     let left = rect.right + gap;
     let top = rect.top;
@@ -165,6 +173,7 @@ export default function WorkspaceSidebar(props: Props) {
     const isActive = isChat && item.id === activeChatId;
     const isFocusedFolder = isFolder && item.id === focusedFolderId;
     const isRenaming = renamingId === item.id;
+    const chatBackgroundKey = isChat ? getChatBackgroundStorageKey(item.id) : null;
 
     const onDragStart = (e: React.DragEvent) => {
       e.dataTransfer.effectAllowed = 'move';
@@ -407,6 +416,44 @@ export default function WorkspaceSidebar(props: Props) {
                     >
                       Rename
                     </button>
+                    <div className="treeRow__menuDivider" role="presentation" />
+                    <button
+                      className="treeRow__menuItem"
+                      type="button"
+                      role="menuitem"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setOpenItemMenuId(null);
+                        onSetChatBackgroundStorageKey(item.id, null);
+                      }}
+                    >
+                      {(chatBackgroundKey ? '' : '✓ ')}No background
+                    </button>
+                    {(backgroundLibrary ?? []).length ? (
+                      backgroundLibrary.map((bg) => (
+                        <button
+                          key={bg.id}
+                          className="treeRow__menuItem"
+                          type="button"
+                          role="menuitem"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setOpenItemMenuId(null);
+                            onSetChatBackgroundStorageKey(item.id, bg.storageKey);
+                          }}
+                        >
+                          {chatBackgroundKey === bg.storageKey ? '✓ ' : ''}
+                          {bg.name}
+                        </button>
+                      ))
+                    ) : (
+                      <button className="treeRow__menuItem" type="button" role="menuitem" disabled>
+                        No backgrounds uploaded
+                      </button>
+                    )}
+                    <div className="treeRow__menuDivider" role="presentation" />
                     <button
                       className="treeRow__menuItem treeRow__menuItem--danger"
                       type="button"

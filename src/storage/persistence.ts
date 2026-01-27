@@ -1,5 +1,6 @@
 import type { WorldEngineCameraState } from '../engine/WorldEngine';
 import type { ChatNode, InkStroke } from '../model/chat';
+import type { BackgroundLibraryItem } from '../model/backgrounds';
 import type { FontFamilyKey } from '../ui/typography';
 import type { WorkspaceFolder } from '../workspace/tree';
 import { openDb, txDone } from './db';
@@ -9,6 +10,7 @@ export type PersistedWorkspaceSnapshot = {
   root: WorkspaceFolder;
   activeChatId: string;
   focusedFolderId: string;
+  backgroundLibrary?: BackgroundLibraryItem[];
   llm?: {
     modelUserSettings?: Record<string, unknown>;
   };

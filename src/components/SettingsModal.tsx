@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import type { BackgroundLibraryItem } from '../model/backgrounds';
 import { FONT_FAMILY_OPTIONS, type FontFamilyKey } from '../ui/typography';
 import type { ModelInfo } from '../llm/registry';
 import type { ModelUserSettings, ModelUserSettingsById, ReasoningSummarySetting } from '../llm/modelUserSettings';
@@ -17,9 +18,10 @@ type Props = {
   modelUserSettings: ModelUserSettingsById;
   onUpdateModelUserSettings: (modelId: string, patch: Partial<ModelUserSettings>) => void;
 
-  backgroundEnabled: boolean;
-  onImportBackground: () => void;
-  onClearBackground: () => void;
+  backgroundLibrary: BackgroundLibraryItem[];
+  onUploadBackground: () => void;
+  onRenameBackground: (backgroundId: string, name: string) => void;
+  onDeleteBackground: (backgroundId: string) => void;
 
   composerFontFamily: FontFamilyKey;
   onChangeComposerFontFamily: (next: FontFamilyKey) => void;
@@ -73,6 +75,26 @@ type Props = {
 export default function SettingsModal(props: Props) {
   const open = props.open;
   const onClose = props.onClose;
+  const [renamingBackgroundId, setRenamingBackgroundId] = useState<string | null>(null);
+  const [renameBackgroundDraft, setRenameBackgroundDraft] = useState('');
+
+  const beginRenameBackground = (bg: BackgroundLibraryItem) => {
+    setRenamingBackgroundId(bg.id);
+    setRenameBackgroundDraft(bg.name);
+  };
+
+  const cancelRenameBackground = () => {
+    setRenamingBackgroundId(null);
+  };
+
+  const commitRenameBackground = () => {
+    const id = renamingBackgroundId;
+    const next = renameBackgroundDraft.trim();
+    setRenamingBackgroundId(null);
+    if (!id) return;
+    if (!next) return;
+    props.onRenameBackground(id, next);
+  };
 
   const edgeRouterDesc = useMemo(() => {
     const desc = props.edgeRouterOptions?.find((r) => r.id === props.edgeRouterId)?.description ?? '';
@@ -118,7 +140,7 @@ export default function SettingsModal(props: Props) {
       {
         id: 'reset',
         title: 'Reset or Clear Data',
-        description: 'Remove background and delete chats',
+        description: 'Clear backgrounds and delete chats',
       },
     ],
     [],
@@ -169,29 +191,100 @@ export default function SettingsModal(props: Props) {
                 <div className="settingsPanel">
                 <div className="settingsPanel__header">
                   <div className="settingsPanel__title">Appearance &amp; Personalization</div>
-                  <div className="settingsPanel__subtitle">Import backgrounds and tune typography and glass nodes.</div>
+                  <div className="settingsPanel__subtitle">Upload backgrounds and tune typography and glass nodes.</div>
                 </div>
 
 	                <div className="settingsCard">
 	                  <div className="settingsRow">
 	                    <div className="settingsRow__text">
-	                      <div className="settingsRow__title">Background</div>
-	                      <div className="settingsRow__desc">Set or clear the canvas background image.</div>
+	                      <div className="settingsRow__title">Background library</div>
+	                      <div className="settingsRow__desc">Upload backgrounds once, then set per chat from the ⋮ menu in the sidebar.</div>
                     </div>
                     <div className="settingsRow__actions">
-                      <button className="settingsBtn" type="button" onClick={props.onImportBackground}>
-                        Import background
-                      </button>
-                      <button
-                        className="settingsBtn"
-                        type="button"
-                        disabled={!props.backgroundEnabled}
-                        onClick={props.onClearBackground}
-                      >
-                        Clear background
+                      <button className="settingsBtn" type="button" onClick={props.onUploadBackground}>
+                        Upload background
                       </button>
                     </div>
 	                  </div>
+
+                    {(props.backgroundLibrary ?? []).length ? (
+                      <div className="settingsBgList" role="list" aria-label="Uploaded backgrounds">
+                        {props.backgroundLibrary.map((bg) => {
+                          const isRenaming = renamingBackgroundId === bg.id;
+                          return (
+                            <div key={bg.id} className="settingsRow settingsBgList__row" role="listitem">
+                              <div className="settingsRow__text">
+                                {isRenaming ? (
+                                  <input
+                                    className="settingsTextInput"
+                                    value={renameBackgroundDraft}
+                                    onChange={(e) => setRenameBackgroundDraft(e.target.value)}
+                                    onBlur={commitRenameBackground}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        commitRenameBackground();
+                                      } else if (e.key === 'Escape') {
+                                        e.preventDefault();
+                                        cancelRenameBackground();
+                                      }
+                                    }}
+                                    autoFocus
+                                  />
+                                ) : (
+                                  <div className="settingsRow__title">{bg.name}</div>
+                                )}
+                                <div className="settingsRow__desc">
+                                  {bg.mimeType ? bg.mimeType : 'Image attachment'}
+                                  {typeof bg.size === 'number' ? ` • ${Math.round(bg.size / 1024)} KB` : ''}
+                                </div>
+                              </div>
+                              <div className="settingsRow__actions">
+                                {isRenaming ? (
+                                  <>
+                                    <button
+                                      className="settingsBtn"
+                                      type="button"
+                                      onMouseDown={(e) => e.preventDefault()}
+                                      onClick={commitRenameBackground}
+                                    >
+                                      Save
+                                    </button>
+                                    <button
+                                      className="settingsBtn"
+                                      type="button"
+                                      onMouseDown={(e) => e.preventDefault()}
+                                      onClick={cancelRenameBackground}
+                                    >
+                                      Cancel
+                                    </button>
+                                  </>
+                                ) : (
+                                  <>
+                                    <button className="settingsBtn" type="button" onClick={() => beginRenameBackground(bg)}>
+                                      Rename
+                                    </button>
+                                    <button
+                                      className="settingsBtn settingsBtn--danger"
+                                      type="button"
+                                      onClick={() => props.onDeleteBackground(bg.id)}
+                                    >
+                                      Delete
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="settingsRow">
+                        <div className="settingsRow__text">
+                          <div className="settingsRow__desc">No backgrounds uploaded yet.</div>
+                        </div>
+                      </div>
+                    )}
 	                </div>
 
 	                <details className="settingsCard settingsDetails" open>
@@ -790,14 +883,14 @@ export default function SettingsModal(props: Props) {
               <div className="settingsPanel">
                 <div className="settingsPanel__header">
                   <div className="settingsPanel__title">Reset or Clear Data</div>
-                  <div className="settingsPanel__subtitle">Delete chats and remove background.</div>
+                  <div className="settingsPanel__subtitle">Delete chats and clear the background library.</div>
                 </div>
 
                 <div className="settingsCard">
                   <div className="settingsRow">
                     <div className="settingsRow__text">
                       <div className="settingsRow__title">Reset to defaults</div>
-                      <div className="settingsRow__desc">Removes the background and deletes all chats.</div>
+                      <div className="settingsRow__desc">Clears the background library and deletes all chats.</div>
                     </div>
                     <div className="settingsRow__actions">
                       <button className="settingsBtn settingsBtn--danger" type="button" onClick={props.onResetToDefaults}>
