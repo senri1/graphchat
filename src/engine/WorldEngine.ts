@@ -439,6 +439,7 @@ export class WorldEngine {
 
   private hoverTextNodeId: string | null = null;
   private hoverPdfPage: { nodeId: string; token: number; pageNumber: number } | null = null;
+  private hoverNodeHeaderButton: { nodeId: string; kind: 'menu' | 'reply' | 'stop' } | null = null;
 
   private pdfTextLod2: PdfTextLod2Overlay | null = null;
   private pdfLod2Target: { nodeId: string; token: number; pageNumber: number } | null = null;
@@ -2008,6 +2009,37 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.updateHoverCursor(world, hit);
     let nextTextHover: string | null = null;
     let nextPdfHover: { nodeId: string; token: number; pageNumber: number } | null = null;
+    let nextHeaderHover: { nodeId: string; kind: 'menu' | 'reply' | 'stop' } | null = null;
+
+    if (hit) {
+      const menuBtn = this.menuButtonRect(hit.rect);
+      const inMenu =
+        world.x >= menuBtn.x &&
+        world.x <= menuBtn.x + menuBtn.w &&
+        world.y >= menuBtn.y &&
+        world.y <= menuBtn.y + menuBtn.h;
+      if (inMenu) {
+        nextHeaderHover = { nodeId: hit.id, kind: 'menu' };
+      } else {
+        const replyBtn = this.replyButtonRect(hit.rect);
+        const inReply =
+          world.x >= replyBtn.x &&
+          world.x <= replyBtn.x + replyBtn.w &&
+          world.y >= replyBtn.y &&
+          world.y <= replyBtn.y + replyBtn.h;
+        if (inReply) {
+          nextHeaderHover = { nodeId: hit.id, kind: 'reply' };
+        } else if (hit.kind === 'text' && this.canCancelNode(hit)) {
+          const stopBtn = this.stopButtonRect(hit);
+          const inStop =
+            world.x >= stopBtn.x &&
+            world.x <= stopBtn.x + stopBtn.w &&
+            world.y >= stopBtn.y &&
+            world.y <= stopBtn.y + stopBtn.h;
+          if (inStop) nextHeaderHover = { nodeId: hit.id, kind: 'stop' };
+        }
+      }
+    }
 
     if (hit && hit.kind === 'text') {
       const contentRect = this.textContentRect(hit.rect);
@@ -2033,10 +2065,19 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       }
     }
 
-    const changed = nextTextHover !== this.hoverTextNodeId || nextPdfHover?.pageNumber !== this.hoverPdfPage?.pageNumber || nextPdfHover?.nodeId !== this.hoverPdfPage?.nodeId || nextPdfHover?.token !== this.hoverPdfPage?.token;
+    const headerChanged =
+      nextHeaderHover?.nodeId !== this.hoverNodeHeaderButton?.nodeId ||
+      nextHeaderHover?.kind !== this.hoverNodeHeaderButton?.kind;
+    const changed =
+      headerChanged ||
+      nextTextHover !== this.hoverTextNodeId ||
+      nextPdfHover?.pageNumber !== this.hoverPdfPage?.pageNumber ||
+      nextPdfHover?.nodeId !== this.hoverPdfPage?.nodeId ||
+      nextPdfHover?.token !== this.hoverPdfPage?.token;
     if (changed) {
       this.hoverTextNodeId = nextTextHover;
       this.hoverPdfPage = nextPdfHover;
+      this.hoverNodeHeaderButton = nextHeaderHover;
       this.requestRender();
     }
   };
@@ -5223,14 +5264,33 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return Boolean(taskId);
   }
 
-  private drawMenuButton(nodeRect: Rect, opts?: { active?: boolean }): void {
+  private drawMenuButton(nodeRect: Rect, opts?: { active?: boolean; hovered?: boolean }): void {
     const ctx = this.ctx;
     const r = 9;
     const rect = this.menuButtonRect(nodeRect);
+    const active = Boolean(opts?.active);
+    const hovered = Boolean(opts?.hovered);
 
     ctx.save();
-    ctx.fillStyle = opts?.active ? 'rgba(147,197,253,0.18)' : 'rgba(0,0,0,0.22)';
-    ctx.strokeStyle = opts?.active ? 'rgba(147,197,253,0.42)' : 'rgba(255,255,255,0.14)';
+    if (hovered) {
+      ctx.shadowColor = active ? 'rgba(147,197,253,0.5)' : 'rgba(255,255,255,0.28)';
+      ctx.shadowBlur = 14;
+    }
+
+    ctx.fillStyle = active
+      ? hovered
+        ? 'rgba(147,197,253,0.26)'
+        : 'rgba(147,197,253,0.18)'
+      : hovered
+        ? 'rgba(255,255,255,0.08)'
+        : 'rgba(0,0,0,0.22)';
+    ctx.strokeStyle = active
+      ? hovered
+        ? 'rgba(147,197,253,0.75)'
+        : 'rgba(147,197,253,0.42)'
+      : hovered
+        ? 'rgba(255,255,255,0.28)'
+        : 'rgba(255,255,255,0.14)';
     ctx.lineWidth = 1;
 
     ctx.beginPath();
@@ -5247,7 +5307,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     ctx.fill();
     ctx.stroke();
 
-    ctx.fillStyle = 'rgba(255,255,255,0.86)';
+    ctx.shadowBlur = 0;
+    ctx.shadowColor = 'transparent';
+    ctx.fillStyle = hovered || active ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.86)';
     ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
     ctx.textBaseline = 'middle';
     const label = '⋮';
@@ -5258,14 +5320,33 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     ctx.restore();
   }
 
-  private drawReplyButton(nodeRect: Rect, opts?: { active?: boolean }): void {
+  private drawReplyButton(nodeRect: Rect, opts?: { active?: boolean; hovered?: boolean }): void {
     const ctx = this.ctx;
     const r = 9;
     const rect = this.replyButtonRect(nodeRect);
+    const active = Boolean(opts?.active);
+    const hovered = Boolean(opts?.hovered);
 
     ctx.save();
-    ctx.fillStyle = opts?.active ? 'rgba(147,197,253,0.28)' : 'rgba(0,0,0,0.22)';
-    ctx.strokeStyle = opts?.active ? 'rgba(147,197,253,0.55)' : 'rgba(255,255,255,0.14)';
+    if (hovered) {
+      ctx.shadowColor = active ? 'rgba(147,197,253,0.55)' : 'rgba(255,255,255,0.28)';
+      ctx.shadowBlur = 14;
+    }
+
+    ctx.fillStyle = active
+      ? hovered
+        ? 'rgba(147,197,253,0.36)'
+        : 'rgba(147,197,253,0.28)'
+      : hovered
+        ? 'rgba(255,255,255,0.08)'
+        : 'rgba(0,0,0,0.22)';
+    ctx.strokeStyle = active
+      ? hovered
+        ? 'rgba(147,197,253,0.85)'
+        : 'rgba(147,197,253,0.55)'
+      : hovered
+        ? 'rgba(255,255,255,0.28)'
+        : 'rgba(255,255,255,0.14)';
     ctx.lineWidth = 1;
 
     ctx.beginPath();
@@ -5282,7 +5363,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     ctx.fill();
     ctx.stroke();
 
-    ctx.fillStyle = 'rgba(255,255,255,0.86)';
+    ctx.shadowBlur = 0;
+    ctx.shadowColor = 'transparent';
+    ctx.fillStyle = hovered || active ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.86)';
     ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
     ctx.textBaseline = 'middle';
     const label = 'Reply';
@@ -5293,14 +5376,19 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     ctx.restore();
   }
 
-  private drawStopButton(node: TextNode): void {
+  private drawStopButton(node: TextNode, opts?: { hovered?: boolean }): void {
     const ctx = this.ctx;
     const r = 9;
     const rect = this.stopButtonRect(node);
+    const hovered = Boolean(opts?.hovered);
 
     ctx.save();
-    ctx.fillStyle = 'rgba(248,113,113,0.18)';
-    ctx.strokeStyle = 'rgba(248,113,113,0.62)';
+    if (hovered) {
+      ctx.shadowColor = 'rgba(248,113,113,0.45)';
+      ctx.shadowBlur = 14;
+    }
+    ctx.fillStyle = hovered ? 'rgba(248,113,113,0.28)' : 'rgba(248,113,113,0.18)';
+    ctx.strokeStyle = hovered ? 'rgba(248,113,113,0.92)' : 'rgba(248,113,113,0.62)';
     ctx.lineWidth = 1;
 
     ctx.beginPath();
@@ -5317,6 +5405,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     ctx.fill();
     ctx.stroke();
 
+    ctx.shadowBlur = 0;
+    ctx.shadowColor = 'transparent';
     ctx.fillStyle = 'rgba(255,255,255,0.86)';
     ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
     ctx.textBaseline = 'middle';
@@ -5470,9 +5560,14 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       ctx.textBaseline = 'middle';
       ctx.fillText(node.title, x + TEXT_NODE_PAD_PX, headerBtn.y + headerBtn.h * 0.5);
       ctx.textBaseline = 'top';
-	      if (node.kind === 'text' && this.canCancelNode(node)) this.drawStopButton(node);
-      this.drawMenuButton(node.rect, { active: isSelected });
-      this.drawReplyButton(node.rect, { active: isSelected });
+      const headerHover = this.hoverNodeHeaderButton;
+      const hoverMenu = headerHover?.nodeId === node.id && headerHover.kind === 'menu';
+      const hoverReply = headerHover?.nodeId === node.id && headerHover.kind === 'reply';
+      const hoverStop = headerHover?.nodeId === node.id && headerHover.kind === 'stop';
+
+      if (node.kind === 'text' && this.canCancelNode(node)) this.drawStopButton(node, { hovered: hoverStop });
+      this.drawMenuButton(node.rect, { active: isSelected, hovered: hoverMenu });
+      this.drawReplyButton(node.rect, { active: isSelected, hovered: hoverReply });
 
       ctx.fillStyle = 'rgba(255,255,255,0.55)';
       ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
