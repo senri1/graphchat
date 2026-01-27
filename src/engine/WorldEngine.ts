@@ -83,6 +83,91 @@ function summarizeFirstLine(text: string): string {
   return stripStrong(firstLine);
 }
 
+type XY = { x: number; y: number };
+
+function distPointToSegmentSq(p: XY, a: XY, b: XY): number {
+  const vx = b.x - a.x;
+  const vy = b.y - a.y;
+  const wx = p.x - a.x;
+  const wy = p.y - a.y;
+
+  const vv = vx * vx + vy * vy;
+  if (vv <= 1e-12) {
+    const dx = p.x - a.x;
+    const dy = p.y - a.y;
+    return dx * dx + dy * dy;
+  }
+
+  const t = Math.max(0, Math.min(1, (wx * vx + wy * vy) / vv));
+  const projX = a.x + vx * t;
+  const projY = a.y + vy * t;
+  const dx = p.x - projX;
+  const dy = p.y - projY;
+  return dx * dx + dy * dy;
+}
+
+function orient2d(a: XY, b: XY, c: XY): number {
+  return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+}
+
+function onSegment(a: XY, p: XY, b: XY, eps = 1e-9): boolean {
+  return (
+    p.x >= Math.min(a.x, b.x) - eps &&
+    p.x <= Math.max(a.x, b.x) + eps &&
+    p.y >= Math.min(a.y, b.y) - eps &&
+    p.y <= Math.max(a.y, b.y) + eps
+  );
+}
+
+function segmentsIntersect(a: XY, b: XY, c: XY, d: XY): boolean {
+  const o1 = orient2d(a, b, c);
+  const o2 = orient2d(a, b, d);
+  const o3 = orient2d(c, d, a);
+  const o4 = orient2d(c, d, b);
+
+  const eps = 1e-9;
+  const z1 = Math.abs(o1) <= eps;
+  const z2 = Math.abs(o2) <= eps;
+  const z3 = Math.abs(o3) <= eps;
+  const z4 = Math.abs(o4) <= eps;
+
+  if (z1 && onSegment(a, c, b, eps)) return true;
+  if (z2 && onSegment(a, d, b, eps)) return true;
+  if (z3 && onSegment(c, a, d, eps)) return true;
+  if (z4 && onSegment(c, b, d, eps)) return true;
+
+  const abStraddles = (o1 > 0) !== (o2 > 0);
+  const cdStraddles = (o3 > 0) !== (o4 > 0);
+  return abStraddles && cdStraddles;
+}
+
+function distSegmentToSegmentSq(a: XY, b: XY, c: XY, d: XY): number {
+  if (segmentsIntersect(a, b, c, d)) return 0;
+  return Math.min(
+    distPointToSegmentSq(a, c, d),
+    distPointToSegmentSq(b, c, d),
+    distPointToSegmentSq(c, a, b),
+    distPointToSegmentSq(d, a, b),
+  );
+}
+
+function polylineIntersectsCapsule(points: XY[], a: XY, b: XY, radius: number): boolean {
+  if (!Array.isArray(points) || points.length === 0) return false;
+  const r = Math.max(0, radius);
+  const r2 = r * r;
+
+  if (points.length === 1) {
+    return distPointToSegmentSq(points[0]!, a, b) <= r2;
+  }
+
+  for (let i = 1; i < points.length; i += 1) {
+    const p0 = points[i - 1]!;
+    const p1 = points[i]!;
+    if (distSegmentToSegmentSq(a, b, p0, p1) <= r2) return true;
+  }
+  return false;
+}
+
 const TEXT_NODE_PAD_PX = 14;
 const TEXT_NODE_HEADER_H_PX = 44;
 const TEXT_NODE_HEADER_GAP_PX = 8;
@@ -292,7 +377,7 @@ export function createEmptyChatState(): WorldEngineChatState {
 
 type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
 
-type Tool = 'select' | 'draw';
+type Tool = 'select' | 'draw' | 'erase';
 
 type InkRaster = {
   scale: number;
@@ -334,6 +419,23 @@ type ActiveInkGesture =
       stroke: InkStroke;
     };
 
+type ActiveEraseGesture =
+  | {
+      kind: 'erase-world';
+      pointerId: number;
+      pointerType: string;
+      radiusWorld: number;
+      lastWorld: Vec2;
+    }
+  | {
+      kind: 'erase-node';
+      pointerId: number;
+      pointerType: string;
+      nodeId: string;
+      radiusWorld: number;
+      lastLocal: InkPoint;
+    };
+
 type ActiveTextSelectGesture = {
   kind: 'text-select';
   pointerId: number;
@@ -348,7 +450,7 @@ type ActivePdfTextSelectGesture = {
   pageNumber: number;
 };
 
-type ActiveGesture = ActiveNodeGesture | ActiveInkGesture | ActiveTextSelectGesture | ActivePdfTextSelectGesture;
+type ActiveGesture = ActiveNodeGesture | ActiveInkGesture | ActiveEraseGesture | ActiveTextSelectGesture | ActivePdfTextSelectGesture;
 
 export class WorldEngine {
   private readonly canvas: HTMLCanvasElement;
@@ -1053,7 +1155,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   }
 
   setTool(tool: Tool): void {
-    const next = tool === 'draw' ? 'draw' : 'select';
+    const next: Tool = tool === 'draw' ? 'draw' : tool === 'erase' ? 'erase' : 'select';
     if (this.tool === next) return;
     this.tool = next;
     this.requestRender();
@@ -3955,6 +4057,42 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return basePx / z;
   }
 
+  private eraserRadiusWorld(pointerType: string): number {
+    const z = Math.max(0.01, this.camera.zoom || 1);
+    const basePx = pointerType === 'pen' ? 10 : 12;
+    return basePx / z;
+  }
+
+  private eraseWorldInkStrokesAlongSegment(a: Vec2, b: Vec2, radiusWorld: number): boolean {
+    if (this.worldInkStrokes.length === 0) return false;
+    let changed = false;
+    for (let i = this.worldInkStrokes.length - 1; i >= 0; i -= 1) {
+      const s = this.worldInkStrokes[i]!;
+      const w = Number.isFinite(s.width) ? Math.max(0, s.width) : 0;
+      const threshold = Math.max(0, radiusWorld) + w * 0.5;
+      if (polylineIntersectsCapsule(s.points, a, b, threshold)) {
+        this.worldInkStrokes.splice(i, 1);
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  private eraseInkNodeStrokesAlongSegment(node: InkNode, a: InkPoint, b: InkPoint, radiusWorld: number): boolean {
+    if (node.strokes.length === 0) return false;
+    let changed = false;
+    for (let i = node.strokes.length - 1; i >= 0; i -= 1) {
+      const s = node.strokes[i]!;
+      const w = Number.isFinite(s.width) ? Math.max(0, s.width) : 0;
+      const threshold = Math.max(0, radiusWorld) + w * 0.5;
+      if (polylineIntersectsCapsule(s.points, a, b, threshold)) {
+        node.strokes.splice(i, 1);
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
   private pushInkPoint(stroke: InkStroke, p: InkPoint, minDistWorld: number): void {
     const pts = stroke.points;
     const last = pts.length > 0 ? pts[pts.length - 1] : null;
@@ -4272,6 +4410,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return this.tool === 'draw';
   }
 
+  private shouldEraseInk(pointerType: string): boolean {
+    const t = pointerType || 'mouse';
+    if (t === 'touch') return false;
+    return this.tool === 'erase';
+  }
+
   private hitResizeHandle(world: Vec2, rect: Rect): ResizeCorner | null {
     const z = Math.max(0.01, this.camera.zoom || 1);
     const hw = this.resizeHandleHitPx / z;
@@ -4302,8 +4446,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const hit = this.findTopmostNodeAtWorld(world);
 
     // Pen drag-to-highlight for text nodes (LOD2 DOM overlay).
-    // Only in select mode; in draw mode the pen should draw ink.
-    if (!this.shouldDrawInk(info.pointerType) && hit && hit.kind === 'text' && info.pointerType === 'pen') {
+    // Only in select mode; in draw/erase mode the pen should interact with ink.
+    if (this.tool === 'select' && hit && hit.kind === 'text' && info.pointerType === 'pen') {
       const contentRect = this.textContentRect(hit.rect);
       const inContent =
         world.x >= contentRect.x &&
@@ -4351,8 +4495,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     }
 
     // Pen drag-to-highlight for PDF pages (text layer LOD2 DOM overlay).
-    // Only in select mode; in draw mode the pen should draw ink.
-    if (!this.shouldDrawInk(info.pointerType) && hit && hit.kind === 'pdf' && info.pointerType === 'pen' && hit.status === 'ready') {
+    // Only in select mode; in draw/erase mode the pen should interact with ink.
+    if (this.tool === 'select' && hit && hit.kind === 'pdf' && info.pointerType === 'pen' && hit.status === 'ready') {
       const state = this.pdfStateByNodeId.get(hit.id);
       if (state) {
         const contentRect = this.textContentRect(hit.rect);
@@ -4443,6 +4587,57 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
       stroke.points.push({ x: world.x, y: world.y });
       this.activeGesture = { kind: 'ink-world', pointerId: info.pointerId, pointerType: info.pointerType, stroke };
+      this.suppressTapPointerIds.add(info.pointerId);
+      this.requestRender();
+      return 'draw';
+    }
+
+    if (this.shouldEraseInk(info.pointerType)) {
+      const radiusWorld = this.eraserRadiusWorld(info.pointerType);
+
+      const inkNode = this.findTopmostInkNodeAtWorld(world);
+      if (inkNode) {
+        const contentRect = this.textContentRect(inkNode.rect);
+        const inContent =
+          world.x >= contentRect.x &&
+          world.x <= contentRect.x + contentRect.w &&
+          world.y >= contentRect.y &&
+          world.y <= contentRect.y + contentRect.h;
+        if (inContent) {
+          const local: InkPoint = {
+            x: clamp(world.x - contentRect.x, 0, contentRect.w),
+            y: clamp(world.y - contentRect.y, 0, contentRect.h),
+          };
+
+          this.eraseInkNodeStrokesAlongSegment(inkNode, local, local, radiusWorld);
+          this.activeGesture = {
+            kind: 'erase-node',
+            pointerId: info.pointerId,
+            pointerType: info.pointerType,
+            nodeId: inkNode.id,
+            radiusWorld,
+            lastLocal: local,
+          };
+
+          const selectionChanged = this.selectedNodeId !== inkNode.id || this.editingNodeId !== null;
+          this.selectedNodeId = inkNode.id;
+          this.editingNodeId = null;
+          this.bringNodeToFront(inkNode.id);
+          this.suppressTapPointerIds.add(info.pointerId);
+          this.requestRender();
+          if (selectionChanged) this.emitUiState();
+          return 'draw';
+        }
+      }
+
+      this.eraseWorldInkStrokesAlongSegment(world, world, radiusWorld);
+      this.activeGesture = {
+        kind: 'erase-world',
+        pointerId: info.pointerId,
+        pointerType: info.pointerType,
+        radiusWorld,
+        lastWorld: world,
+      };
       this.suppressTapPointerIds.add(info.pointerId);
       this.requestRender();
       return 'draw';
@@ -4582,6 +4777,29 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         this.inkMinPointDistWorld(g.pointerType),
       );
       this.requestRender();
+      return;
+    }
+
+    if (g.kind === 'erase-world') {
+      const world = this.camera.screenToWorld(p);
+      const changed = this.eraseWorldInkStrokesAlongSegment(g.lastWorld, world, g.radiusWorld);
+      g.lastWorld = world;
+      if (changed) this.requestRender();
+      return;
+    }
+
+    if (g.kind === 'erase-node') {
+      const node = this.nodes.find((n): n is InkNode => n.id === g.nodeId && n.kind === 'ink');
+      if (!node) return;
+      const contentRect = this.textContentRect(node.rect);
+      const world = this.camera.screenToWorld(p);
+      const local: InkPoint = {
+        x: clamp(world.x - contentRect.x, 0, contentRect.w),
+        y: clamp(world.y - contentRect.y, 0, contentRect.h),
+      };
+      const changed = this.eraseInkNodeStrokesAlongSegment(node, g.lastLocal, local, g.radiusWorld);
+      g.lastLocal = local;
+      if (changed) this.requestRender();
       return;
     }
 
@@ -4796,6 +5014,36 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       this.activeGesture = null;
       this.suppressTapPointerIds.delete(info.pointerId);
       this.requestRender();
+      return;
+    }
+
+    if (g.kind === 'erase-world') {
+      const world = this.camera.screenToWorld(p);
+      const changed = this.eraseWorldInkStrokesAlongSegment(g.lastWorld, world, g.radiusWorld);
+      this.activeGesture = null;
+      this.suppressTapPointerIds.delete(info.pointerId);
+      if (changed) this.requestRender();
+      return;
+    }
+
+    if (g.kind === 'erase-node') {
+      const node = this.nodes.find((n): n is InkNode => n.id === g.nodeId && n.kind === 'ink');
+      if (!node) {
+        this.activeGesture = null;
+        this.suppressTapPointerIds.delete(info.pointerId);
+        this.requestRender();
+        return;
+      }
+      const contentRect = this.textContentRect(node.rect);
+      const world = this.camera.screenToWorld(p);
+      const local: InkPoint = {
+        x: clamp(world.x - contentRect.x, 0, contentRect.w),
+        y: clamp(world.y - contentRect.y, 0, contentRect.h),
+      };
+      const changed = this.eraseInkNodeStrokesAlongSegment(node, g.lastLocal, local, g.radiusWorld);
+      this.activeGesture = null;
+      this.suppressTapPointerIds.delete(info.pointerId);
+      if (changed) this.requestRender();
       return;
     }
 
@@ -5782,7 +6030,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
     ctx.textBaseline = 'bottom';
     ctx.fillText(
-      `tool: ${this.tool} • ink: pen / Draw tool • pan: drag background • move: drag node • resize: corners • edit: double-click/Enter • zoom: pinch/ctrl+wheel`,
+      `tool: ${this.tool} • ink: pen / Draw tool • erase: Eraser tool • pan: drag background • move: drag node • resize: corners • edit: double-click/Enter • zoom: pinch/ctrl+wheel`,
       10,
       this.cssH - 10,
     );

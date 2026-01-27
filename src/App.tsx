@@ -1,5 +1,12 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { WorldEngine, type GlassBlurBackend, type WorldEngineDebug } from './engine/WorldEngine';
+import {
+  WorldEngine,
+  createEmptyChatState,
+  type GlassBlurBackend,
+  type WorldEngineChatState,
+  type WorldEngineDebug,
+  type WorldEngineUiState,
+} from './engine/WorldEngine';
 import ChatComposer from './components/ChatComposer';
 import NodeHeaderMenu from './components/NodeHeaderMenu';
 import RawPayloadViewer from './components/RawPayloadViewer';
@@ -8,7 +15,6 @@ import WorkspaceSidebar from './components/WorkspaceSidebar';
 import { Icons } from './components/Icons';
 import SettingsModal from './components/SettingsModal';
 import ConfirmDialog from './components/ConfirmDialog';
-import { createEmptyChatState, type WorldEngineChatState } from './engine/WorldEngine';
 import { DEFAULT_EDGE_ROUTER_ID, listEdgeRouters, normalizeEdgeRouterId, type EdgeRouterId } from './engine/edgeRouting';
 import {
   type WorkspaceChat,
@@ -403,11 +409,11 @@ export default function App() {
   const attachmentsGcDirtyRef = useRef(false);
   const attachmentsGcRunningRef = useRef(false);
   const attachmentsGcLastRunAtRef = useRef(0);
-  const [ui, setUi] = useState(() => ({
-    selectedNodeId: null as string | null,
-    editingNodeId: null as string | null,
+  const [ui, setUi] = useState<WorldEngineUiState>(() => ({
+    selectedNodeId: null,
+    editingNodeId: null,
     editingText: '',
-    tool: 'select' as 'select' | 'draw',
+    tool: 'select',
   }));
   const [rawViewer, setRawViewer] = useState<RawViewerState | null>(null);
   const [nodeMenuId, setNodeMenuId] = useState<string | null>(null);
@@ -3119,13 +3125,23 @@ export default function App() {
 		          <button
 		            className={`toolStrip__btn ${ui.tool === 'draw' ? 'toolStrip__btn--active' : ''}`}
 		            type="button"
-		            title={ui.tool === 'draw' ? 'Draw mode (click for select)' : 'Select mode (click for draw)'}
-		            aria-label="Toggle draw mode"
+		            title={ui.tool === 'draw' ? 'Draw tool (click for select)' : 'Draw tool'}
+		            aria-label="Draw tool"
 		            aria-pressed={ui.tool === 'draw'}
 		            onClick={() => engineRef.current?.setTool(ui.tool === 'draw' ? 'select' : 'draw')}
 		          >
 		            <Icons.pen className="toolStrip__icon" />
 		          </button>
+              <button
+                className={`toolStrip__btn ${ui.tool === 'erase' ? 'toolStrip__btn--active' : ''}`}
+                type="button"
+                title={ui.tool === 'erase' ? 'Eraser tool (click for select)' : 'Eraser tool'}
+                aria-label="Eraser tool"
+                aria-pressed={ui.tool === 'erase'}
+                onClick={() => engineRef.current?.setTool(ui.tool === 'erase' ? 'select' : 'erase')}
+              >
+                <Icons.eraser className="toolStrip__icon" />
+              </button>
               <button
                 className="toolStrip__btn"
                 type="button"

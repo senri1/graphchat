@@ -48,6 +48,23 @@ export const Icons = {
       <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 6l-1.5-1.5" />
     </svg>
   ),
+  eraser: (props: IconProps) => (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      {...props}
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M6.1 15.6l7.9-7.9a2.1 2.1 0 013 0l1.4 1.4a2.1 2.1 0 010 3l-6.5 6.5a2.1 2.1 0 01-1.5.6H7.6a2.1 2.1 0 01-1.5-.6l-1-1a2.1 2.1 0 010-3z"
+      />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M11 19.2h9" />
+    </svg>
+  ),
   inkBox: (props: IconProps) => (
     <svg
       xmlns="http://www.w3.org/2000/svg"
