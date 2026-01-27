@@ -8,6 +8,7 @@ type Props = {
   payload: unknown;
   anchorRect: Rect | null;
   getScreenRect?: () => Rect | null;
+  getZoom?: () => number;
   viewport: { w: number; h: number };
   zoom: number;
   onClose: () => void;
@@ -51,10 +52,11 @@ function stringifyPayload(payload: unknown): string {
 }
 
 export default function RawPayloadViewer(props: Props) {
-  const { nodeId, title, kind, payload, anchorRect, getScreenRect, viewport, zoom, onClose } = props;
+  const { nodeId, title, kind, payload, anchorRect, getScreenRect, getZoom, viewport, zoom, onClose } = props;
   const rootRef = useRef<HTMLDivElement | null>(null);
   const onCloseRef = useRef(onClose);
   const getScreenRectRef = useRef<Props['getScreenRect']>(getScreenRect);
+  const getZoomRef = useRef<Props['getZoom']>(getZoom);
 
   useEffect(() => {
     onCloseRef.current = onClose;
@@ -63,6 +65,10 @@ export default function RawPayloadViewer(props: Props) {
   useEffect(() => {
     getScreenRectRef.current = getScreenRect;
   }, [getScreenRect]);
+
+  useEffect(() => {
+    getZoomRef.current = getZoom;
+  }, [getZoom]);
 
   useEffect(() => {
     const onPointerDownCapture = (e: PointerEvent) => {
@@ -98,12 +104,13 @@ export default function RawPayloadViewer(props: Props) {
       return {
         left: 0,
         top: 0,
-        width: Math.max(1, Math.round(initial?.w ?? 1)),
-        height: Math.max(1, Math.round(initial?.h ?? 1)),
-        transform: initial ? `translate3d(${Math.round(initial.x)}px, ${Math.round(initial.y)}px, 0)` : undefined,
-        borderRadius: `${14 * z}px`,
+        width: Math.max(1, Number(initial?.w ?? 1)),
+        height: Math.max(1, Number(initial?.h ?? 1)),
+        transform: initial ? `translate3d(${initial.x}px, ${initial.y}px, 0)` : undefined,
+        borderRadius: 'calc(14px * var(--editor-scale, 1))',
         zIndex: 40,
-        willChange: 'transform',
+        willChange: 'transform,width,height',
+        ...(typeof z === 'number' ? ({ ['--editor-scale' as any]: z } as any) : ({} as any)),
       };
     }
 
@@ -113,8 +120,9 @@ export default function RawPayloadViewer(props: Props) {
         top: anchorRect.y,
         width: anchorRect.w,
         height: anchorRect.h,
-        borderRadius: `${18 * z}px`,
+        borderRadius: 'calc(18px * var(--editor-scale, 1))',
         zIndex: 40,
+        ...(typeof z === 'number' ? ({ ['--editor-scale' as any]: z } as any) : ({} as any)),
       };
     }
 
@@ -123,7 +131,14 @@ export default function RawPayloadViewer(props: Props) {
     const vpH = Math.max(1, viewport.h || window.innerHeight || 1);
     const w = Math.min(820, vpW - margin * 2);
     const h = Math.min(Math.round(vpH * 0.78), vpH - margin * 2);
-    return { left: (vpW - w) * 0.5, top: margin, width: w, height: h, zIndex: 40 };
+    return {
+      left: (vpW - w) * 0.5,
+      top: margin,
+      width: w,
+      height: h,
+      zIndex: 40,
+      ...(typeof z === 'number' ? ({ ['--editor-scale' as any]: z } as any) : ({} as any)),
+    };
   }, [anchorRect, followEnabled, viewport.h, viewport.w, z]);
 
   useEffect(() => {
@@ -136,16 +151,20 @@ export default function RawPayloadViewer(props: Props) {
 
       const el = rootRef.current;
       const fn = getScreenRectRef.current;
-      if (!el || !fn) return;
+      if (!el) return;
+
+      const rawZoom = getZoomRef.current?.();
+      const zNow = Math.max(0.001, Number.isFinite(rawZoom as number) ? Number(rawZoom) : 1);
+      el.style.setProperty('--editor-scale', String(zNow));
+
+      if (!fn) return;
       const r = fn();
       if (!r) return;
 
-      const x = Math.round(r.x);
-      const y = Math.round(r.y);
-      const w = Math.max(1, Math.round(r.w));
-      const h = Math.max(1, Math.round(r.h));
+      const w = Math.max(1, Number(r.w));
+      const h = Math.max(1, Number(r.h));
 
-      el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+      el.style.transform = `translate3d(${r.x}px, ${r.y}px, 0)`;
       el.style.width = `${w}px`;
       el.style.height = `${h}px`;
     };

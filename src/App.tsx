@@ -2754,6 +2754,7 @@ export default function App() {
 	            initialValue={ui.editingText}
 	            anchorRect={editorAnchor}
               getScreenRect={() => engineRef.current?.getNodeScreenRect(ui.editingNodeId as string) ?? null}
+              getZoom={() => engineRef.current?.camera.zoom ?? 1}
 	            viewport={viewport}
 	            zoom={editorZoom}
 	            baseFontSizePx={nodeFontSizePx}
@@ -2774,6 +2775,7 @@ export default function App() {
             payload={rawViewer.payload}
             anchorRect={rawAnchor}
             getScreenRect={() => engineRef.current?.getTextNodeContentScreenRect(rawViewer.nodeId) ?? null}
+            getZoom={() => engineRef.current?.camera.zoom ?? 1}
             viewport={viewport}
             zoom={editorZoom}
             onClose={() => setRawViewer(null)}

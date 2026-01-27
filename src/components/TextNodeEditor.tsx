@@ -8,6 +8,7 @@ type Props = {
   initialValue: string;
   anchorRect: Rect | null;
   getScreenRect?: () => Rect | null;
+  getZoom?: () => number;
   viewport: { w: number; h: number };
   zoom: number;
   baseFontSizePx: number;
@@ -20,7 +21,7 @@ type Props = {
 type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
 
 export default function TextNodeEditor(props: Props) {
-  const { nodeId, title, initialValue, anchorRect, getScreenRect, viewport, zoom, baseFontSizePx, onResize, onResizeEnd, onCommit, onCancel } = props;
+  const { nodeId, title, initialValue, anchorRect, getScreenRect, getZoom, viewport, zoom, baseFontSizePx, onResize, onResizeEnd, onCommit, onCancel } = props;
   const [draft, setDraft] = useState(() => initialValue ?? '');
   const [previewEnabled, setPreviewEnabled] = useState(true);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
@@ -40,6 +41,7 @@ export default function TextNodeEditor(props: Props) {
     startZoom: number;
   } | null>(null);
   const getScreenRectRef = useRef<Props['getScreenRect']>(getScreenRect);
+  const getZoomRef = useRef<Props['getZoom']>(getZoom);
 
   const [liveRect, setLiveRect] = useState<Rect | null>(() => anchorRect ?? null);
   const deferredDraft = useDeferredValue(draft);
@@ -70,6 +72,10 @@ export default function TextNodeEditor(props: Props) {
   }, [getScreenRect]);
 
   useEffect(() => {
+    getZoomRef.current = getZoom;
+  }, [getZoom]);
+
+  useEffect(() => {
     draftRef.current = draft;
   }, [draft]);
 
@@ -82,21 +88,24 @@ export default function TextNodeEditor(props: Props) {
     const tick = () => {
       if (cancelled) return;
       raf = requestAnimationFrame(tick);
-      if (resizeRef.current) return;
-
       const el = rootRef.current;
       const fn = getScreenRectRef.current;
-      if (!el || !fn) return;
+      if (!el) return;
+
+      const rawZoom = getZoomRef.current?.();
+      const zNow = Math.max(0.001, Number.isFinite(rawZoom as number) ? Number(rawZoom) : 1);
+      el.style.setProperty('--editor-scale', String(zNow));
+
+      if (resizeRef.current) return;
+      if (!fn) return;
       const r = fn();
       if (!r) return;
       anchorRectRef.current = r;
 
-      const x = Math.round(r.x);
-      const y = Math.round(r.y);
-      const w = Math.max(1, Math.round(r.w));
-      const h = Math.max(1, Math.round(r.h));
+      const w = Math.max(1, Number(r.w));
+      const h = Math.max(1, Number(r.h));
 
-      el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+      el.style.transform = `translate3d(${r.x}px, ${r.y}px, 0)`;
       el.style.width = `${w}px`;
       el.style.height = `${h}px`;
     };
@@ -209,7 +218,7 @@ export default function TextNodeEditor(props: Props) {
       corner,
       startClient: { x: e.clientX, y: e.clientY },
       startRect,
-      startZoom: Math.max(0.001, Number.isFinite(zoom) ? zoom : 1),
+      startZoom: Math.max(0.001, Number.isFinite((getZoomRef.current?.() ?? zoom) as number) ? Number(getZoomRef.current?.() ?? zoom) : 1),
     };
 
     try {
@@ -232,21 +241,7 @@ export default function TextNodeEditor(props: Props) {
   };
 
   const baseFontSize = Math.max(1, Math.round(Number.isFinite(baseFontSizePx) ? baseFontSizePx : 14));
-  const z = Math.max(0.001, Number.isFinite(zoom) ? zoom : 1);
   const activeAnchorRect = liveRect ?? anchorRect;
-  const chrome = useMemo(() => {
-    if (!activeAnchorRect) return null;
-    const totalContentWorldW = Math.max(1, activeAnchorRect.w / z - 28);
-    const paneWorldW = previewEnabled ? Math.max(1, totalContentWorldW * 0.5 - 6) : Math.max(1, totalContentWorldW);
-    return {
-      headerH: 50 * z,
-      cornerR: 18 * z,
-      padX: 14 * z,
-      padTop: 12 * z,
-      contentWorldW: paneWorldW,
-      contentWorldH: Math.max(1, activeAnchorRect.h / z - 64),
-    };
-  }, [activeAnchorRect, previewEnabled, z]);
 
   const style = useMemo<React.CSSProperties>(() => {
     if (activeAnchorRect) {
@@ -256,9 +251,10 @@ export default function TextNodeEditor(props: Props) {
           top: 0,
           width: activeAnchorRect.w,
           height: activeAnchorRect.h,
-          transform: `translate3d(${Math.round(activeAnchorRect.x)}px, ${Math.round(activeAnchorRect.y)}px, 0)`,
-          borderRadius: `${18 * z}px`,
+          transform: `translate3d(${activeAnchorRect.x}px, ${activeAnchorRect.y}px, 0)`,
+          borderRadius: 'calc(18px * var(--editor-scale, 1))',
           willChange: 'transform',
+          ...(typeof zoom === 'number' ? ({ ['--editor-scale' as any]: zoom, ['--editor-font-size' as any]: `${baseFontSize}px` } as any) : ({} as any)),
         };
       }
 
@@ -267,7 +263,8 @@ export default function TextNodeEditor(props: Props) {
         top: activeAnchorRect.y,
         width: activeAnchorRect.w,
         height: activeAnchorRect.h,
-        borderRadius: `${18 * z}px`,
+        borderRadius: 'calc(18px * var(--editor-scale, 1))',
+        ...(typeof zoom === 'number' ? ({ ['--editor-scale' as any]: zoom, ['--editor-font-size' as any]: `${baseFontSize}px` } as any) : ({} as any)),
       };
     }
 
@@ -276,8 +273,14 @@ export default function TextNodeEditor(props: Props) {
     const vpH = Math.max(1, viewport.h || window.innerHeight || 1);
     const w = Math.min(740, vpW - margin * 2);
     const h = Math.min(Math.round(vpH * 0.72), vpH - margin * 2);
-    return { left: (vpW - w) * 0.5, top: margin, width: w, height: h };
-  }, [activeAnchorRect, followEnabled, viewport.h, viewport.w, z]);
+    return {
+      left: (vpW - w) * 0.5,
+      top: margin,
+      width: w,
+      height: h,
+      ...(typeof zoom === 'number' ? ({ ['--editor-scale' as any]: zoom, ['--editor-font-size' as any]: `${baseFontSize}px` } as any) : ({} as any)),
+    };
+  }, [activeAnchorRect, baseFontSize, followEnabled, viewport.h, viewport.w, zoom]);
 
   const previewStyle = useMemo<React.CSSProperties>(
     () => ({
@@ -290,34 +293,10 @@ export default function TextNodeEditor(props: Props) {
     [baseFontSize],
   );
 
-  const topbarStyle = useMemo<React.CSSProperties>(() => {
-    if (!chrome) return {};
-    return {
-      height: `${chrome.headerH}px`,
-      padding: `${chrome.padTop}px ${chrome.padX}px 0 ${chrome.padX}px`,
-      alignItems: 'flex-start',
-    };
-  }, [chrome]);
-
-  const bodyStyle = useMemo<React.CSSProperties>(() => {
-    if (!chrome) return {};
-    return {
-      padding: `0 ${chrome.padX}px ${chrome.padX}px ${chrome.padX}px`,
-    };
-  }, [chrome]);
-
-  const textareaStyle = useMemo<React.CSSProperties>(() => {
-    if (!chrome) return {};
-    return {
-      padding: `${Math.max(0, 10 * z)}px 0`,
-      fontSize: `${Math.max(1, baseFontSize * z)}px`,
-    };
-  }, [baseFontSize, chrome, z]);
-
   return (
     <div
       ref={rootRef}
-      className="editor"
+      className="editor editor--edit"
       style={style}
       onPointerDown={(e) => e.stopPropagation()}
       onPointerMove={(e) => e.stopPropagation()}
@@ -357,7 +336,7 @@ export default function TextNodeEditor(props: Props) {
         onPointerCancel={onResizePointerEnd}
       />
 
-      <div className="editor__topbar" style={topbarStyle}>
+      <div className="editor__topbar">
         <div className="editor__title">{title ?? 'Edit node'}</div>
         <div className="editor__actions">
           <label className="editor__toggle">
@@ -377,13 +356,12 @@ export default function TextNodeEditor(props: Props) {
         </div>
       </div>
 
-      <div className={`editor__body ${previewEnabled ? 'editor__body--preview' : ''}`} style={bodyStyle}>
+      <div className={`editor__body ${previewEnabled ? 'editor__body--preview' : ''}`}>
         <div className="editor__pane editor__pane--edit">
           <div className="editor__paneLabel">Edit</div>
           <textarea
             ref={taRef}
             className="editor__textarea"
-            style={textareaStyle}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             spellCheck={false}
@@ -407,18 +385,7 @@ export default function TextNodeEditor(props: Props) {
           <div className="editor__pane editor__pane--preview">
             <div className="editor__paneLabel">Preview</div>
             <div className="editor__preview">
-              <div
-                className="editor__previewScaled"
-                style={
-                  chrome
-                    ? {
-                        width: `${chrome.contentWorldW}px`,
-                        transform: `scale(${z})`,
-                        transformOrigin: '0 0',
-                      }
-                    : undefined
-                }
-              >
+              <div className="editor__previewScaled">
                 {(deferredDraft ?? '').trim().length > 0 ? (
                   <MarkdownMath source={deferredDraft} className="mdx" style={previewStyle} />
                 ) : (

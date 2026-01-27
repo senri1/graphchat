@@ -84,7 +84,8 @@ function summarizeFirstLine(text: string): string {
 }
 
 const TEXT_NODE_PAD_PX = 14;
-const TEXT_NODE_HEADER_H_PX = 50;
+const TEXT_NODE_HEADER_H_PX = 44;
+const TEXT_NODE_HEADER_GAP_PX = 8;
 
 // Spawn + streaming auto-grow bounds (manual resizing can exceed these).
 const TEXT_NODE_SPAWN_MIN_W_PX = 260;
@@ -2049,6 +2050,43 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   }
 
   private updateHoverCursor(world: Vec2, hit: WorldNode | null): void {
+    if (hit) {
+      const menuBtn = this.menuButtonRect(hit.rect);
+      const inMenu =
+        world.x >= menuBtn.x &&
+        world.x <= menuBtn.x + menuBtn.w &&
+        world.y >= menuBtn.y &&
+        world.y <= menuBtn.y + menuBtn.h;
+      if (inMenu) {
+        this.setCanvasCursor('pointer');
+        return;
+      }
+
+      const replyBtn = this.replyButtonRect(hit.rect);
+      const inReply =
+        world.x >= replyBtn.x &&
+        world.x <= replyBtn.x + replyBtn.w &&
+        world.y >= replyBtn.y &&
+        world.y <= replyBtn.y + replyBtn.h;
+      if (inReply) {
+        this.setCanvasCursor('pointer');
+        return;
+      }
+
+      if (hit.kind === 'text' && this.canCancelNode(hit)) {
+        const stopBtn = this.stopButtonRect(hit);
+        const inStop =
+          world.x >= stopBtn.x &&
+          world.x <= stopBtn.x + stopBtn.w &&
+          world.y >= stopBtn.y &&
+          world.y <= stopBtn.y + stopBtn.h;
+        if (inStop) {
+          this.setCanvasCursor('pointer');
+          return;
+        }
+      }
+    }
+
     const corner = hit && hit.kind === 'text' ? this.hitResizeHandle(world, hit.rect) : null;
     if (corner) this.setCanvasCursor(this.cursorForResizeCorner(corner));
     else this.setCanvasCursor('default');
@@ -5141,7 +5179,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   }
 
   private replyButtonRect(nodeRect: Rect): Rect {
-    const pad = 14;
+    const pad = TEXT_NODE_PAD_PX;
     const w = 58;
     const h = 22;
     const gap = 8;
@@ -5154,16 +5192,16 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   }
 
   private menuButtonRect(nodeRect: Rect): Rect {
-    const pad = 14;
+    const pad = TEXT_NODE_PAD_PX;
     const w = 28;
     const h = 22;
     const x = nodeRect.x + nodeRect.w - pad - w;
-    const y = nodeRect.y + 12;
+    const y = nodeRect.y + 9;
     return { x, y, w, h };
   }
 
   private stopButtonRect(node: TextNode): Rect {
-    const pad = 14;
+    const pad = TEXT_NODE_PAD_PX;
     const w = 56;
     const h = 22;
     const gap = 8;
@@ -5427,9 +5465,11 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       ctx.stroke();
 
       ctx.fillStyle = 'rgba(255,255,255,0.85)';
-      ctx.font = '14px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
+      ctx.font = '600 14px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
+      const headerBtn = this.menuButtonRect(node.rect);
+      ctx.textBaseline = 'middle';
+      ctx.fillText(node.title, x + TEXT_NODE_PAD_PX, headerBtn.y + headerBtn.h * 0.5);
       ctx.textBaseline = 'top';
-      ctx.fillText(node.title, x + 14, y + 12);
 	      if (node.kind === 'text' && this.canCancelNode(node)) this.drawStopButton(node);
       this.drawMenuButton(node.rect, { active: isSelected });
       this.drawReplyButton(node.rect, { active: isSelected });
@@ -5440,9 +5480,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       // Header separator.
       ctx.strokeStyle = 'rgba(255,255,255,0.10)';
       ctx.lineWidth = 1 / (this.camera.zoom || 1);
+      const headerDividerY = y + TEXT_NODE_HEADER_H_PX - TEXT_NODE_HEADER_GAP_PX;
       ctx.beginPath();
-      ctx.moveTo(x + 12, y + 48);
-      ctx.lineTo(x + w - 12, y + 48);
+      ctx.moveTo(x + TEXT_NODE_PAD_PX, headerDividerY);
+      ctx.lineTo(x + w - TEXT_NODE_PAD_PX, headerDividerY);
       ctx.stroke();
 
       if (node.kind === 'text') {
@@ -5464,9 +5505,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 	          } else {
 	            const line = node.content.split('\n').find((s) => s.trim()) ?? '';
 	            const preview = line.replace(/^#+\s*/, '').slice(0, 120);
-	            ctx.fillText(preview ? preview : '…', x + 14, y + 34);
+	            ctx.fillText(preview ? preview : '…', contentRect.x, contentRect.y + 4);
 	            ctx.fillStyle = 'rgba(255,255,255,0.45)';
-	            ctx.fillText('Rendering…', contentRect.x, contentRect.y);
+	            ctx.fillText('Rendering…', contentRect.x, contentRect.y + 24);
 	          }
 	        }
       } else if (node.kind === 'pdf') {
