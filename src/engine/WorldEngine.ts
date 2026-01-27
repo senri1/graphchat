@@ -4269,7 +4269,6 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   private shouldDrawInk(pointerType: string): boolean {
     const t = pointerType || 'mouse';
     if (t === 'touch') return false;
-    if (t === 'pen') return true;
     return this.tool === 'draw';
   }
 
@@ -4303,7 +4302,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const hit = this.findTopmostNodeAtWorld(world);
 
     // Pen drag-to-highlight for text nodes (LOD2 DOM overlay).
-    if (hit && hit.kind === 'text' && info.pointerType === 'pen') {
+    // Only in select mode; in draw mode the pen should draw ink.
+    if (!this.shouldDrawInk(info.pointerType) && hit && hit.kind === 'text' && info.pointerType === 'pen') {
       const contentRect = this.textContentRect(hit.rect);
       const inContent =
         world.x >= contentRect.x &&
@@ -4351,7 +4351,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     }
 
     // Pen drag-to-highlight for PDF pages (text layer LOD2 DOM overlay).
-    if (hit && hit.kind === 'pdf' && info.pointerType === 'pen' && hit.status === 'ready') {
+    // Only in select mode; in draw mode the pen should draw ink.
+    if (!this.shouldDrawInk(info.pointerType) && hit && hit.kind === 'pdf' && info.pointerType === 'pen' && hit.status === 'ready') {
       const state = this.pdfStateByNodeId.get(hit.id);
       if (state) {
         const contentRect = this.textContentRect(hit.rect);
