@@ -192,6 +192,10 @@ type ConfirmApplyBackgroundState = {
   backgroundName: string;
 };
 
+type ConfirmExportState =
+  | { kind: 'chat'; chatId: string }
+  | { kind: 'all'; closeSettingsOnConfirm?: boolean };
+
 function genId(prefix: string): string {
   const p = prefix.replace(/[^a-z0-9_-]/gi, '').slice(0, 8) || 'id';
   try {
@@ -463,6 +467,7 @@ export default function App() {
   const [nodeMenuId, setNodeMenuId] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<ConfirmDeleteState | null>(null);
   const [confirmApplyBackground, setConfirmApplyBackground] = useState<ConfirmApplyBackgroundState | null>(null);
+  const [confirmExport, setConfirmExport] = useState<ConfirmExportState | null>(null);
   const [viewport, setViewport] = useState(() => ({ w: 1, h: 1 }));
   const [composerDraft, setComposerDraft] = useState('');
   const [composerDraftAttachments, setComposerDraftAttachments] = useState<ChatAttachment[]>(() => []);
@@ -2957,6 +2962,16 @@ export default function App() {
     }
   };
 
+  const requestExportChat = (chatId: string) => {
+    const id = String(chatId ?? '').trim();
+    if (!id) return;
+    setConfirmExport({ kind: 'chat', chatId: id });
+  };
+
+  const requestExportAllChats = (opts?: { closeSettingsOnConfirm?: boolean }) => {
+    setConfirmExport({ kind: 'all', closeSettingsOnConfirm: Boolean(opts?.closeSettingsOnConfirm) });
+  };
+
   const createFolderForImport = async (parentFolderId: string) => {
     const root = treeRootRef.current;
     const pid = String(parentFolderId ?? '').trim() || root.id;
@@ -3200,6 +3215,33 @@ export default function App() {
     }
   };
 
+  const confirmExportTitle =
+    confirmExport?.kind === 'all'
+      ? 'Export all?'
+      : confirmExport?.kind === 'chat'
+        ? (() => {
+            const chatId = String(confirmExport.chatId ?? '').trim();
+            const info = chatId ? findChatNameAndFolderPath(treeRootRef.current, chatId) : null;
+            const rawName = typeof info?.name === 'string' ? info.name.trim() : '';
+            const chatName = rawName || (chatId ? `Chat ${chatId.slice(-4)}` : 'Chat');
+            return `Export ${chatName}?`;
+          })()
+        : '';
+
+  const confirmExportNow = () => {
+    const payload = confirmExport;
+    setConfirmExport(null);
+    if (!payload) return;
+
+    if (payload.kind === 'chat') {
+      void exportChat(payload.chatId);
+      return;
+    }
+
+    if (payload.closeSettingsOnConfirm) setSettingsOpen(false);
+    void exportAllChats();
+  };
+
   return (
     <div className="app">
 	      <FolderPickerDialog
@@ -3269,6 +3311,14 @@ export default function App() {
           setChatBackgroundStorageKey(payload.chatId, payload.backgroundId);
         }}
       />
+      <ConfirmDialog
+        open={confirmExport != null}
+        title={confirmExportTitle}
+        cancelLabel="Cancel"
+        confirmLabel={confirmExport?.kind === 'all' ? 'Export all' : 'Export'}
+        onCancel={() => setConfirmExport(null)}
+        onConfirm={confirmExportNow}
+      />
       <WorkspaceSidebar
         root={treeRoot}
         activeChatId={activeChatId}
@@ -3279,7 +3329,7 @@ export default function App() {
           return typeof meta?.backgroundStorageKey === 'string' ? meta.backgroundStorageKey : null;
         }}
         onSetChatBackgroundStorageKey={setChatBackgroundStorageKey}
-        onExportChat={exportChat}
+        onExportChat={requestExportChat}
         onFocusFolder={(folderId) => {
           setFocusedFolderId(folderId);
           schedulePersistSoon();
@@ -3952,8 +4002,7 @@ export default function App() {
 	            importInputRef.current?.click();
 	          }}
 	          onExportAllChats={() => {
-	            setSettingsOpen(false);
-	            void exportAllChats();
+	            requestExportAllChats({ closeSettingsOnConfirm: true });
 	          }}
 	          onResetToDefaults={() => {
 	            if (
