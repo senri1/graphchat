@@ -12,6 +12,7 @@ import NodeHeaderMenu from './components/NodeHeaderMenu';
 import RawPayloadViewer from './components/RawPayloadViewer';
 import TextNodeEditor from './components/TextNodeEditor';
 import WorkspaceSidebar from './components/WorkspaceSidebar';
+import FolderPickerDialog from './components/FolderPickerDialog';
 import { Icons } from './components/Icons';
 import SettingsModal from './components/SettingsModal';
 import ConfirmDialog from './components/ConfirmDialog';
@@ -46,6 +47,7 @@ import { DEFAULT_MODEL_ID, getModelInfo, listModels } from './llm/registry';
 import { extractCanonicalMessage, extractCanonicalMeta } from './llm/openaiCanonical';
 import { buildModelUserSettings, normalizeModelUserSettings, type ModelUserSettingsById } from './llm/modelUserSettings';
 import { readFileAsDataUrl, splitDataUrl } from './utils/files';
+import type { ArchiveV1, ArchiveV2 } from './utils/archive';
 import { deleteAttachment, deleteAttachments, getAttachment, listAttachmentKeys, putAttachment } from './storage/attachments';
 import { clearAllStores } from './storage/db';
 import {
@@ -58,7 +60,7 @@ import {
   putChatStateRecord,
   putWorkspaceSnapshot,
 } from './storage/persistence';
-import { putPayload } from './storage/payloads';
+import { getPayload, putPayload } from './storage/payloads';
 import { fontFamilyCss, normalizeFontFamilyKey, type FontFamilyKey } from './ui/typography';
 
 type ChatTurnMeta = {
@@ -375,11 +377,38 @@ function collectAllReferencedAttachmentKeys(args: {
   return referenced;
 }
 
+function findChatNameAndFolderPath(
+  root: WorkspaceFolder,
+  chatId: string,
+): { name: string; folderPath: string[] } | null {
+  const targetId = String(chatId ?? '').trim();
+  if (!targetId) return null;
+
+  const walk = (folder: WorkspaceFolder, path: string[]): { name: string; folderPath: string[] } | null => {
+    for (const child of folder.children ?? []) {
+      if (!child) continue;
+      if (child.kind === 'chat' && child.id === targetId) {
+        return { name: child.name, folderPath: path };
+      }
+      if (child.kind === 'folder') {
+        const name = String(child.name ?? '').trim();
+        const nextPath = name ? [...path, name] : path;
+        const hit = walk(child, nextPath);
+        if (hit) return hit;
+      }
+    }
+    return null;
+  };
+
+  return walk(root, []);
+}
+
 export default function App() {
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const pdfInputRef = useRef<HTMLInputElement | null>(null);
   const backgroundInputRef = useRef<HTMLInputElement | null>(null);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
   const composerDockRef = useRef<HTMLDivElement | null>(null);
   const engineRef = useRef<WorldEngine | null>(null);
   const generationJobsByAssistantIdRef = useRef<Map<string, GenerationJob>>(new Map());
@@ -444,13 +473,17 @@ export default function App() {
   const [replyContextAttachments, setReplyContextAttachments] = useState<ContextAttachmentItem[]>(() => []);
   const [replySelectedAttachmentKeys, setReplySelectedAttachmentKeys] = useState<string[]>(() => []);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsPanel, setSettingsPanel] = useState<'appearance' | 'models' | 'debug' | 'reset'>('appearance');
+  const [settingsPanel, setSettingsPanel] = useState<'appearance' | 'models' | 'debug' | 'data' | 'reset'>('appearance');
   const [debugHudVisible, setDebugHudVisible] = useState(true);
   const [allowEditingAllTextNodes, setAllowEditingAllTextNodes] = useState(false);
   const allowEditingAllTextNodesRef = useRef<boolean>(allowEditingAllTextNodes);
   const [stressSpawnCount, setStressSpawnCount] = useState<number>(50);
   const [backgroundLibrary, setBackgroundLibrary] = useState<BackgroundLibraryItem[]>(() => []);
   const [backgroundStorageKey, setBackgroundStorageKey] = useState<string | null>(() => null);
+  const [pendingImportArchive, setPendingImportArchive] = useState<ArchiveV1 | ArchiveV2 | null>(null);
+  const [importIncludeDateInName, setImportIncludeDateInName] = useState(false);
+  const [importBackgroundAvailable, setImportBackgroundAvailable] = useState(false);
+  const [importIncludeBackground, setImportIncludeBackground] = useState(false);
   const [glassNodesEnabled, setGlassNodesEnabled] = useState<boolean>(() => false);
   const [glassNodesBlurCssPxWebgl, setGlassNodesBlurCssPxWebgl] = useState<number>(() => 10);
   const [glassNodesSaturatePctWebgl, setGlassNodesSaturatePctWebgl] = useState<number>(() => 140);
@@ -703,9 +736,30 @@ export default function App() {
       snapshot.nodes.find((n): n is Extract<ChatNode, { kind: 'text' }> => n.kind === 'text' && n.id === nodeId) ?? null;
     if (!node) return;
     const kind: RawViewerState['kind'] = node.author === 'user' ? 'request' : 'response';
-    const payload = kind === 'request' ? node.apiRequest : node.apiResponse;
     const title = `${kind === 'request' ? 'Raw request' : 'Raw response'} • ${node.title}`;
-    setRawViewer((prev) => (prev?.nodeId === nodeId ? null : { nodeId, title, kind, payload }));
+
+    const directPayload = kind === 'request' ? (node as any).apiRequest : (node as any).apiResponse;
+    const rawKey = kind === 'request' ? (node as any).apiRequestKey : (node as any).apiResponseKey;
+    const key = typeof rawKey === 'string' ? rawKey.trim() : '';
+
+    setRawViewer((prev) => {
+      if (prev?.nodeId === nodeId) return null;
+      return { nodeId, title, kind, payload: directPayload };
+    });
+
+    if (directPayload !== undefined) return;
+    if (!key) return;
+    void (async () => {
+      try {
+        const loaded = await getPayload(key);
+        setRawViewer((prev) => {
+          if (!prev || prev.nodeId !== nodeId) return prev;
+          return { ...prev, payload: loaded === null ? undefined : loaded };
+        });
+      } catch {
+        // ignore
+      }
+    })();
   }, []);
 
   useEffect(() => {
@@ -2719,6 +2773,314 @@ export default function App() {
     schedulePersistSoon();
   };
 
+  const exportChat = async (chatId: string) => {
+    const id = String(chatId ?? '').trim();
+    if (!id) return;
+
+    const engine = engineRef.current;
+    const isActive = activeChatIdRef.current === id;
+
+    let state: WorldEngineChatState | null = null;
+    if (engine && isActive) {
+      try {
+        state = engine.exportChatState();
+      } catch {
+        state = null;
+      }
+    } else {
+      state = chatStatesRef.current.get(id) ?? null;
+    }
+
+    if (!state) {
+      try {
+        const rec = await getChatStateRecord(id);
+        const s = (rec?.state ?? null) as any;
+        if (s && typeof s === 'object') {
+          state = {
+            camera: s.camera ?? { x: 0, y: 0, zoom: 1 },
+            nodes: Array.isArray(s.nodes) ? (s.nodes as ChatNode[]) : [],
+            worldInkStrokes: Array.isArray(s.worldInkStrokes) ? (s.worldInkStrokes as any) : [],
+            pdfStates: [],
+          };
+        }
+      } catch {
+        state = null;
+      }
+    }
+
+    if (!state) {
+      alert('Export failed: could not load chat state.');
+      return;
+    }
+
+    const info = findChatNameAndFolderPath(treeRootRef.current, id);
+    const chatName = info?.name ?? `Chat ${id.slice(-4)}`;
+    const folderPath = info?.folderPath ?? [];
+
+    let meta: any = chatMetaRef.current.get(id) ?? null;
+    if (!meta) {
+      try {
+        const rec = await getChatMetaRecord(id);
+        meta = rec?.meta ?? null;
+      } catch {
+        meta = null;
+      }
+    }
+
+    const bgKey = meta && typeof meta.backgroundStorageKey === 'string' ? String(meta.backgroundStorageKey).trim() : null;
+    const bgName =
+      bgKey ? (backgroundLibraryRef.current ?? []).find((b) => b.storageKey === bgKey)?.name ?? null : null;
+
+    try {
+      const mod = await import('./utils/archive');
+      const { blob, filename, warnings } = await mod.exportChatArchive({
+        chatId: id,
+        chatName,
+        folderPath,
+        state: { camera: state.camera, nodes: state.nodes, worldInkStrokes: state.worldInkStrokes },
+        meta,
+        background: { storageKey: bgKey, name: bgName },
+        appName: 'graphchatv1',
+        appVersion: '0',
+      });
+      mod.triggerDownload(blob, filename);
+      if (warnings.length) console.warn('Export warnings:', warnings);
+    } catch (err: any) {
+      alert(`Export failed: ${err?.message || String(err)}`);
+    }
+  };
+
+  const exportAllChats = async () => {
+    // Ensure active chat state + meta are up to date.
+    const activeId = String(activeChatIdRef.current ?? '').trim();
+    if (activeId) {
+      const meta = ensureChatMeta(activeId);
+      meta.draft = composerDraft;
+      meta.draftAttachments = composerDraftAttachments.slice();
+      meta.replyTo = replySelection;
+      meta.contextSelections = contextSelections.slice();
+      meta.selectedAttachmentKeys = replySelectedAttachmentKeys;
+      meta.llm = {
+        modelId: composerModelId || DEFAULT_MODEL_ID,
+        webSearchEnabled: Boolean(composerWebSearch),
+      };
+      try {
+        const engine = engineRef.current;
+        if (engine) chatStatesRef.current.set(activeId, engine.exportChatState());
+      } catch {
+        // ignore
+      }
+    }
+
+    const root = treeRootRef.current;
+    const chatIds = collectChatIds(root);
+    if (chatIds.length === 0) {
+      alert('No chats to export.');
+      return;
+    }
+
+    const exportArgs: any[] = [];
+    for (const idRaw of chatIds) {
+      const id = String(idRaw ?? '').trim();
+      if (!id) continue;
+
+      let state = chatStatesRef.current.get(id) ?? null;
+      if (!state) {
+        try {
+          const rec = await getChatStateRecord(id);
+          const s = (rec?.state ?? null) as any;
+          if (s && typeof s === 'object') {
+            state = {
+              camera: s.camera ?? { x: 0, y: 0, zoom: 1 },
+              nodes: Array.isArray(s.nodes) ? (s.nodes as ChatNode[]) : [],
+              worldInkStrokes: Array.isArray(s.worldInkStrokes) ? (s.worldInkStrokes as any) : [],
+              pdfStates: [],
+            };
+          }
+        } catch {
+          state = null;
+        }
+      }
+      if (!state) continue;
+
+      let meta: any = chatMetaRef.current.get(id) ?? null;
+      if (!meta) {
+        try {
+          const rec = await getChatMetaRecord(id);
+          meta = rec?.meta ?? null;
+        } catch {
+          meta = null;
+        }
+      }
+
+      const info = findChatNameAndFolderPath(root, id);
+      const chatName = info?.name ?? `Chat ${id.slice(-4)}`;
+      const folderPath = info?.folderPath ?? [];
+
+      const bgKey = meta && typeof meta.backgroundStorageKey === 'string' ? String(meta.backgroundStorageKey).trim() : null;
+      const bgName =
+        bgKey ? (backgroundLibraryRef.current ?? []).find((b) => b.storageKey === bgKey)?.name ?? null : null;
+
+      exportArgs.push({
+        chatId: id,
+        chatName,
+        folderPath,
+        state: { camera: state.camera, nodes: state.nodes, worldInkStrokes: state.worldInkStrokes },
+        meta,
+        background: { storageKey: bgKey, name: bgName },
+        appName: 'graphchatv1',
+        appVersion: '0',
+      });
+    }
+
+    if (exportArgs.length === 0) {
+      alert('Export failed: could not load any chat state.');
+      return;
+    }
+
+    try {
+      const mod = await import('./utils/archive');
+      const { blob, filename, warnings } = await mod.exportAllChatArchives({
+        chats: exportArgs,
+        workspace: {
+          root: treeRootRef.current,
+          activeChatId: String(activeChatIdRef.current ?? ''),
+          focusedFolderId: String(focusedFolderIdRef.current ?? ''),
+        },
+        appName: 'graphchatv1',
+        appVersion: '0',
+      });
+      mod.triggerDownload(blob, filename);
+      if (warnings.length) console.warn('Export-all warnings:', warnings);
+    } catch (err: any) {
+      alert(`Export failed: ${err?.message || String(err)}`);
+    }
+  };
+
+  const createFolderForImport = async (parentFolderId: string) => {
+    const root = treeRootRef.current;
+    const pid = String(parentFolderId ?? '').trim() || root.id;
+    const id = genId('folder');
+    const folder: WorkspaceFolder = { kind: 'folder', id, name: 'New folder', expanded: true, children: [] };
+    const nextRoot = insertItem(root, pid, folder);
+    treeRootRef.current = nextRoot;
+    setTreeRoot(nextRoot);
+    schedulePersistSoon();
+    return id;
+  };
+
+	  const importChatArchiveToFolder = async (destinationFolderId: string) => {
+	    const archiveObj = pendingImportArchive;
+	    if (!archiveObj) return;
+
+    const destId = String(destinationFolderId ?? '').trim();
+    if (!destId) return;
+
+	    try {
+	      const mod = await import('./utils/archive');
+
+	      const ensureFolderPathUnder = (
+	        root: WorkspaceFolder,
+	        startFolderId: string,
+	        segments: string[],
+	      ): { root: WorkspaceFolder; folderId: string } => {
+	        let nextRoot = root;
+	        let parentId = startFolderId;
+	        for (const segRaw of segments) {
+	          const seg = String(segRaw ?? '').trim();
+	          if (!seg) continue;
+	          const parentItem = findItem(nextRoot, parentId);
+	          const parentFolder = parentItem && parentItem.kind === 'folder' ? parentItem : nextRoot;
+	          const existing = (parentFolder.children ?? []).find(
+	            (c): c is WorkspaceFolder => c?.kind === 'folder' && String(c.name ?? '').trim() === seg,
+	          );
+	          if (existing) {
+	            parentId = existing.id;
+	            continue;
+	          }
+	          const id = genId('folder');
+	          const folder: WorkspaceFolder = { kind: 'folder', id, name: seg, expanded: true, children: [] };
+	          nextRoot = insertItem(nextRoot, parentId, folder);
+	          parentId = id;
+	        }
+	        return { root: nextRoot, folderId: parentId };
+	      };
+
+	      // Build folder structure under the chosen destination folder.
+	      let nextRoot = treeRootRef.current;
+	      const destItem = findItem(nextRoot, destId);
+	      const baseParentId = destItem && destItem.kind === 'folder' ? destId : nextRoot.id;
+
+	      const importedChatIds: string[] = [];
+	      const warnings: string[] = [];
+
+	      const importOneChat = async (chat: ArchiveV1['chat']) => {
+	        const newChatId = genId('chat');
+	        const archive: ArchiveV1 = {
+	          format: 'graphchatv1',
+	          schemaVersion: 1,
+	          exportedAt: typeof (archiveObj as any).exportedAt === 'string' ? (archiveObj as any).exportedAt : new Date().toISOString(),
+	          ...(typeof (archiveObj as any).app === 'object' ? { app: (archiveObj as any).app } : {}),
+	          chat,
+	        };
+
+		        const res = await mod.importArchive(archive, {
+		          newChatId,
+		          includeImportDateInName: importIncludeDateInName,
+		          includeBackgroundFromArchive: importIncludeBackground,
+		        });
+
+	        const segments = Array.isArray(res.folderPath) ? res.folderPath : [];
+	        const ensured = ensureFolderPathUnder(nextRoot, baseParentId, segments);
+	        nextRoot = ensured.root;
+
+	        const item: WorkspaceChat = { kind: 'chat', id: newChatId, name: res.chatName };
+	        nextRoot = insertItem(nextRoot, ensured.folderId, item);
+
+	        chatStatesRef.current.set(newChatId, res.state);
+	        chatMetaRef.current.set(newChatId, res.meta as ChatRuntimeMeta);
+	        if (res.backgroundLibraryItem) upsertBackgroundLibraryItem(res.backgroundLibraryItem);
+	        if (res.warnings.length) warnings.push(...res.warnings.map((w) => `${res.chatName}: ${w}`));
+
+	        importedChatIds.push(newChatId);
+	      };
+
+	      if (Number((archiveObj as any).schemaVersion) === 2) {
+	        const chats = Array.isArray((archiveObj as any).chats) ? ((archiveObj as any).chats as ArchiveV1['chat'][]) : [];
+	        for (const chat of chats) {
+	          try {
+	            await importOneChat(chat);
+	          } catch (err: any) {
+	            warnings.push(`${String((chat as any)?.name ?? 'Chat')}: import failed (${err?.message || String(err)})`);
+	          }
+	        }
+	      } else {
+	        await importOneChat((archiveObj as any).chat);
+	      }
+
+	      if (importedChatIds.length === 0) {
+	        alert('Import failed: no chats were imported.');
+	        return;
+	      }
+
+	      treeRootRef.current = nextRoot;
+	      setTreeRoot(nextRoot);
+
+		      setPendingImportArchive(null);
+		      setImportIncludeDateInName(false);
+		      setImportBackgroundAvailable(false);
+		      setImportIncludeBackground(false);
+
+	      switchChat(importedChatIds[0]);
+	      schedulePersistSoon();
+
+	      if (warnings.length) console.warn('Import warnings:', warnings);
+	      alert(`Import complete. Imported ${importedChatIds.length} chat(s).`);
+	    } catch (err: any) {
+	      alert(`Import failed: ${err?.message || String(err)}`);
+	    }
+	  };
+
   const requestDeleteTreeItem = (itemId: string) => {
     if (!itemId) return;
     const existing = findItem(treeRoot, itemId);
@@ -2840,6 +3202,45 @@ export default function App() {
 
   return (
     <div className="app">
+	      <FolderPickerDialog
+	        open={pendingImportArchive != null}
+	        title="Import to…"
+	        confirmLabel="Import here"
+	        root={treeRoot}
+	        initialSelectionId={focusedFolderId}
+	        onClose={() => {
+	          setPendingImportArchive(null);
+	          setImportIncludeDateInName(false);
+	          setImportBackgroundAvailable(false);
+	          setImportIncludeBackground(false);
+	        }}
+	        onCreateFolder={createFolderForImport}
+	        footerLeft={
+	          <div className="folderPickerImportOptions">
+	            {importBackgroundAvailable ? (
+	              <label className="folderPickerOption">
+	                <input
+	                  type="checkbox"
+	                  className="folderPickerOption__checkbox"
+	                  checked={importIncludeBackground}
+	                  onChange={(e) => setImportIncludeBackground(Boolean(e.currentTarget.checked))}
+	                />
+	                <span>Use imported chat backgrounds</span>
+	              </label>
+	            ) : null}
+	            <label className="folderPickerOption">
+	              <input
+	                type="checkbox"
+	                className="folderPickerOption__checkbox"
+	                checked={importIncludeDateInName}
+	                onChange={(e) => setImportIncludeDateInName(Boolean(e.currentTarget.checked))}
+	              />
+	              <span>Append import date to chat names</span>
+	            </label>
+	          </div>
+	        }
+	        onConfirm={importChatArchiveToFolder}
+	      />
       <ConfirmDialog
         open={confirmDelete != null}
         title={confirmDeleteTitle}
@@ -2878,6 +3279,7 @@ export default function App() {
           return typeof meta?.backgroundStorageKey === 'string' ? meta.backgroundStorageKey : null;
         }}
         onSetChatBackgroundStorageKey={setChatBackgroundStorageKey}
+        onExportChat={exportChat}
         onFocusFolder={(folderId) => {
           setFocusedFolderId(folderId);
           schedulePersistSoon();
@@ -3216,11 +3618,11 @@ export default function App() {
             })();
           }}
         />
-        <input
-          ref={backgroundInputRef}
-          className="controls__fileInput"
-          type="file"
-          accept="image/*"
+	        <input
+	          ref={backgroundInputRef}
+	          className="controls__fileInput"
+	          type="file"
+	          accept="image/*"
           onChange={(e) => {
             const file = e.currentTarget.files?.[0];
             e.currentTarget.value = '';
@@ -3259,8 +3661,53 @@ export default function App() {
                 schedulePersistSoon();
               }
             })();
-          }}
-        />
+	          }}
+	        />
+	        <input
+	          ref={importInputRef}
+	          className="controls__fileInput"
+	          type="file"
+	          accept="application/json,.json"
+	          onChange={(e) => {
+	            const file = e.currentTarget.files?.[0];
+	            e.currentTarget.value = '';
+	            if (!file) return;
+	            void (async () => {
+		              try {
+		                const text = await file.text();
+		                const mod = await import('./utils/archive');
+		                const archive = mod.parseArchiveText(text);
+		                const hasBg = (() => {
+		                  try {
+		                    const schema = Number((archive as any)?.schemaVersion ?? NaN);
+		                    if (schema === 1) {
+		                      const bg = (archive as any)?.chat?.background;
+		                      const data = bg && typeof bg === 'object' ? String((bg as any).data ?? '') : '';
+		                      return Boolean(data);
+		                    }
+		                    if (schema === 2) {
+		                      const chats = Array.isArray((archive as any)?.chats) ? ((archive as any).chats as any[]) : [];
+		                      return chats.some((c) => {
+		                        const bg = c && typeof c === 'object' ? (c as any).background : null;
+		                        const data = bg && typeof bg === 'object' ? String((bg as any).data ?? '') : '';
+		                        return Boolean(data);
+		                      });
+		                    }
+		                  } catch {
+		                    // ignore
+		                  }
+		                  return false;
+		                })();
+		                setImportBackgroundAvailable(hasBg);
+		                setImportIncludeBackground(hasBg);
+		                setPendingImportArchive(archive);
+		                setImportIncludeDateInName(false);
+		              } catch (err: any) {
+		                alert(`Import failed: ${err?.message || String(err)}`);
+	              }
+	            })();
+	          }}
+	        />
         <div
           className="toolStrip"
           onPointerDown={(e) => e.stopPropagation()}
@@ -3495,16 +3942,24 @@ export default function App() {
             setStressSpawnCount(next);
           }}
           onSpawnNodes={() => engineRef.current?.spawnLatexStressTest(Math.max(1, Math.min(500, stressSpawnCount)))}
-          onClearStressNodes={() => {
-            engineRef.current?.clearStressNodes();
-            attachmentsGcDirtyRef.current = true;
-            schedulePersistSoon();
-          }}
-          onResetToDefaults={() => {
-            if (
-              !window.confirm(
-                'Reset to defaults?\n\nThis will clear the background library and delete all chats (including stored attachments and payload logs).',
-              )
+	          onClearStressNodes={() => {
+	            engineRef.current?.clearStressNodes();
+	            attachmentsGcDirtyRef.current = true;
+	            schedulePersistSoon();
+	          }}
+	          onRequestImportChat={() => {
+	            setSettingsOpen(false);
+	            importInputRef.current?.click();
+	          }}
+	          onExportAllChats={() => {
+	            setSettingsOpen(false);
+	            void exportAllChats();
+	          }}
+	          onResetToDefaults={() => {
+	            if (
+	              !window.confirm(
+	                'Reset to defaults?\n\nThis will clear the background library and delete all chats (including stored attachments and payload logs).',
+	              )
             ) {
               return;
             }

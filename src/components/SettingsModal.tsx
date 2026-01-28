@@ -5,7 +5,7 @@ import { useAttachmentObjectUrls } from '../ui/useAttachmentObjectUrls';
 import type { ModelInfo } from '../llm/registry';
 import type { ModelUserSettings, ModelUserSettingsById, ReasoningSummarySetting } from '../llm/modelUserSettings';
 
-export type SettingsPanelId = 'appearance' | 'models' | 'debug' | 'reset';
+export type SettingsPanelId = 'appearance' | 'models' | 'debug' | 'data' | 'reset';
 
 type PanelDef = { id: SettingsPanelId; title: string; description: string };
 
@@ -69,6 +69,9 @@ type Props = {
   onChangeSpawnCount: (next: number) => void;
   onSpawnNodes: () => void;
   onClearStressNodes: () => void;
+
+  onRequestImportChat: () => void;
+  onExportAllChats: () => void;
 
   onResetToDefaults: () => void;
 };
@@ -140,6 +143,11 @@ export default function SettingsModal(props: Props) {
         id: 'debug',
         title: 'Debug',
         description: 'HUD + stress test tools',
+      },
+      {
+        id: 'data',
+        title: 'Data',
+        description: 'Import or export chats',
       },
       {
         id: 'reset',
@@ -886,6 +894,43 @@ export default function SettingsModal(props: Props) {
                       </button>
                       <button className="settingsBtn" type="button" onClick={props.onClearStressNodes}>
                         Clear
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {props.activePanel === 'data' ? (
+              <div className="settingsPanel">
+                <div className="settingsPanel__header">
+                  <div className="settingsPanel__title">Data</div>
+                  <div className="settingsPanel__subtitle">Import a backup or export everything. Per-chat export is available from the ⋮ menu in the sidebar.</div>
+                </div>
+
+	                <div className="settingsCard">
+	                  <div className="settingsRow">
+	                    <div className="settingsRow__text">
+	                      <div className="settingsRow__title">Import</div>
+	                      <div className="settingsRow__desc">Load a .graphchatv1.json file (single chat or export-all).</div>
+	                    </div>
+	                    <div className="settingsRow__actions">
+	                      <button className="settingsBtn" type="button" onClick={props.onRequestImportChat}>
+	                        Import…
+	                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="settingsCard">
+                  <div className="settingsRow">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Export all</div>
+                      <div className="settingsRow__desc">Download every chat (including attachments, raw payloads, and backgrounds).</div>
+                    </div>
+                    <div className="settingsRow__actions">
+                      <button className="settingsBtn" type="button" onClick={props.onExportAllChats}>
+                        Export all…
                       </button>
                     </div>
                   </div>

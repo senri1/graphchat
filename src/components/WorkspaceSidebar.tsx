@@ -11,6 +11,7 @@ type Props = {
   backgroundLibrary: BackgroundLibraryItem[];
   getChatBackgroundStorageKey: (chatId: string) => string | null;
   onSetChatBackgroundStorageKey: (chatId: string, storageKey: string | null) => void;
+  onExportChat: (chatId: string) => void | Promise<void>;
   onFocusFolder: (folderId: string) => void;
   onToggleFolder: (folderId: string) => void;
   onSelectChat: (chatId: string) => void;
@@ -42,6 +43,7 @@ export default function WorkspaceSidebar(props: Props) {
     backgroundLibrary,
     getChatBackgroundStorageKey,
     onSetChatBackgroundStorageKey,
+    onExportChat,
     onFocusFolder,
     onToggleFolder,
     onSelectChat,
@@ -496,6 +498,19 @@ export default function WorkspaceSidebar(props: Props) {
                       }}
                     >
                       Change background
+                    </button>
+                    <button
+                      className="treeRow__menuItem"
+                      type="button"
+                      role="menuitem"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setOpenItemMenuId(null);
+                        void onExportChat(item.id);
+                      }}
+                    >
+                      Export…
                     </button>
                     <button
                       className="treeRow__menuItem treeRow__menuItem--danger"

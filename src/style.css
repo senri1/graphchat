@@ -762,6 +762,162 @@ html.gc-ink-drawing * {
   gap: 8px;
 }
 
+.folderPickerOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 110;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 0;
+  pointer-events: auto;
+  touch-action: auto;
+}
+
+@media (min-width: 720px) {
+  .folderPickerOverlay {
+    align-items: center;
+    padding: 16px;
+  }
+}
+
+.folderPickerOverlay__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.folderPickerDialog {
+  position: relative;
+  width: min(520px, 100%);
+  max-height: min(80vh, 680px);
+  border-radius: 18px 18px 0 0;
+  padding: 16px;
+  background: rgba(0, 0, 0, var(--ui-glass-bg-alpha));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
+  box-shadow: 0 24px 65px rgba(0, 0, 0, 0.55);
+  color: rgba(255, 255, 255, 0.92);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+@media (min-width: 720px) {
+  .folderPickerDialog {
+    width: min(520px, calc(100% - 20px));
+    border-radius: 16px;
+  }
+}
+
+.folderPickerDialog__title {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.folderPickerDialog__controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.folderPickerDialog__search {
+  flex: 1;
+  width: auto;
+}
+
+.folderPickerDialog__list {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 14px;
+  padding: 6px;
+  overflow: auto;
+  max-height: min(55vh, 460px);
+}
+
+.folderPickerRow {
+  appearance: none;
+  border: 0;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.9);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.folderPickerRow:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.folderPickerRow--selected {
+  background: rgba(147, 197, 253, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(147, 197, 253, 0.25);
+}
+
+.folderPickerRow--disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.folderPickerRow--disabled:hover {
+  background: transparent;
+}
+
+.folderPickerRow__indent {
+  display: inline-block;
+  flex: 0 0 auto;
+}
+
+.folderPickerRow__name {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.folderPickerDialog__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.folderPickerDialog__footerLeft {
+  min-height: 20px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.folderPickerImportOptions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.folderPickerOption {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  user-select: none;
+}
+
+.folderPickerOption__checkbox {
+  accent-color: rgba(37, 99, 235, 1);
+}
+
+.folderPickerDialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .settingsModal {
   position: relative;
   width: min(980px, calc(100% - 20px));
@@ -1116,6 +1272,15 @@ html.gc-ink-drawing * {
 
 .settingsBtn:hover {
   background: rgba(255, 255, 255, 0.12);
+}
+
+.settingsBtn--primary {
+  border-color: rgba(147, 197, 253, 0.5);
+  background: rgba(37, 99, 235, 0.26);
+}
+
+.settingsBtn--primary:hover {
+  background: rgba(37, 99, 235, 0.34);
 }
 
 .settingsBtn:disabled {
