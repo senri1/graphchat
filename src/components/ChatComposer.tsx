@@ -1,4 +1,4 @@
-import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import MarkdownMath from './MarkdownMath';
 import type { ModelInfo } from '../llm/registry';
@@ -33,6 +33,8 @@ type Props = {
   contextAttachments?: Array<{ key: string; attachment: ChatAttachment }>;
   selectedContextAttachmentKeys?: string[];
   onToggleContextAttachmentKey?: (key: string, included: boolean) => void;
+  minimized?: boolean;
+  onChangeMinimized?: (next: boolean) => void;
 };
 
 type MenuPos = { left: number; top?: number; bottom?: number; maxHeight: number };
@@ -59,22 +61,37 @@ function labelForAttachment(att: ChatAttachment): string {
 }
 
 export default function ChatComposer(props: Props) {
-  const { value, onChange, onSend, modelId, modelOptions, onChangeModelId, webSearchEnabled, onChangeWebSearchEnabled, containerRef, replyPreview, onCancelReply, contextSelections, onRemoveContextSelection, placeholder, sendDisabled, disabled, draftAttachments, onAddAttachmentFiles, onRemoveDraftAttachment, contextAttachments, selectedContextAttachmentKeys, onToggleContextAttachmentKey } = props;
+  const { value, onChange, onSend, modelId, modelOptions, onChangeModelId, webSearchEnabled, onChangeWebSearchEnabled, containerRef, replyPreview, onCancelReply, contextSelections, onRemoveContextSelection, placeholder, sendDisabled, disabled, draftAttachments, onAddAttachmentFiles, onRemoveDraftAttachment, contextAttachments, selectedContextAttachmentKeys, onToggleContextAttachmentKey, minimized: minimizedProp, onChangeMinimized } = props;
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const onSendRef = useRef(onSend);
   const [previewEnabled, setPreviewEnabled] = useState(false);
   const deferredValue = useDeferredValue(value);
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const dockRef = useRef<HTMLDivElement | null>(null);
+  const [dockReady, setDockReady] = useState(false);
+  const [dockDragging, setDockDragging] = useState(false);
+  const [internalMinimized, setInternalMinimized] = useState(false);
+  const minimized = minimizedProp !== undefined ? Boolean(minimizedProp) : internalMinimized;
+  const setMinimized = useCallback(
+    (next: boolean) => {
+      if (onChangeMinimized) {
+        onChangeMinimized(next);
+        return;
+      }
+      setInternalMinimized(next);
+    },
+    [onChangeMinimized],
+  );
 
-  const DEFAULT_COMPOSER_W = 720;
-  const MIN_W = 625;
+  const DEFAULT_COMPOSER_W = 600;
+  const MIN_W = 500;
   const MAX_W = 2000;
   const VIEWPORT_MARGIN_X = 20;
   const VIEWPORT_MARGIN_TOP = 24;
 
-  const DEFAULT_PANEL_H = 180;
-  const MIN_PANEL_H = 130;
+  const DEFAULT_PANEL_H = 75;
+  const MIN_PANEL_H = 50;
   const AUTO_MAX_PANEL_H = 360;
   const ATTACHMENTS_STRIP_MAX_H = DEFAULT_PANEL_H;
   const ATTACHMENTS_STRIP_W = 74;
@@ -94,6 +111,7 @@ export default function ChatComposer(props: Props) {
   const [panelHeight, setPanelHeight] = useState<number>(DEFAULT_PANEL_H);
   const manualHeightRef = useRef<number>(DEFAULT_PANEL_H);
   const [draftThumbUrls, setDraftThumbUrls] = useState<Array<string | null>>([]);
+  const hasDraftAttachments = Array.isArray(draftAttachments) && draftAttachments.length > 0;
 
   const startXRef = useRef<number>(0);
   const startWRef = useRef<number>(0);
@@ -106,6 +124,15 @@ export default function ChatComposer(props: Props) {
   const activeMoveListenerRef = useRef<((e: PointerEvent) => void) | null>(null);
   const activeEndListenerRef = useRef<((e: PointerEvent) => void) | null>(null);
   const activePointerIdRef = useRef<number | null>(null);
+
+  const minimizationActiveRef = useRef(false);
+  const pendingMinimizeRef = useRef(false);
+  const minimizeStartXRef = useRef(0);
+  const minimizeStartSlideXRef = useRef(0);
+  const dockSlideXRef = useRef(0);
+  const minimizeMoveListenerRef = useRef<((e: PointerEvent) => void) | null>(null);
+  const minimizeEndListenerRef = useRef<((e: PointerEvent) => void) | null>(null);
+  const minimizePointerIdRef = useRef<number | null>(null);
 
   const selectedModelLabel = useMemo(() => {
     const match = modelOptions.find((m) => m.id === modelId);
@@ -120,6 +147,35 @@ export default function ChatComposer(props: Props) {
   useEffect(() => {
     onSendRef.current = onSend;
   }, [onSend]);
+
+  useEffect(() => {
+    setDockReady(true);
+  }, []);
+
+  const setDockSlideX = useCallback((nextX: number) => {
+    const x = Number.isFinite(nextX) ? nextX : 0;
+    dockSlideXRef.current = x;
+    const el = dockRef.current;
+    if (el) el.style.setProperty('--composer-dock-slide-x', `${x}px`);
+  }, []);
+
+  const computeMinimizedDockSlideX = useCallback(() => {
+    const el = dockRef.current;
+    if (!el) return dockSlideXRef.current;
+    const rect = el.getBoundingClientRect();
+    const margin = 24;
+    return dockSlideXRef.current - rect.right - margin;
+  }, []);
+
+  useLayoutEffect(() => {
+    if (dockDragging) return;
+    const effectiveMinimized = minimized || pendingMinimizeRef.current;
+    setDockSlideX(effectiveMinimized ? computeMinimizedDockSlideX() : 0);
+  }, [computeMinimizedDockSlideX, dockDragging, minimized, setDockSlideX, composerWidth, viewportW, hasDraftAttachments]);
+
+  useEffect(() => {
+    if (minimized) pendingMinimizeRef.current = false;
+  }, [minimized]);
 
   const closeMenus = useCallback(() => {
     setModelMenuOpen(false);
@@ -388,11 +444,92 @@ export default function ChatComposer(props: Props) {
         window.removeEventListener('pointerup', end as any, true);
         window.removeEventListener('pointercancel', end as any, true);
       }
+      const minimizeMove = minimizeMoveListenerRef.current;
+      const minimizeEnd = minimizeEndListenerRef.current;
+      if (minimizeMove && minimizeEnd) {
+        window.removeEventListener('pointermove', minimizeMove as any, true);
+        window.removeEventListener('pointerup', minimizeEnd as any, true);
+        window.removeEventListener('pointercancel', minimizeEnd as any, true);
+      }
       if (document && document.body) {
         (document.body as HTMLBodyElement).style.userSelect = '';
       }
     };
   }, []);
+
+  const endMinimizeDrag = useCallback(
+    (ev?: PointerEvent) => {
+      const activePointerId = minimizePointerIdRef.current;
+      if (typeof activePointerId === 'number' && ev && ev.pointerId !== activePointerId) return;
+      minimizationActiveRef.current = false;
+
+      const move = minimizeMoveListenerRef.current;
+      const end = minimizeEndListenerRef.current ?? (endMinimizeDrag as any);
+      if (move) window.removeEventListener('pointermove', move as any, true);
+      window.removeEventListener('pointerup', end as any, true);
+      window.removeEventListener('pointercancel', end as any, true);
+      minimizeMoveListenerRef.current = null;
+      minimizeEndListenerRef.current = null;
+      minimizePointerIdRef.current = null;
+
+      if (document && document.body) {
+        (document.body as HTMLBodyElement).style.userSelect = '';
+      }
+
+      const draggedPx = -dockSlideXRef.current;
+      const shouldMinimize = draggedPx >= Math.max(80, Math.min(180, Math.round(composerWidth * 0.25)));
+      pendingMinimizeRef.current = shouldMinimize;
+      setDockDragging(false);
+      if (shouldMinimize) {
+        setMinimized(true);
+        return;
+      }
+
+      setMinimized(false);
+    },
+    [composerWidth, setDockSlideX, setMinimized],
+  );
+
+  const onMinimizePointerMove = useCallback(
+    (e: PointerEvent) => {
+      if (!minimizationActiveRef.current) return;
+      const activePointerId = minimizePointerIdRef.current;
+      if (typeof activePointerId === 'number' && e.pointerId !== activePointerId) return;
+      e.preventDefault();
+      const deltaX = e.clientX - minimizeStartXRef.current;
+      const next = Math.min(0, minimizeStartSlideXRef.current + deltaX);
+      setDockSlideX(next);
+    },
+    [setDockSlideX],
+  );
+
+  const beginMinimizeDrag = useCallback(
+    (e: React.PointerEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (minimized) return;
+      if (resizingRef.current) return;
+      if (minimizationActiveRef.current) return;
+
+      minimizationActiveRef.current = true;
+      setDockDragging(true);
+      minimizePointerIdRef.current = e.pointerId;
+      minimizeStartXRef.current = e.clientX;
+      minimizeStartSlideXRef.current = dockSlideXRef.current;
+
+      minimizeMoveListenerRef.current = onMinimizePointerMove;
+      minimizeEndListenerRef.current = endMinimizeDrag as any;
+
+      window.addEventListener('pointermove', onMinimizePointerMove, { passive: false, capture: true });
+      window.addEventListener('pointerup', endMinimizeDrag as any, { passive: false, capture: true });
+      window.addEventListener('pointercancel', endMinimizeDrag as any, { passive: false, capture: true });
+
+      if (document && document.body) {
+        (document.body as HTMLBodyElement).style.userSelect = 'none';
+      }
+    },
+    [endMinimizeDrag, minimized, onMinimizePointerMove],
+  );
 
   const send = useCallback(() => {
     const block = Boolean(disabled || sendDisabled);
@@ -410,7 +547,6 @@ export default function ChatComposer(props: Props) {
     [selectedContextAttachmentKeys],
   );
 
-  const hasDraftAttachments = Array.isArray(draftAttachments) && draftAttachments.length > 0;
   const composerDockOffsetX = useMemo(() => {
     if (!hasDraftAttachments) return 0;
     const baseMargin = Math.max(0, (viewportW - composerWidth) / 2);
@@ -423,19 +559,28 @@ export default function ChatComposer(props: Props) {
   }, [hasDraftAttachments, viewportW, composerWidth]);
 
   return (
-    <div
-      className="composerDock"
-      ref={containerRef}
-      style={{
-        width: composerWidth,
-        maxWidth: `calc(100% - ${VIEWPORT_MARGIN_X}px)`,
-        ['--composer-dock-offset-x' as any]: `${composerDockOffsetX}px`,
-      }}
-      onPointerDown={(e) => e.stopPropagation()}
-      onPointerMove={(e) => e.stopPropagation()}
-      onPointerUp={(e) => e.stopPropagation()}
-      onWheel={(e) => e.stopPropagation()}
-    >
+    <>
+      <div
+        className={`composerDock ${dockReady ? 'composerDock--ready' : ''} ${dockDragging ? 'composerDock--dragging' : ''} ${minimized ? 'composerDock--minimized' : ''}`}
+        ref={(el) => {
+          dockRef.current = el;
+          if (!containerRef) return;
+          if (typeof containerRef === 'function') {
+            containerRef(el);
+          } else {
+            (containerRef as React.MutableRefObject<HTMLDivElement | null>).current = el;
+          }
+        }}
+        style={{
+          width: composerWidth,
+          maxWidth: `calc(100% - ${VIEWPORT_MARGIN_X}px)`,
+          ['--composer-dock-offset-x' as any]: `${composerDockOffsetX}px`,
+        }}
+        onPointerDown={(e) => e.stopPropagation()}
+        onPointerMove={(e) => e.stopPropagation()}
+        onPointerUp={(e) => e.stopPropagation()}
+        onWheel={(e) => e.stopPropagation()}
+      >
       {hasDraftAttachments ? (
         <div className="composerDock__attachmentStrip" style={{ maxHeight: ATTACHMENTS_STRIP_MAX_H }}>
           {draftAttachments.map((att, idx) => {
@@ -538,15 +683,15 @@ export default function ChatComposer(props: Props) {
       <div className="composerSurface composer">
         <div
           role="separator"
-          aria-label="Resize width (left)"
+          aria-label="Drag left to minimize composer"
           className="composer__resizeHandle composer__resizeHandle--left"
-          onPointerDown={(e) => beginResizePointer(e, { kind: 'width', dir: -1 })}
+          onPointerDown={beginMinimizeDrag}
         />
         <div
           role="separator"
-          aria-label="Resize width (right)"
+          aria-label="Drag left to minimize composer"
           className="composer__resizeHandle composer__resizeHandle--right"
-          onPointerDown={(e) => beginResizePointer(e, { kind: 'width', dir: 1 })}
+          onPointerDown={beginMinimizeDrag}
         />
         <div
           role="separator"
@@ -700,6 +845,23 @@ export default function ChatComposer(props: Props) {
             document.body,
           )
         : null}
-    </div>
+      </div>
+
+      {minimized ? (
+        <button
+          className="composerToggle"
+          type="button"
+          onClick={() => setMinimized(false)}
+          aria-label="Expand message composer"
+          title="Expand message composer"
+          onPointerDown={(e) => e.stopPropagation()}
+          onPointerMove={(e) => e.stopPropagation()}
+          onPointerUp={(e) => e.stopPropagation()}
+          onWheel={(e) => e.stopPropagation()}
+        >
+          ›
+        </button>
+      ) : null}
+    </>
   );
 }

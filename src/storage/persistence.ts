@@ -31,6 +31,7 @@ export type PersistedWorkspaceSnapshot = {
     glassNodesBlurBackend?: 'webgl' | 'canvas';
     composerFontFamily?: FontFamilyKey;
     composerFontSizePx?: number;
+    composerMinimized?: boolean;
     nodeFontFamily?: FontFamilyKey;
     nodeFontSizePx?: number;
     sidebarFontFamily?: FontFamilyKey;

@@ -453,6 +453,7 @@ export default function App() {
       glassNodesBlurBackend: GlassBlurBackend;
       composerFontFamily: FontFamilyKey;
       composerFontSizePx: number;
+      composerMinimized: boolean;
       nodeFontFamily: FontFamilyKey;
       nodeFontSizePx: number;
       sidebarFontFamily: FontFamilyKey;
@@ -513,6 +514,7 @@ export default function App() {
   const [uiGlassSaturatePctWebgl, setUiGlassSaturatePctWebgl] = useState<number>(() => 140);
   const [composerFontFamily, setComposerFontFamily] = useState<FontFamilyKey>(() => DEFAULT_COMPOSER_FONT_FAMILY);
   const [composerFontSizePx, setComposerFontSizePx] = useState<number>(() => DEFAULT_COMPOSER_FONT_SIZE_PX);
+  const [composerMinimized, setComposerMinimized] = useState<boolean>(() => false);
   const [nodeFontFamily, setNodeFontFamily] = useState<FontFamilyKey>(() => DEFAULT_NODE_FONT_FAMILY);
   const [nodeFontSizePx, setNodeFontSizePx] = useState<number>(() => DEFAULT_NODE_FONT_SIZE_PX);
   const [sidebarFontFamily, setSidebarFontFamily] = useState<FontFamilyKey>(() => DEFAULT_SIDEBAR_FONT_FAMILY);
@@ -532,6 +534,7 @@ export default function App() {
   const uiGlassSaturatePctWebglRef = useRef<number>(uiGlassSaturatePctWebgl);
   const composerFontFamilyRef = useRef<FontFamilyKey>(composerFontFamily);
   const composerFontSizePxRef = useRef<number>(composerFontSizePx);
+  const composerMinimizedRef = useRef<boolean>(composerMinimized);
   const nodeFontFamilyRef = useRef<FontFamilyKey>(nodeFontFamily);
   const nodeFontSizePxRef = useRef<number>(nodeFontSizePx);
   const sidebarFontFamilyRef = useRef<FontFamilyKey>(sidebarFontFamily);
@@ -730,6 +733,10 @@ export default function App() {
   }, [composerFontFamily, composerFontSizePx, nodeFontFamily, nodeFontSizePx, sidebarFontFamily, sidebarFontSizePx]);
 
   useEffect(() => {
+    composerMinimizedRef.current = composerMinimized;
+  }, [composerMinimized]);
+
+  useEffect(() => {
     const engine = engineRef.current;
     if (!engine) return;
     const handle = window.setTimeout(() => {
@@ -862,6 +869,7 @@ export default function App() {
               glassNodesBlurBackend: glassNodesBlurBackendRef.current === 'canvas' ? 'canvas' : 'webgl',
               composerFontFamily: composerFontFamilyRef.current,
               composerFontSizePx: Math.round(clampNumber(composerFontSizePxRef.current, 10, 30, DEFAULT_COMPOSER_FONT_SIZE_PX)),
+              composerMinimized: Boolean(composerMinimizedRef.current),
               nodeFontFamily: nodeFontFamilyRef.current,
               nodeFontSizePx: Math.round(clampNumber(nodeFontSizePxRef.current, 10, 30, DEFAULT_NODE_FONT_SIZE_PX)),
               sidebarFontFamily: sidebarFontFamilyRef.current,
@@ -2204,7 +2212,7 @@ export default function App() {
 	    if (!el) return;
 	    const rootEl = document.documentElement;
     const update = () => {
-      const height = el.getBoundingClientRect().height;
+      const height = composerMinimized ? 38 : el.getBoundingClientRect().height;
       rootEl.style.setProperty('--composer-dock-height', `${Math.ceil(height)}px`);
     };
 
@@ -2214,7 +2222,7 @@ export default function App() {
     return () => {
       ro.disconnect();
     };
-  }, []);
+  }, [composerMinimized]);
 
   useLayoutEffect(() => {
     const container = workspaceRef.current;
@@ -2466,12 +2474,14 @@ export default function App() {
     setUiGlassSaturatePctWebgl(uiGlassSaturatePctWebglRef.current);
     composerFontFamilyRef.current = visual.composerFontFamily;
     composerFontSizePxRef.current = visual.composerFontSizePx;
+    composerMinimizedRef.current = Boolean(visual.composerMinimized);
     nodeFontFamilyRef.current = visual.nodeFontFamily;
     nodeFontSizePxRef.current = visual.nodeFontSizePx;
     sidebarFontFamilyRef.current = visual.sidebarFontFamily;
     sidebarFontSizePxRef.current = visual.sidebarFontSizePx;
     setComposerFontFamily(composerFontFamilyRef.current);
     setComposerFontSizePx(composerFontSizePxRef.current);
+    setComposerMinimized(composerMinimizedRef.current);
     setNodeFontFamily(nodeFontFamilyRef.current);
     setNodeFontSizePx(nodeFontSizePxRef.current);
     setSidebarFontFamily(sidebarFontFamilyRef.current);
@@ -2738,6 +2748,7 @@ export default function App() {
           30,
           DEFAULT_COMPOSER_FONT_SIZE_PX,
         ),
+        composerMinimized: Boolean((visualSrc as any)?.composerMinimized),
         nodeFontFamily: normalizeFontFamilyKey((visualSrc as any)?.nodeFontFamily, DEFAULT_NODE_FONT_FAMILY),
         nodeFontSizePx: clampNumber((visualSrc as any)?.nodeFontSizePx, 10, 30, DEFAULT_NODE_FONT_SIZE_PX),
         sidebarFontFamily: normalizeFontFamilyKey(
@@ -3448,6 +3459,13 @@ export default function App() {
 
         <ChatComposer
           containerRef={composerDockRef}
+          minimized={composerMinimized}
+          onChangeMinimized={(next) => {
+            const value = Boolean(next);
+            setComposerMinimized(value);
+            composerMinimizedRef.current = value;
+            schedulePersistSoon();
+          }}
           value={composerDraft}
           onChange={(next) => {
             setComposerDraft(next);
@@ -4148,12 +4166,14 @@ export default function App() {
 
             composerFontFamilyRef.current = DEFAULT_COMPOSER_FONT_FAMILY;
             composerFontSizePxRef.current = DEFAULT_COMPOSER_FONT_SIZE_PX;
+            composerMinimizedRef.current = false;
             nodeFontFamilyRef.current = DEFAULT_NODE_FONT_FAMILY;
             nodeFontSizePxRef.current = DEFAULT_NODE_FONT_SIZE_PX;
             sidebarFontFamilyRef.current = DEFAULT_SIDEBAR_FONT_FAMILY;
             sidebarFontSizePxRef.current = DEFAULT_SIDEBAR_FONT_SIZE_PX;
             setComposerFontFamily(DEFAULT_COMPOSER_FONT_FAMILY);
             setComposerFontSizePx(DEFAULT_COMPOSER_FONT_SIZE_PX);
+            setComposerMinimized(false);
             setNodeFontFamily(DEFAULT_NODE_FONT_FAMILY);
             setNodeFontSizePx(DEFAULT_NODE_FONT_SIZE_PX);
             setSidebarFontFamily(DEFAULT_SIDEBAR_FONT_FAMILY);
