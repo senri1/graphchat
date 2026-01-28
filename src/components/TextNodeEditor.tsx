@@ -23,7 +23,7 @@ type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
 export default function TextNodeEditor(props: Props) {
   const { nodeId, title, initialValue, anchorRect, getScreenRect, getZoom, viewport, zoom, baseFontSizePx, onResize, onResizeEnd, onCommit, onCancel } = props;
   const [draft, setDraft] = useState(() => initialValue ?? '');
-  const [previewEnabled, setPreviewEnabled] = useState(true);
+  const [previewEnabled, setPreviewEnabled] = useState(false);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const anchorRectRef = useRef<Rect | null>(anchorRect ?? null);
@@ -39,6 +39,11 @@ export default function TextNodeEditor(props: Props) {
     startClient: { x: number; y: number };
     startRect: Rect;
     startZoom: number;
+  } | null>(null);
+  const dragRef = useRef<{
+    pointerId: number;
+    startClient: { x: number; y: number };
+    startRect: Rect;
   } | null>(null);
   const getScreenRectRef = useRef<Props['getScreenRect']>(getScreenRect);
   const getZoomRef = useRef<Props['getZoom']>(getZoom);
@@ -62,7 +67,11 @@ export default function TextNodeEditor(props: Props) {
   }, [nodeId, initialValue]);
 
   useEffect(() => {
-    if (resizeRef.current) return;
+    setPreviewEnabled(false);
+  }, [nodeId]);
+
+  useEffect(() => {
+    if (resizeRef.current || dragRef.current) return;
     setLiveRect(anchorRect ?? null);
     anchorRectRef.current = anchorRect ?? null;
   }, [anchorRect?.x, anchorRect?.y, anchorRect?.w, anchorRect?.h, nodeId]);
@@ -96,7 +105,7 @@ export default function TextNodeEditor(props: Props) {
       const zNow = Math.max(0.001, Number.isFinite(rawZoom as number) ? Number(rawZoom) : 1);
       el.style.setProperty('--editor-scale', String(zNow));
 
-      if (resizeRef.current) return;
+      if (resizeRef.current || dragRef.current) return;
       if (!fn) return;
       const r = fn();
       if (!r) return;
@@ -121,19 +130,8 @@ export default function TextNodeEditor(props: Props) {
     };
   }, [followEnabled]);
 
-  useEffect(() => {
-    const onPointerDownCapture = (e: PointerEvent) => {
-      if (committedRef.current) return;
-      const root = rootRef.current;
-      const target = e.target as Node | null;
-      if (!root || !target) return;
-      if (root.contains(target)) return;
-      committedRef.current = true;
-      onCommitRef.current(draftRef.current);
-    };
-    window.addEventListener('pointerdown', onPointerDownCapture, true);
-    return () => window.removeEventListener('pointerdown', onPointerDownCapture, true);
-  }, []);
+  // Note: We intentionally do not auto-commit/close when clicking outside the editor.
+  // Edit mode should only end via explicit user actions (Done/Cancel).
 
   const applyResize = (start: Rect, corner: ResizeCorner, dx: number, dy: number, minW: number, minH: number): Rect => {
     const right = start.x + start.w;
@@ -206,6 +204,35 @@ export default function TextNodeEditor(props: Props) {
     onResizeEndRef.current();
   };
 
+  const onDragPointerMove = (e: React.PointerEvent<HTMLElement>) => {
+    const active = dragRef.current;
+    if (!active || active.pointerId !== e.pointerId) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const dx = e.clientX - active.startClient.x;
+    const dy = e.clientY - active.startClient.y;
+    const next: Rect = {
+      x: active.startRect.x + dx,
+      y: active.startRect.y + dy,
+      w: active.startRect.w,
+      h: active.startRect.h,
+    };
+
+    setLiveRect(next);
+    onResizeRef.current(next);
+  };
+
+  const onDragPointerEnd = (e: React.PointerEvent<HTMLElement>) => {
+    const active = dragRef.current;
+    if (!active || active.pointerId !== e.pointerId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragRef.current = null;
+    onResizeEndRef.current();
+    requestAnimationFrame(() => taRef.current?.focus());
+  };
+
   const beginResize = (corner: ResizeCorner) => (e: React.PointerEvent<HTMLElement>) => {
     if (resizeRef.current) return;
     const startRect = liveRect ?? anchorRectRef.current;
@@ -219,6 +246,26 @@ export default function TextNodeEditor(props: Props) {
       startClient: { x: e.clientX, y: e.clientY },
       startRect,
       startZoom: Math.max(0.001, Number.isFinite((getZoomRef.current?.() ?? zoom) as number) ? Number(getZoomRef.current?.() ?? zoom) : 1),
+    };
+
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+  };
+
+  const beginDrag = (e: React.PointerEvent<HTMLElement>) => {
+    if (dragRef.current || resizeRef.current) return;
+    const startRect = liveRect ?? anchorRectRef.current;
+    if (!startRect) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    dragRef.current = {
+      pointerId: e.pointerId,
+      startClient: { x: e.clientX, y: e.clientY },
+      startRect,
     };
 
     try {
@@ -337,7 +384,15 @@ export default function TextNodeEditor(props: Props) {
       />
 
       <div className="editor__topbar">
-        <div className="editor__title">{title ?? 'Edit node'}</div>
+        <div
+          className="editor__title editor__title--draggable"
+          onPointerDown={beginDrag}
+          onPointerMove={onDragPointerMove}
+          onPointerUp={onDragPointerEnd}
+          onPointerCancel={onDragPointerEnd}
+        >
+          {title ?? 'Edit node'}
+        </div>
         <div className="editor__actions">
           <button
             className={`editor__btn ${previewEnabled ? 'editor__btn--toggleOn' : ''}`}

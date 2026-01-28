@@ -2316,14 +2316,27 @@ html.gc-ink-drawing * {
 
 .editor--edit .editor__topbar {
   height: calc(44px * var(--editor-scale, 1));
-  padding: 0 calc(14px * var(--editor-scale, 1));
+  padding: calc(9px * var(--editor-scale, 1)) calc(14px * var(--editor-scale, 1)) calc(13px * var(--editor-scale, 1));
   align-items: center;
+  border-bottom: 0;
+  position: relative;
+}
+
+.editor--edit .editor__topbar::after {
+  content: '';
+  position: absolute;
+  left: calc(14px * var(--editor-scale, 1));
+  right: calc(14px * var(--editor-scale, 1));
+  bottom: calc(8px * var(--editor-scale, 1));
+  height: 1px;
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .editor__topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  box-sizing: border-box;
   height: calc(50px * var(--editor-scale, 1));
   padding: 0 calc(10px * var(--editor-scale, 1)) 0 calc(14px * var(--editor-scale, 1));
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
@@ -2332,12 +2345,28 @@ html.gc-ink-drawing * {
 .editor__title {
   font-size: calc(14px * var(--editor-scale, 1));
   font-weight: 600;
+  line-height: calc(22px * var(--editor-scale, 1));
   letter-spacing: 0;
   color: rgba(255, 255, 255, 0.85);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.editor--edit .editor__title--draggable {
+  cursor: grab;
+  user-select: none;
+  flex: 1;
+}
+
+.editor--edit .editor__title--draggable:active {
+  cursor: grabbing;
 }
 
 .editor__btn {
   appearance: none;
+  box-sizing: border-box;
   border: 1px solid rgba(255, 255, 255, 0.16);
   background: rgba(0, 0, 0, 0.25);
   color: rgba(255, 255, 255, 0.9);
@@ -2345,6 +2374,16 @@ html.gc-ink-drawing * {
   padding: calc(6px * var(--editor-scale, 1)) calc(10px * var(--editor-scale, 1));
   font-size: calc(12px * var(--editor-scale, 1));
   cursor: pointer;
+}
+
+.editor--edit .editor__btn {
+  height: calc(22px * var(--editor-scale, 1));
+  padding: 0 calc(10px * var(--editor-scale, 1));
+  border-radius: calc(9px * var(--editor-scale, 1));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
 }
 
 .editor__btn:hover {
