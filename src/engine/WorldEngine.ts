@@ -6544,46 +6544,108 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const anchorY = pageRect.y + clamp(placement.anchor.yPct, 0, 1) * pageRect.h;
     const leftX = pageRect.x;
     const rightX = pageRect.x + pageRect.w;
-    const startX = Math.abs(endpoint.x - rightX) < Math.abs(endpoint.x - leftX) ? rightX : leftX;
+    const startSide = Math.abs(endpoint.x - rightX) < Math.abs(endpoint.x - leftX) ? ('right' as const) : ('left' as const);
+    const start: Vec2 = { x: startSide === 'right' ? rightX : leftX, y: anchorY };
 
-    const start: Vec2 = { x: startX, y: anchorY };
-    const end: Vec2 = endpoint;
+    const dx = endpoint.x - start.x;
+    const dy = endpoint.y - start.y;
+    const endSide =
+      Math.abs(dx) > Math.abs(dy)
+        ? dx >= 0
+          ? ('left' as const)
+          : ('right' as const)
+        : dy >= 0
+          ? ('top' as const)
+          : ('bottom' as const);
 
     const z = Math.max(0.01, this.camera.zoom || 1);
     const arrowHeadLen = 12 / z;
     const arrowHalfW = 6 / z;
 
     const ctx = this.ctx;
+    const router = getEdgeRouter(this.edgeRouterId);
+    const routeStyle = {
+      arrowHeadLength: arrowHeadLen,
+      controlPointMin: 40 / z,
+      controlPointMax: 200 / z,
+      straightAlignThreshold: 4 / z,
+    };
+    const route = router.route({
+      parent: { id: pdfNode.id, rect: pdfNode.rect },
+      child: { id: '__pdf-annotation-preview__', rect: { x: endpoint.x, y: endpoint.y, w: 1, h: 1 } },
+      style: routeStyle,
+      anchors: { start: { side: startSide, point: start }, end: { side: endSide, point: endpoint } },
+    });
+    if (!route) return;
+
     ctx.save();
     ctx.lineWidth = 2 / z;
     ctx.strokeStyle = this.replyArrowColor;
     ctx.fillStyle = this.replyArrowColor;
-    ctx.globalAlpha = this.replyArrowOpacity * 0.75;
-    ctx.setLineDash([7 / z, 5 / z]);
+    ctx.globalAlpha = this.replyArrowOpacity;
 
-    ctx.beginPath();
-    ctx.moveTo(start.x, start.y);
-    ctx.lineTo(end.x, end.y);
-    ctx.stroke();
+    const polylineEndDir = (pts: Vec2[]): Vec2 | null => {
+      for (let i = pts.length - 1; i >= 1; i--) {
+        const a = pts[i - 1]!;
+        const b = pts[i]!;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        if (Math.hypot(dx, dy) > 0.001) return { x: dx, y: dy };
+      }
+      return null;
+    };
 
-    const dx = end.x - start.x;
-    const dy = end.y - start.y;
-    const len = Math.hypot(dx, dy);
-    if (len > 0.001) {
-      const ux = dx / len;
-      const uy = dy / len;
-      const px = -uy;
-      const py = ux;
+    const drawRoute = (r: EdgeRoute): { end: Vec2; endDir: Vec2 } | null => {
+      if (r.kind === 'polyline') {
+        const pts = r.points;
+        if (pts.length < 2) return null;
+        const endDir = polylineEndDir(pts);
+        if (!endDir) return null;
+        const end = pts[pts.length - 1]!;
 
-      const baseX = end.x - ux * arrowHeadLen;
-      const baseY = end.y - uy * arrowHeadLen;
-      ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(pts[0]!.x, pts[0]!.y);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i]!.x, pts[i]!.y);
+        ctx.stroke();
+        return { end, endDir };
+      }
+
+      const endDir: Vec2 = { x: r.p3.x - r.c2.x, y: r.p3.y - r.c2.y };
+      if (Math.hypot(endDir.x, endDir.y) <= 0.001) return null;
       ctx.beginPath();
-      ctx.moveTo(end.x, end.y);
-      ctx.lineTo(baseX + px * arrowHalfW, baseY + py * arrowHalfW);
-      ctx.lineTo(baseX - px * arrowHalfW, baseY - py * arrowHalfW);
-      ctx.closePath();
-      ctx.fill();
+      ctx.moveTo(r.p0.x, r.p0.y);
+      ctx.bezierCurveTo(r.c1.x, r.c1.y, r.c2.x, r.c2.y, r.p3.x, r.p3.y);
+      ctx.stroke();
+      return { end: r.p3, endDir };
+    };
+
+    const drawn = drawRoute(route);
+    if (drawn) {
+      const endX = drawn.end.x;
+      const endY = drawn.end.y;
+
+      const dx = drawn.endDir.x;
+      const dy = drawn.endDir.y;
+      const len = Math.hypot(dx, dy);
+      if (len > 0.001) {
+        const ux = dx / len;
+        const uy = dy / len;
+        const px = -uy;
+        const py = ux;
+
+        const baseAnchor = route.arrow?.anchor === 'base';
+        const baseX = baseAnchor ? endX : endX - ux * arrowHeadLen;
+        const baseY = baseAnchor ? endY : endY - uy * arrowHeadLen;
+        const tipX = baseAnchor ? endX + ux * arrowHeadLen : endX;
+        const tipY = baseAnchor ? endY + uy * arrowHeadLen : endY;
+
+        ctx.beginPath();
+        ctx.moveTo(tipX, tipY);
+        ctx.lineTo(baseX + px * arrowHalfW, baseY + py * arrowHalfW);
+        ctx.lineTo(baseX - px * arrowHalfW, baseY - py * arrowHalfW);
+        ctx.closePath();
+        ctx.fill();
+      }
     }
 
     ctx.restore();
