@@ -556,6 +556,7 @@ export class WorldEngine {
 
   private readonly resizeHandleDrawPx = 12;
   private readonly resizeHandleHitPx = 22;
+  private readonly resizeHandleHitPxTouch = 38;
   private readonly minNodeW = 160;
   private readonly minNodeH = 110;
 
@@ -4538,9 +4539,13 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return this.tool === 'erase';
   }
 
-  private hitResizeHandle(world: Vec2, rect: Rect): ResizeCorner | null {
+  private hitResizeHandle(world: Vec2, rect: Rect, opts?: { pointerType?: string }): ResizeCorner | null {
     const z = Math.max(0.01, this.camera.zoom || 1);
-    const hw = this.resizeHandleHitPx / z;
+    const t = opts?.pointerType || 'mouse';
+    const hitPx = t === 'touch' ? this.resizeHandleHitPxTouch : this.resizeHandleHitPx;
+    let hw = hitPx / z;
+    const maxHw = Math.max(0, Math.min(rect.w, rect.h) * 0.5);
+    if (maxHw > 0) hw = Math.min(hw, maxHw);
     if (hw <= 0) return null;
 
     const { x, y, w, h } = rect;
@@ -4833,7 +4838,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 	      }
 	    }
 
-	    const corner = hit.kind === 'text' ? this.hitResizeHandle(world, hit.rect) : null;
+	    const corner = hit.kind === 'text' ? this.hitResizeHandle(world, hit.rect, { pointerType: info.pointerType }) : null;
 	    const startRect: Rect = { ...hit.rect };
 	    if (corner) {
       this.activeGesture = {

@@ -39,6 +39,26 @@ body {
   overflow: hidden;
 }
 
+@media (any-pointer: coarse) {
+  /* Prevent iOS Safari (and touch browsers) from selecting UI chrome during taps/drags. */
+  body,
+  body * {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+
+  /* Re-enable selection/caret inside text inputs/editors. */
+  input,
+  textarea,
+  [contenteditable=''],
+  [contenteditable='true'] {
+    -webkit-user-select: text;
+    user-select: text;
+    -webkit-touch-callout: default;
+  }
+}
+
 /* Prevent iOS Safari double-tap from selecting UI text while drawing ink. */
 html.gc-ink-drawing,
 html.gc-ink-drawing * {
@@ -1854,6 +1874,28 @@ html.gc-ink-drawing * {
   cursor: nesw-resize;
 }
 
+@media (pointer: coarse), (any-pointer: coarse), (hover: none), (any-hover: none) {
+  .composer__resizeHandle--left,
+  .composer__resizeHandle--right {
+    width: 18px;
+  }
+
+  .composer__resizeHandle--top {
+    height: 20px;
+  }
+
+  .composer__resizeHandle--topLeft,
+  .composer__resizeHandle--topRight {
+    width: 22px;
+    height: 22px;
+  }
+
+  .composerToggle {
+    width: 44px;
+    height: 44px;
+  }
+}
+
 .composer__replyBanner {
   display: flex;
   align-items: center;
@@ -2503,6 +2545,14 @@ html.gc-ink-drawing * {
 
 .editor__resizeHandle:hover {
   background: rgba(255, 255, 255, 0.08);
+}
+
+@media (pointer: coarse), (any-pointer: coarse), (hover: none), (any-hover: none) {
+  .editor__resizeHandle {
+    width: 28px;
+    height: 28px;
+    border-radius: 14px;
+  }
 }
 
 .editor__resizeHandle--nw {
