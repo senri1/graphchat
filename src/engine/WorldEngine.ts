@@ -1392,14 +1392,111 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     // Avoid spawning directly on top of existing nodes in the current view.
     const gapY = 26;
+    const gapX = 26;
     const candidate: Rect = { ...node.rect };
+
+    // Keep new nodes visible (prevents off-screen editors, especially when a tall PDF node is present).
+    const view = this.worldViewportRect();
+    const z = Math.max(0.001, this.camera.zoom || 1);
+    const marginWorld = 12 / z;
+    const clampRectToView = (r: Rect): Rect => {
+      const minX = view.x + marginWorld;
+      const minY = view.y + marginWorld;
+      const maxX = view.x + view.w - marginWorld - r.w;
+      const maxY = view.y + view.h - marginWorld - r.h;
+
+      const clampOrCenter = (v: number, lo: number, hi: number, size: number, origin: number, span: number) => {
+        if (Number.isFinite(hi) && hi >= lo) return clamp(v, lo, hi);
+        return origin + (span - size) * 0.5;
+      };
+
+      return {
+        x: clampOrCenter(r.x, minX, maxX, r.w, view.x, view.w),
+        y: clampOrCenter(r.y, minY, maxY, r.h, view.y, view.h),
+        w: r.w,
+        h: r.h,
+      };
+    };
+
+    const tryPlaceBesidePdf = (pdfRect: Rect): Rect | null => {
+      const stepY = nodeH + gapY;
+      const yOffsets = [0, -stepY, stepY, -2 * stepY, 2 * stepY, -3 * stepY, 3 * stepY];
+      const spaceLeft = pdfRect.x - view.x;
+      const spaceRight = view.x + view.w - (pdfRect.x + pdfRect.w);
+      const preferRight = spaceRight >= spaceLeft;
+      const sides = preferRight
+        ? [
+            { name: 'right' as const, x: pdfRect.x + pdfRect.w + gapX },
+            { name: 'left' as const, x: pdfRect.x - gapX - candidate.w },
+          ]
+        : [
+            { name: 'left' as const, x: pdfRect.x - gapX - candidate.w },
+            { name: 'right' as const, x: pdfRect.x + pdfRect.w + gapX },
+          ];
+
+      let best: { rect: Rect; overlapCount: number } | null = null;
+      const countOverlaps = (r: Rect): number => {
+        let count = 0;
+        for (const n of this.nodes) {
+          if (n.kind === 'pdf') continue;
+          if (rectsIntersect(n.rect, r)) count += 1;
+        }
+        return count;
+      };
+
+      for (const side of sides) {
+        for (const dy of yOffsets) {
+          const raw: Rect = { x: side.x, y: candidate.y + dy, w: candidate.w, h: candidate.h };
+          const clamped = clampRectToView(raw);
+
+          // If we had to clamp horizontally, this side doesn't actually fit in view.
+          if (Math.abs(clamped.x - raw.x) > 0.5) continue;
+
+          if (this.nodes.some((n) => n.kind === 'pdf' && rectsIntersect(n.rect, clamped))) continue;
+
+          const overlapCount = countOverlaps(clamped);
+          if (overlapCount === 0) return clamped;
+
+          if (!best || overlapCount < best.overlapCount) best = { rect: clamped, overlapCount };
+        }
+      }
+
+      // If we can't fit beside, try above (keeps the node visible without ending up hidden under the PDF).
+      const rawAbove: Rect = {
+        x: candidate.x,
+        y: pdfRect.y - gapY - candidate.h,
+        w: candidate.w,
+        h: candidate.h,
+      };
+      const above = clampRectToView(rawAbove);
+      if (!this.nodes.some((n) => n.kind === 'pdf' && rectsIntersect(n.rect, above))) {
+        const overlapCount = countOverlaps(above);
+        if (overlapCount === 0) return above;
+        if (!best || overlapCount < best.overlapCount) best = { rect: above, overlapCount };
+      }
+
+      return best?.rect ?? null;
+    };
+
     for (let i = 0; i < 60; i += 1) {
-      const overlap = this.nodes.find((n) => rectsIntersect(n.rect, candidate)) ?? null;
+      const pdfOverlap =
+        (this.nodes.find((n) => n.kind === 'pdf' && rectsIntersect(n.rect, candidate)) as PdfNode | undefined) ?? null;
+      const overlap = pdfOverlap ?? this.nodes.find((n) => rectsIntersect(n.rect, candidate)) ?? null;
       if (!overlap) break;
+      if (overlap.kind === 'pdf') {
+        const placed = tryPlaceBesidePdf(overlap.rect);
+        if (placed) {
+          candidate.x = placed.x;
+          candidate.y = placed.y;
+        }
+        break;
+      }
       candidate.y = overlap.rect.y + overlap.rect.h + gapY;
     }
-    node.rect.x = candidate.x;
-    node.rect.y = candidate.y;
+
+    const clamped = clampRectToView(candidate);
+    node.rect.x = clamped.x;
+    node.rect.y = clamped.y;
 
     this.recomputeTextNodeDisplayHash(node);
     this.nodes.push(node);
