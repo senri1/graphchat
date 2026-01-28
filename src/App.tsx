@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   WorldEngine,
   createEmptyChatState,
@@ -108,6 +109,14 @@ type DraftAttachmentDedupeState = {
   inFlight: Set<string>;
   attached: Set<string>;
   byStorageKey: Map<string, string>;
+};
+
+type ToastKind = 'success' | 'error' | 'info';
+
+type ToastState = {
+  id: number;
+  kind: ToastKind;
+  message: string;
 };
 
 const DEFAULT_COMPOSER_FONT_FAMILY: FontFamilyKey = 'ui-monospace';
@@ -465,13 +474,14 @@ export default function App() {
   }));
   const [rawViewer, setRawViewer] = useState<RawViewerState | null>(null);
   const [nodeMenuId, setNodeMenuId] = useState<string | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState<ConfirmDeleteState | null>(null);
-  const [confirmApplyBackground, setConfirmApplyBackground] = useState<ConfirmApplyBackgroundState | null>(null);
-  const [confirmExport, setConfirmExport] = useState<ConfirmExportState | null>(null);
-  const [viewport, setViewport] = useState(() => ({ w: 1, h: 1 }));
-  const [composerDraft, setComposerDraft] = useState('');
-  const [composerDraftAttachments, setComposerDraftAttachments] = useState<ChatAttachment[]>(() => []);
-  const lastAddAttachmentFilesRef = useRef<{ sig: string; at: number }>({ sig: '', at: 0 });
+	  const [confirmDelete, setConfirmDelete] = useState<ConfirmDeleteState | null>(null);
+	  const [confirmApplyBackground, setConfirmApplyBackground] = useState<ConfirmApplyBackgroundState | null>(null);
+	  const [confirmExport, setConfirmExport] = useState<ConfirmExportState | null>(null);
+	  const [toast, setToast] = useState<ToastState | null>(null);
+	  const [viewport, setViewport] = useState(() => ({ w: 1, h: 1 }));
+	  const [composerDraft, setComposerDraft] = useState('');
+	  const [composerDraftAttachments, setComposerDraftAttachments] = useState<ChatAttachment[]>(() => []);
+	  const lastAddAttachmentFilesRef = useRef<{ sig: string; at: number }>({ sig: '', at: 0 });
   const draftAttachmentDedupeRef = useRef<Map<string, DraftAttachmentDedupeState>>(new Map());
   const [replySelection, setReplySelection] = useState<ReplySelection | null>(null);
   const [contextSelections, setContextSelections] = useState<string[]>(() => []);
@@ -538,6 +548,26 @@ export default function App() {
     () => allModels.filter((m) => modelUserSettings[m.id]?.includeInComposer !== false),
     [allModels, modelUserSettings],
   );
+
+  const toastTimerRef = useRef<number | null>(null);
+  const toastIdRef = useRef(0);
+  const showToast = (message: string, kind: ToastKind = 'info', durationMs = 3200) => {
+    const id = ++toastIdRef.current;
+    setToast({ id, kind, message });
+    if (toastTimerRef.current != null) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = null;
+    if (durationMs > 0) {
+      toastTimerRef.current = window.setTimeout(() => {
+        setToast((current) => (current && current.id === id ? null : current));
+      }, durationMs);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current != null) window.clearTimeout(toastTimerRef.current);
+    };
+  }, []);
   const [composerModelId, setComposerModelId] = useState<string>(() => DEFAULT_MODEL_ID);
   const [composerWebSearch, setComposerWebSearch] = useState<boolean>(() => false);
 
@@ -3089,12 +3119,12 @@ export default function App() {
 	      switchChat(importedChatIds[0]);
 	      schedulePersistSoon();
 
-	      if (warnings.length) console.warn('Import warnings:', warnings);
-	      alert(`Import complete. Imported ${importedChatIds.length} chat(s).`);
-	    } catch (err: any) {
-	      alert(`Import failed: ${err?.message || String(err)}`);
-	    }
-	  };
+			      if (warnings.length) console.warn('Import warnings:', warnings);
+			      showToast(`Import complete. Imported ${importedChatIds.length} chat(s).`, 'success');
+			    } catch (err: any) {
+			      alert(`Import failed: ${err?.message || String(err)}`);
+			    }
+			  };
 
   const requestDeleteTreeItem = (itemId: string) => {
     if (!itemId) return;
@@ -3242,13 +3272,30 @@ export default function App() {
     void exportAllChats();
   };
 
-  return (
-    <div className="app">
-	      <FolderPickerDialog
-	        open={pendingImportArchive != null}
-	        title="Import to…"
-	        confirmLabel="Import here"
-	        root={treeRoot}
+	  return (
+	    <div className="app">
+	      {toast && typeof document !== 'undefined' && document.body
+	        ? createPortal(
+	            <div className="toastHost" role="status" aria-live="polite" aria-atomic="true">
+	              <div
+	                className={`toast toast--${toast.kind}`}
+	                onClick={() => setToast(null)}
+	                onPointerDown={(e) => e.stopPropagation()}
+	                onPointerMove={(e) => e.stopPropagation()}
+	                onPointerUp={(e) => e.stopPropagation()}
+	                onWheel={(e) => e.stopPropagation()}
+	              >
+	                {toast.message}
+	              </div>
+	            </div>,
+	            document.body,
+	          )
+	        : null}
+		      <FolderPickerDialog
+		        open={pendingImportArchive != null}
+		        title="Import to…"
+		        confirmLabel="Import here"
+		        root={treeRoot}
 	        initialSelectionId={focusedFolderId}
 	        onClose={() => {
 	          setPendingImportArchive(null);
