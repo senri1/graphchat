@@ -2,7 +2,8 @@ import React, { useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { BackgroundLibraryItem } from '../model/backgrounds';
 import { useAttachmentObjectUrls } from '../ui/useAttachmentObjectUrls';
-import type { WorkspaceFolder, WorkspaceItem } from '../workspace/tree';
+import FolderPickerDialog from './FolderPickerDialog';
+import { findItem, type WorkspaceFolder, type WorkspaceItem } from '../workspace/tree';
 
 type Props = {
   root: WorkspaceFolder;
@@ -35,6 +36,27 @@ function parseDragPayload(data: string | null): DragPayload | null {
   }
 }
 
+function findParentFolderId(root: WorkspaceFolder, itemId: string): string | null {
+  if (!itemId) return null;
+  for (const child of root.children) {
+    if (child.id === itemId) return root.id;
+    if (child.kind === 'folder') {
+      const nested = findParentFolderId(child, itemId);
+      if (nested) return nested;
+    }
+  }
+  return null;
+}
+
+function collectFolderIds(item: WorkspaceItem, out: Set<string>) {
+  if (item.kind !== 'folder') return;
+  out.add(item.id);
+  for (const child of item.children) {
+    if (child.kind !== 'folder') continue;
+    collectFolderIds(child, out);
+  }
+}
+
 export default function WorkspaceSidebar(props: Props) {
   const {
     root,
@@ -59,15 +81,16 @@ export default function WorkspaceSidebar(props: Props) {
   const [collapsed, setCollapsed] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
-  const [openItemMenuId, setOpenItemMenuId] = useState<string | null>(null);
-  const [itemMenuPos, setItemMenuPos] = useState<{ left: number; top: number } | null>(null);
-  const [revealedItemMenuId, setRevealedItemMenuId] = useState<string | null>(null);
-  const [openBackgroundPickerChatId, setOpenBackgroundPickerChatId] = useState<string | null>(null);
-  const [backgroundPickerPos, setBackgroundPickerPos] = useState<{ left: number; top: number } | null>(null);
-  const sidebarRef = React.useRef<HTMLDivElement | null>(null);
-  const itemMenuButtonRefs = React.useRef(new Map<string, HTMLButtonElement | null>());
-  const itemMenuRef = React.useRef<HTMLDivElement | null>(null);
-  const backgroundPickerRef = React.useRef<HTMLDivElement | null>(null);
+	  const [openItemMenuId, setOpenItemMenuId] = useState<string | null>(null);
+	  const [itemMenuPos, setItemMenuPos] = useState<{ left: number; top: number } | null>(null);
+	  const [revealedItemMenuId, setRevealedItemMenuId] = useState<string | null>(null);
+	  const [openBackgroundPickerChatId, setOpenBackgroundPickerChatId] = useState<string | null>(null);
+	  const [backgroundPickerPos, setBackgroundPickerPos] = useState<{ left: number; top: number } | null>(null);
+	  const [movePickerItemId, setMovePickerItemId] = useState<string | null>(null);
+	  const sidebarRef = React.useRef<HTMLDivElement | null>(null);
+	  const itemMenuButtonRefs = React.useRef(new Map<string, HTMLButtonElement | null>());
+	  const itemMenuRef = React.useRef<HTMLDivElement | null>(null);
+	  const backgroundPickerRef = React.useRef<HTMLDivElement | null>(null);
 
   const backgroundThumbUrls = useAttachmentObjectUrls(
     openBackgroundPickerChatId ? (backgroundLibrary ?? []).map((b) => b.storageKey) : [],
@@ -223,7 +246,7 @@ export default function WorkspaceSidebar(props: Props) {
     return () => window.removeEventListener('pointerdown', onPointerDownCapture, true);
   }, [revealedItemMenuId]);
 
-  const rowCommonHandlers = useMemo(
+	  const rowCommonHandlers = useMemo(
     () => ({
       onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
       onPointerMove: (e: React.PointerEvent) => e.stopPropagation(),
@@ -233,7 +256,7 @@ export default function WorkspaceSidebar(props: Props) {
     [],
   );
 
-  const renderItem = (item: WorkspaceItem, depth: number) => {
+	  const renderItem = (item: WorkspaceItem, depth: number) => {
     const indent = 10 + depth * 14;
     const isFolder = item.kind === 'folder';
     const isChat = item.kind === 'chat';
@@ -356,23 +379,67 @@ export default function WorkspaceSidebar(props: Props) {
                         aria-label="Folder actions"
                         ref={itemMenuRef}
                         style={{ left: itemMenuPos.left, top: itemMenuPos.top }}
-                      >
-                        <button
-                          className="treeRow__menuItem"
-                          type="button"
-                          role="menuitem"
-                          onClick={(e) => {
+	                      >
+	                        <button
+	                          className="treeRow__menuItem"
+	                          type="button"
+	                          role="menuitem"
+	                          onClick={(e) => {
+	                            e.preventDefault();
+	                            e.stopPropagation();
+	                            setOpenItemMenuId(null);
+	                            onFocusFolder(item.id);
+	                            onCreateChat(item.id);
+	                          }}
+	                        >
+	                          New chat
+	                        </button>
+	                        <button
+	                          className="treeRow__menuItem"
+	                          type="button"
+	                          role="menuitem"
+	                          onClick={(e) => {
+	                            e.preventDefault();
+	                            e.stopPropagation();
+	                            setOpenItemMenuId(null);
+	                            onFocusFolder(item.id);
+	                            onCreateFolder(item.id);
+	                          }}
+	                        >
+	                          New folder
+	                        </button>
+	                        <div className="treeRow__menuDivider" role="separator" />
+	                        <button
+	                          className="treeRow__menuItem"
+	                          type="button"
+	                          role="menuitem"
+	                          onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
                             beginRename(item);
                           }}
-                        >
-                          Rename
-                        </button>
-                        {item.id !== rootId ? (
-                          <button
-                            className="treeRow__menuItem treeRow__menuItem--danger"
-                            type="button"
+	                        >
+	                          Rename
+	                        </button>
+	                        {item.id !== rootId ? (
+	                          <button
+	                            className="treeRow__menuItem"
+	                            type="button"
+	                            role="menuitem"
+	                            onClick={(e) => {
+	                              e.preventDefault();
+	                              e.stopPropagation();
+	                              setOpenItemMenuId(null);
+	                              setMovePickerItemId(item.id);
+	                            }}
+	                          >
+	                            Move to
+	                          </button>
+	                        ) : null}
+	                        {item.id !== rootId ? (
+	                          <button
+	                            className="treeRow__menuItem treeRow__menuItem--danger"
+	                            type="button"
                             role="menuitem"
                             onClick={(e) => {
                               e.preventDefault();
@@ -483,12 +550,25 @@ export default function WorkspaceSidebar(props: Props) {
                         beginRename(item);
                       }}
                     >
-                      Rename
-                    </button>
-                    <button
-                      className="treeRow__menuItem"
-                      type="button"
-                      role="menuitem"
+	                      Rename
+	                    </button>
+	                    <button
+	                      className="treeRow__menuItem"
+	                      type="button"
+	                      role="menuitem"
+	                      onClick={(e) => {
+	                        e.preventDefault();
+	                        e.stopPropagation();
+	                        setOpenItemMenuId(null);
+	                        setMovePickerItemId(item.id);
+	                      }}
+	                    >
+	                      Move to
+	                    </button>
+	                    <button
+	                      className="treeRow__menuItem"
+	                      type="button"
+	                      role="menuitem"
                       onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
@@ -589,14 +669,42 @@ export default function WorkspaceSidebar(props: Props) {
           : null}
       </div>
     );
-  };
+	  };
 
-  return (
-    <div className={`sidebarDock ${collapsed ? 'sidebarDock--collapsed' : ''}`}>
-      <div className={`sidebarWrap ${collapsed ? 'sidebarWrap--collapsed' : ''}`} aria-hidden={collapsed}>
-        <div className="sidebar" ref={sidebarRef} {...rowCommonHandlers}>
-          <div className="sidebar__header">
-            <button
+	  return (
+	    <>
+	      <FolderPickerDialog
+	        open={movePickerItemId != null}
+	        title="Move to…"
+	        confirmLabel="Move here"
+	        root={root}
+	        initialSelectionId={
+	          movePickerItemId ? findParentFolderId(root, movePickerItemId) ?? focusedFolderId ?? rootId : focusedFolderId
+	        }
+	        disableFolderIds={(() => {
+	          const itemId = movePickerItemId;
+	          if (!itemId) return undefined;
+	          const item = findItem(root, itemId);
+	          if (!item || item.kind !== 'folder') return undefined;
+	          const out = new Set<string>();
+	          collectFolderIds(item, out);
+	          return out;
+	        })()}
+	        onClose={() => setMovePickerItemId(null)}
+	        onConfirm={(destinationFolderId) => {
+	          const itemId = movePickerItemId;
+	          setMovePickerItemId(null);
+	          if (!itemId) return;
+	          const currentParentId = findParentFolderId(root, itemId) ?? rootId;
+	          if (destinationFolderId === currentParentId) return;
+	          onMoveItem(itemId, destinationFolderId);
+	        }}
+	      />
+	      <div className={`sidebarDock ${collapsed ? 'sidebarDock--collapsed' : ''}`}>
+	      <div className={`sidebarWrap ${collapsed ? 'sidebarWrap--collapsed' : ''}`} aria-hidden={collapsed}>
+	        <div className="sidebar" ref={sidebarRef} {...rowCommonHandlers}>
+	          <div className="sidebar__header">
+	            <button
               className="sidebar__title"
               type="button"
               onClick={() => onFocusFolder(rootId)}
@@ -605,10 +713,10 @@ export default function WorkspaceSidebar(props: Props) {
               Chats
             </button>
             <div className="sidebar__headerActions">
-              <button className="sidebar__btn" type="button" onClick={() => onCreateChat(focusedFolderId)}>
+              <button className="sidebar__btn" type="button" onClick={() => onCreateChat(rootId)}>
                 New chat
               </button>
-              <button className="sidebar__btn" type="button" onClick={() => onCreateFolder(focusedFolderId)}>
+              <button className="sidebar__btn" type="button" onClick={() => onCreateFolder(rootId)}>
                 New folder
               </button>
             </div>
@@ -642,8 +750,9 @@ export default function WorkspaceSidebar(props: Props) {
         title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         {...rowCommonHandlers}
       >
-        {collapsed ? '›' : '‹'}
-      </button>
-    </div>
-  );
-}
+	        {collapsed ? '›' : '‹'}
+	      </button>
+	    </div>
+	    </>
+	  );
+	}

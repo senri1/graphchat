@@ -2796,7 +2796,7 @@ export default function App() {
   const createChat = (parentFolderId: string) => {
     const id = genId('chat');
     const item: WorkspaceChat = { kind: 'chat', id, name: 'New chat' };
-    setTreeRoot((prev) => insertItemAtTop(prev, prev.id, item));
+    setTreeRoot((prev) => insertItemAtTop(prev, parentFolderId, item));
     chatStatesRef.current.set(id, createEmptyChatState());
     chatMetaRef.current.set(id, {
       draft: '',
@@ -2815,7 +2815,7 @@ export default function App() {
   const createFolder = (parentFolderId: string) => {
     const id = genId('folder');
     const folder: WorkspaceFolder = { kind: 'folder', id, name: 'New folder', expanded: true, children: [] };
-    setTreeRoot((prev) => insertItemAtTop(prev, prev.id, folder));
+    setTreeRoot((prev) => insertItemAtTop(prev, parentFolderId, folder));
     setFocusedFolderId(id);
     schedulePersistSoon();
   };

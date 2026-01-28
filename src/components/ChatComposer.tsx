@@ -163,9 +163,9 @@ export default function ChatComposer(props: Props) {
     const el = dockRef.current;
     if (!el) return dockSlideXRef.current;
     const rect = el.getBoundingClientRect();
-    const margin = 24;
-    return dockSlideXRef.current - rect.right - margin;
-  }, []);
+    const desiredDockRight = hasDraftAttachments ? -ATTACHMENTS_STRIP_GAP : -24;
+    return dockSlideXRef.current + (desiredDockRight - rect.right);
+  }, [hasDraftAttachments]);
 
   useLayoutEffect(() => {
     if (dockDragging) return;
@@ -552,16 +552,16 @@ export default function ChatComposer(props: Props) {
     const baseMargin = Math.max(0, (viewportW - composerWidth) / 2);
     const need = ATTACHMENTS_STRIP_W + ATTACHMENTS_STRIP_GAP - baseMargin;
     if (need <= 0) return 0;
-    const minRightMargin = VIEWPORT_MARGIN_X / 2;
-    const maxShift = baseMargin - minRightMargin;
+    const minLeftMargin = VIEWPORT_MARGIN_X / 2;
+    const maxShift = baseMargin - minLeftMargin;
     if (maxShift <= 0) return 0;
-    return Math.min(need, maxShift);
+    return -Math.min(need, maxShift);
   }, [hasDraftAttachments, viewportW, composerWidth]);
 
   return (
     <>
       <div
-        className={`composerDock ${dockReady ? 'composerDock--ready' : ''} ${dockDragging ? 'composerDock--dragging' : ''} ${minimized ? 'composerDock--minimized' : ''}`}
+        className={`composerDock ${dockReady ? 'composerDock--ready' : ''} ${dockDragging ? 'composerDock--dragging' : ''} ${minimized && !hasDraftAttachments ? 'composerDock--minimized' : ''} ${minimized && hasDraftAttachments ? 'composerDock--minimizedWithAttachments' : ''}`}
         ref={(el) => {
           dockRef.current = el;
           if (!containerRef) return;
@@ -849,7 +849,7 @@ export default function ChatComposer(props: Props) {
 
       {minimized ? (
         <button
-          className="composerToggle"
+          className={`composerToggle ${hasDraftAttachments ? 'composerToggle--withAttachments' : ''}`}
           type="button"
           onClick={() => setMinimized(false)}
           aria-label="Expand message composer"

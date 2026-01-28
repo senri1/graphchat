@@ -1614,6 +1614,11 @@ html.gc-ink-drawing * {
   opacity: 0;
 }
 
+.composerDock--minimizedWithAttachments .composerDock__attachmentStrip {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
 .composerToggle {
   position: fixed;
   left: 0;
@@ -1639,6 +1644,10 @@ html.gc-ink-drawing * {
   touch-action: auto;
 }
 
+.composerToggle--withAttachments {
+  left: 74px;
+}
+
 .composerToggle:hover {
   background: rgba(255, 255, 255, 0.1);
 }
@@ -1650,7 +1659,7 @@ html.gc-ink-drawing * {
 
 .composerDock__attachmentStrip {
   position: absolute;
-  right: calc(100% + 10px);
+  left: calc(100% + 10px);
   bottom: 0;
   z-index: 40;
   display: flex;
