@@ -1,13 +1,18 @@
 import { clamp } from './math';
 import type { Rect, Vec2 } from './types';
 
-type AnchorSide = 'top' | 'right' | 'bottom' | 'left';
+export type AnchorSide = 'top' | 'right' | 'bottom' | 'left';
 type ArrowAnchor = 'tip' | 'base';
 
 type Anchor = {
   side: AnchorSide;
   point: Vec2;
   outward: Vec2;
+};
+
+export type EdgeRouteAnchor = {
+  side: AnchorSide;
+  point: Vec2;
 };
 
 export type EdgeRouteStyle = {
@@ -21,6 +26,7 @@ export type EdgeRouteContext = {
   parent: { id: string; rect: Rect };
   child: { id: string; rect: Rect };
   style: EdgeRouteStyle;
+  anchors?: { start?: EdgeRouteAnchor; end?: EdgeRouteAnchor };
 };
 
 export type EdgeRoute =
@@ -61,18 +67,35 @@ function intersectRectPerimeter(rect: Rect, toward: Vec2): { point: Vec2; side: 
   return { point: { x: ix, y: iy }, side };
 }
 
+function outwardForSide(side: AnchorSide): Vec2 {
+  switch (side) {
+    case 'top':
+      return { x: 0, y: -1 };
+    case 'bottom':
+      return { x: 0, y: 1 };
+    case 'left':
+      return { x: -1, y: 0 };
+    case 'right':
+      return { x: 1, y: 0 };
+  }
+}
+
 function makeAnchor(rect: Rect, side: AnchorSide): Anchor {
   const c = rectCenter(rect);
   switch (side) {
     case 'top':
-      return { side, point: { x: c.x, y: rect.y }, outward: { x: 0, y: -1 } };
+      return { side, point: { x: c.x, y: rect.y }, outward: outwardForSide(side) };
     case 'bottom':
-      return { side, point: { x: c.x, y: rect.y + rect.h }, outward: { x: 0, y: 1 } };
+      return { side, point: { x: c.x, y: rect.y + rect.h }, outward: outwardForSide(side) };
     case 'left':
-      return { side, point: { x: rect.x, y: c.y }, outward: { x: -1, y: 0 } };
+      return { side, point: { x: rect.x, y: c.y }, outward: outwardForSide(side) };
     case 'right':
-      return { side, point: { x: rect.x + rect.w, y: c.y }, outward: { x: 1, y: 0 } };
+      return { side, point: { x: rect.x + rect.w, y: c.y }, outward: outwardForSide(side) };
   }
+}
+
+function makeAnchorAtPoint(side: AnchorSide, point: Vec2): Anchor {
+  return { side, point, outward: outwardForSide(side) };
 }
 
 function chooseAutoAnchors(parentRect: Rect, childRect: Rect): { start: Anchor; end: Anchor } {
@@ -97,7 +120,16 @@ function addPoint(out: Vec2[], p: Vec2): void {
 }
 
 function orthogonalRoute(ctx: EdgeRouteContext): EdgeRoute | null {
-  const { start, end } = chooseAutoAnchors(ctx.parent.rect, ctx.child.rect);
+  const auto = chooseAutoAnchors(ctx.parent.rect, ctx.child.rect);
+  const start = ctx.anchors?.start ? makeAnchorAtPoint(ctx.anchors.start.side, ctx.anchors.start.point) : auto.start;
+  const end = ctx.anchors?.end
+    ? makeAnchorAtPoint(ctx.anchors.end.side, ctx.anchors.end.point)
+    : ctx.anchors?.start
+      ? (() => {
+          const hit = intersectRectPerimeter(ctx.child.rect, ctx.anchors!.start!.point);
+          return makeAnchorAtPoint(hit.side, hit.point);
+        })()
+      : auto.end;
   const p0 = start.point;
   const pEnd = end.point;
 
@@ -132,7 +164,16 @@ function orthogonalRoute(ctx: EdgeRouteContext): EdgeRoute | null {
 }
 
 function curvedRoute(ctx: EdgeRouteContext): EdgeRoute | null {
-  const { start, end } = chooseAutoAnchors(ctx.parent.rect, ctx.child.rect);
+  const auto = chooseAutoAnchors(ctx.parent.rect, ctx.child.rect);
+  const start = ctx.anchors?.start ? makeAnchorAtPoint(ctx.anchors.start.side, ctx.anchors.start.point) : auto.start;
+  const end = ctx.anchors?.end
+    ? makeAnchorAtPoint(ctx.anchors.end.side, ctx.anchors.end.point)
+    : ctx.anchors?.start
+      ? (() => {
+          const hit = intersectRectPerimeter(ctx.child.rect, ctx.anchors!.start!.point);
+          return makeAnchorAtPoint(hit.side, hit.point);
+        })()
+      : auto.end;
   const p0 = start.point;
   const p3 = end.point;
   const dx = p3.x - p0.x;
@@ -151,8 +192,14 @@ function gemRoute(ctx: EdgeRouteContext): EdgeRoute | null {
   const pCenter = rectCenter(pRect);
   const cCenter = rectCenter(cRect);
 
-  const { point: start, side: startSide } = intersectRectPerimeter(pRect, cCenter);
-  const { point: endTip, side: endSide } = intersectRectPerimeter(cRect, pCenter);
+  const { point: start, side: startSide } = ctx.anchors?.start
+    ? { point: ctx.anchors.start.point, side: ctx.anchors.start.side }
+    : intersectRectPerimeter(pRect, cCenter);
+  const { point: endTip, side: endSide } = ctx.anchors?.end
+    ? { point: ctx.anchors.end.point, side: ctx.anchors.end.side }
+    : ctx.anchors?.start
+      ? intersectRectPerimeter(cRect, ctx.anchors.start.point)
+      : intersectRectPerimeter(cRect, pCenter);
 
   const endBase = { ...endTip };
   const arrowLen = Math.max(0, ctx.style.arrowHeadLength);
@@ -211,12 +258,12 @@ const EDGE_ROUTERS = [
     id: 'straight',
     label: 'Straight (Legacy)',
     description: 'Bottom-center → top-center straight line.',
-    route: ({ parent, child }: EdgeRouteContext): EdgeRoute | null => {
-      const startX = parent.rect.x + parent.rect.w * 0.5;
-      const startY = parent.rect.y + parent.rect.h;
-      const endX = child.rect.x + child.rect.w * 0.5;
-      const endY = child.rect.y;
-      return { kind: 'polyline', points: [{ x: startX, y: startY }, { x: endX, y: endY }] };
+    route: ({ parent, child, anchors }: EdgeRouteContext): EdgeRoute | null => {
+      const start = anchors?.start?.point ?? { x: parent.rect.x + parent.rect.w * 0.5, y: parent.rect.y + parent.rect.h };
+      const end =
+        anchors?.end?.point ??
+        (anchors?.start ? intersectRectPerimeter(child.rect, start).point : { x: child.rect.x + child.rect.w * 0.5, y: child.rect.y });
+      return { kind: 'polyline', points: [start, end] };
     },
   },
   {

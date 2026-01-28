@@ -36,6 +36,8 @@ export type PersistedWorkspaceSnapshot = {
     nodeFontSizePx?: number;
     sidebarFontFamily?: FontFamilyKey;
     sidebarFontSizePx?: number;
+    spawnEditNodeByDraw?: boolean;
+    spawnInkNodeByDraw?: boolean;
   };
   updatedAt: number;
 };

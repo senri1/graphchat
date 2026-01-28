@@ -5,6 +5,7 @@ import type { Rect } from './types';
 export type PdfTextLod2Mode = 'select';
 
 export type HighlightRect = { left: number; top: number; width: number; height: number };
+export type PdfSelectionStartAnchor = { pageNumber: number; yPct: number };
 
 type TextContentSource = ReadableStream<unknown> | unknown;
 
@@ -169,6 +170,8 @@ export class PdfTextLod2Overlay {
   private readonly menuCopyBtn: HTMLButtonElement;
   private readonly menuReplyBtn: HTMLButtonElement;
   private readonly menuAddToContextBtn: HTMLButtonElement;
+  private readonly menuAnnotateTextBtn: HTMLButtonElement;
+  private readonly menuAnnotateInkBtn: HTMLButtonElement;
 
   private visibleKey: string | null = null;
   private visibleNodeId: string | null = null;
@@ -177,6 +180,7 @@ export class PdfTextLod2Overlay {
   private mode: PdfTextLod2Mode | null = null;
   private lastZoom = 1;
   private menuText: string | null = null;
+  private menuSelectionStart: PdfSelectionStartAnchor | null = null;
   private interactive = false;
   private selectPointerId: number | null = null;
   private selectAnchor: Range | null = null;
@@ -192,6 +196,8 @@ export class PdfTextLod2Overlay {
   onTextLayerReady?: () => void;
   onRequestReplyToSelection?: (nodeId: string, selectionText: string) => void;
   onRequestAddToContext?: (nodeId: string, selectionText: string) => void;
+  onRequestAnnotateTextSelection?: (nodeId: string, selectionText: string, anchor: PdfSelectionStartAnchor) => void;
+  onRequestAnnotateInkSelection?: (nodeId: string, selectionText: string, anchor: PdfSelectionStartAnchor) => void;
 
   private readonly onDocPointerDownCapture = (e: Event) => {
     if (!this.isMenuOpen()) return;
@@ -376,6 +382,22 @@ export class PdfTextLod2Overlay {
     const range = this.selectRange;
     const text = range ? extractPlainTextFromRange(range) : '';
     if (range && text) {
+      const selectionStartYPct = (() => {
+        try {
+          const rects = Array.from(range.getClientRects());
+          const first = rects[0];
+          if (!first) return null;
+          const contentRect = this.textLayerEl.getBoundingClientRect();
+          const z = Math.max(0.01, this.lastZoom || 1);
+          const localY = (first.top - contentRect.top) / z + first.height / z / 2;
+          const worldH = contentRect.height / z;
+          if (!Number.isFinite(localY) || !Number.isFinite(worldH) || worldH <= 0.001) return null;
+          const yPct = clamp(localY / worldH, 0, 1);
+          return Number.isFinite(yPct) ? yPct : null;
+        } catch {
+          return null;
+        }
+      })();
       const rect = (() => {
         try {
           const rects = Array.from(range.getClientRects());
@@ -385,6 +407,12 @@ export class PdfTextLod2Overlay {
         }
       })();
       if (rect) {
+        const pageNumber = this.visiblePageNumber;
+        if (pageNumber != null && selectionStartYPct != null) {
+          this.menuSelectionStart = { pageNumber, yPct: selectionStartYPct };
+        } else {
+          this.menuSelectionStart = null;
+        }
         this.openMenu({ anchorRect: rect, text });
       } else {
         this.clearHighlights();
@@ -436,12 +464,16 @@ export class PdfTextLod2Overlay {
     onTextLayerReady?: () => void;
     onRequestReplyToSelection?: (nodeId: string, selectionText: string) => void;
     onRequestAddToContext?: (nodeId: string, selectionText: string) => void;
+    onRequestAnnotateTextSelection?: (nodeId: string, selectionText: string, anchor: PdfSelectionStartAnchor) => void;
+    onRequestAnnotateInkSelection?: (nodeId: string, selectionText: string, anchor: PdfSelectionStartAnchor) => void;
   }) {
     this.host = opts.host;
     this.onRequestCloseSelection = opts.onRequestCloseSelection;
     this.onTextLayerReady = opts.onTextLayerReady;
     this.onRequestReplyToSelection = opts.onRequestReplyToSelection;
     this.onRequestAddToContext = opts.onRequestAddToContext;
+    this.onRequestAnnotateTextSelection = opts.onRequestAnnotateTextSelection;
+    this.onRequestAnnotateInkSelection = opts.onRequestAnnotateInkSelection;
 
     const root = document.createElement('div');
     root.className = 'gc-pdfTextLod2';
@@ -562,9 +594,55 @@ export class PdfTextLod2Overlay {
     });
     this.menuAddToContextBtn = addToContextBtn;
 
+    const annotateTextBtn = document.createElement('button');
+    annotateTextBtn.className = 'gc-selectionMenu__btn';
+    annotateTextBtn.type = 'button';
+    annotateTextBtn.textContent = 'Annotate with text';
+    annotateTextBtn.addEventListener('click', () => {
+      const nodeId = this.visibleNodeId;
+      const pageNumber = this.visiblePageNumber;
+      const anchor = this.menuSelectionStart;
+      const text = (this.menuText ?? '').trim();
+      if (!nodeId || pageNumber == null || !anchor || anchor.pageNumber !== pageNumber || !text) {
+        this.closeMenu();
+        return;
+      }
+      try {
+        this.onRequestAnnotateTextSelection?.(nodeId, text, anchor);
+      } catch {
+        // ignore
+      }
+      this.closeMenu();
+    });
+    this.menuAnnotateTextBtn = annotateTextBtn;
+
+    const annotateInkBtn = document.createElement('button');
+    annotateInkBtn.className = 'gc-selectionMenu__btn';
+    annotateInkBtn.type = 'button';
+    annotateInkBtn.textContent = 'Annotate with ink';
+    annotateInkBtn.addEventListener('click', () => {
+      const nodeId = this.visibleNodeId;
+      const pageNumber = this.visiblePageNumber;
+      const anchor = this.menuSelectionStart;
+      const text = (this.menuText ?? '').trim();
+      if (!nodeId || pageNumber == null || !anchor || anchor.pageNumber !== pageNumber || !text) {
+        this.closeMenu();
+        return;
+      }
+      try {
+        this.onRequestAnnotateInkSelection?.(nodeId, text, anchor);
+      } catch {
+        // ignore
+      }
+      this.closeMenu();
+    });
+    this.menuAnnotateInkBtn = annotateInkBtn;
+
     menu.appendChild(copyBtn);
     menu.appendChild(replyBtn);
     menu.appendChild(addToContextBtn);
+    menu.appendChild(annotateTextBtn);
+    menu.appendChild(annotateInkBtn);
     this.host.appendChild(menu);
 
     const stopMenuPointer = (e: Event) => e.stopPropagation();
@@ -797,6 +875,7 @@ export class PdfTextLod2Overlay {
     this.clearTextLayer();
     this.clearHighlights();
     this.closeMenu({ suppressCallback: true });
+    this.menuSelectionStart = null;
     this.root.style.display = 'none';
   }
 
@@ -843,17 +922,18 @@ export class PdfTextLod2Overlay {
     }
   }
 
-  openMenu(opts: { anchorRect: DOMRect; text: string }): void {
+  openMenu(opts: { anchorRect: DOMRect; text: string; selectionStart?: PdfSelectionStartAnchor | null }): void {
     const t = (opts.text ?? '').trim();
     if (!t) {
       this.closeMenu();
       return;
     }
     this.menuText = t;
+    if (opts.selectionStart !== undefined) this.menuSelectionStart = opts.selectionStart;
 
     const rect = opts.anchorRect;
-    const estW = 210;
-    const estH = 120;
+    const estW = 250;
+    const estH = 260;
     const margin = 8;
     let top = rect.top - estH - margin;
     if (top < margin) top = rect.bottom + margin;
@@ -872,6 +952,7 @@ export class PdfTextLod2Overlay {
     if (!this.isMenuOpen()) return;
     this.menu.style.display = 'none';
     this.menuText = null;
+    this.menuSelectionStart = null;
     if (!opts?.suppressCallback) this.onRequestCloseSelection?.();
   }
 }

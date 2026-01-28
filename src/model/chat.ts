@@ -61,6 +61,7 @@ export type ChatNode =
       id: string;
       title: string;
       parentId: string | null;
+      parentAnchor?: { kind: 'pdf-selection'; pageNumber: number; yPct: number } | null;
       rect: Rect;
       author: ChatAuthor;
       content: string;
@@ -92,6 +93,7 @@ export type ChatNode =
       id: string;
       title: string;
       parentId: string | null;
+      parentAnchor?: { kind: 'pdf-selection'; pageNumber: number; yPct: number } | null;
       rect: Rect;
       fileName: string | null;
       storageKey?: string | null;
@@ -104,6 +106,7 @@ export type ChatNode =
       id: string;
       title: string;
       parentId: string | null;
+      parentAnchor?: { kind: 'pdf-selection'; pageNumber: number; yPct: number } | null;
       rect: Rect;
       strokes: InkStroke[];
     };

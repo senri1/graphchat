@@ -65,6 +65,10 @@ type Props = {
   onToggleDebugHudVisible: () => void;
   allowEditingAllTextNodes: boolean;
   onToggleAllowEditingAllTextNodes: () => void;
+  spawnEditNodeByDraw: boolean;
+  onToggleSpawnEditNodeByDraw: () => void;
+  spawnInkNodeByDraw: boolean;
+  onToggleSpawnInkNodeByDraw: () => void;
   spawnCount: number;
   onChangeSpawnCount: (next: number) => void;
   onSpawnNodes: () => void;
@@ -867,6 +871,44 @@ export default function SettingsModal(props: Props) {
                         onClick={props.onToggleAllowEditingAllTextNodes}
                       >
                         {props.allowEditingAllTextNodes ? 'On' : 'Off'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="settingsCard">
+                  <div className="settingsRow">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Draw-to-spawn note/edit nodes</div>
+                      <div className="settingsRow__desc">When on, the bottom-right +Text button lets you drag out the node rectangle (Esc cancels).</div>
+                    </div>
+                    <div className="settingsRow__actions">
+                      <button
+                        className={`settingsToggle ${props.spawnEditNodeByDraw ? 'settingsToggle--on' : ''}`}
+                        type="button"
+                        aria-pressed={props.spawnEditNodeByDraw}
+                        onClick={props.onToggleSpawnEditNodeByDraw}
+                      >
+                        {props.spawnEditNodeByDraw ? 'On' : 'Off'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="settingsCard">
+                  <div className="settingsRow">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Draw-to-spawn ink nodes</div>
+                      <div className="settingsRow__desc">When on, the bottom-right Ink button lets you drag out the node rectangle (Esc cancels).</div>
+                    </div>
+                    <div className="settingsRow__actions">
+                      <button
+                        className={`settingsToggle ${props.spawnInkNodeByDraw ? 'settingsToggle--on' : ''}`}
+                        type="button"
+                        aria-pressed={props.spawnInkNodeByDraw}
+                        onClick={props.onToggleSpawnInkNodeByDraw}
+                      >
+                        {props.spawnInkNodeByDraw ? 'On' : 'Off'}
                       </button>
                     </div>
                   </div>

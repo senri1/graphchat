@@ -6,7 +6,7 @@ import { rasterizeHtmlToImage, type TextHitZone } from './raster/textRaster';
 import { renderMarkdownMath } from '../markdown/renderMarkdownMath';
 import { normalizeMathDelimitersFromCopyTex } from '../markdown/mathDelimiters';
 import { TextLod2Overlay, type HighlightRect, type TextLod2Action, type TextLod2Mode } from './TextLod2Overlay';
-import { PdfTextLod2Overlay, type HighlightRect as PdfHighlightRect } from './PdfTextLod2Overlay';
+import { PdfTextLod2Overlay, type HighlightRect as PdfHighlightRect, type PdfSelectionStartAnchor } from './PdfTextLod2Overlay';
 import { WebGLPreblur } from './WebGLPreblur';
 import { DEFAULT_EDGE_ROUTER_ID, getEdgeRouter, normalizeEdgeRouterId, type EdgeRoute, type EdgeRouterId } from './edgeRouting';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
@@ -272,7 +272,15 @@ type DemoNodeBase = {
   id: string;
   title: string;
   parentId: string | null;
+  parentAnchor?: ParentAnchor;
 };
+
+type ParentAnchor =
+  | {
+      kind: 'pdf-selection';
+      pageNumber: number;
+      yPct: number;
+    };
 
 type TextNode = DemoNodeBase & {
   kind: 'text';
@@ -379,6 +387,21 @@ type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
 
 type Tool = 'select' | 'draw' | 'erase';
 
+type PendingSpawnByDraw =
+  | {
+      kind: 'text';
+      opts?: { title?: string; content?: string; author?: ChatAuthor };
+    }
+  | { kind: 'ink' };
+
+type PdfAnnotationPlacement = {
+  kind: 'text' | 'ink';
+  pdfNodeId: string;
+  selectionText: string;
+  anchor: PdfSelectionStartAnchor;
+  hoverWorld: Vec2 | null;
+};
+
 type InkRaster = {
   scale: number;
   worldW: number;
@@ -450,7 +473,23 @@ type ActivePdfTextSelectGesture = {
   pageNumber: number;
 };
 
-type ActiveGesture = ActiveNodeGesture | ActiveInkGesture | ActiveEraseGesture | ActiveTextSelectGesture | ActivePdfTextSelectGesture;
+type ActiveSpawnByDrawGesture = {
+  kind: 'spawn-by-draw';
+  pointerId: number;
+  spawn: PendingSpawnByDraw;
+  startWorld: Vec2;
+  currentWorld: Vec2;
+  hasDrag: boolean;
+  pdfAnnotation?: PdfAnnotationPlacement;
+};
+
+type ActiveGesture =
+  | ActiveNodeGesture
+  | ActiveInkGesture
+  | ActiveEraseGesture
+  | ActiveTextSelectGesture
+  | ActivePdfTextSelectGesture
+  | ActiveSpawnByDrawGesture;
 
 export class WorldEngine {
   private readonly canvas: HTMLCanvasElement;
@@ -510,9 +549,13 @@ export class WorldEngine {
   private rawViewerNodeId: string | null = null;
   private allowEditingAllTextNodes = false;
   private tool: Tool = 'select';
+  private pendingSpawnByDraw: PendingSpawnByDraw | null = null;
   private activeGesture: ActiveGesture | null = null;
   private suppressTapPointerIds = new Set<number>();
   private readonly touchUi: boolean;
+  private spawnEditNodeByDrawEnabled = false;
+  private spawnInkNodeByDrawEnabled = false;
+  private pdfAnnotationPlacement: PdfAnnotationPlacement | null = null;
 
   private readonly overlayHost: HTMLElement | null;
   private textLod2: TextLod2Overlay | null = null;
@@ -834,6 +877,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           id: n.id,
           title: n.title,
           parentId: n.parentId,
+          ...(n.parentAnchor ? { parentAnchor: { ...n.parentAnchor } } : {}),
           rect: { ...n.rect },
           ...(n.isEditNode ? { isEditNode: true } : {}),
           author: n.author,
@@ -862,6 +906,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           id: n.id,
           title: n.title,
           parentId: n.parentId,
+          ...(n.parentAnchor ? { parentAnchor: { ...n.parentAnchor } } : {}),
           rect: { ...n.rect },
           fileName: n.fileName,
           storageKey: (n as any).storageKey ?? null,
@@ -875,6 +920,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         id: n.id,
         title: n.title,
         parentId: n.parentId,
+        ...(n.parentAnchor ? { parentAnchor: { ...n.parentAnchor } } : {}),
         rect: { ...n.rect },
         strokes: n.strokes.map((s) => ({
           width: s.width,
@@ -944,6 +990,17 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.nodes.length = 0;
     for (const n of next.nodes) {
       const parentId = ((n as any)?.parentId as string | null | undefined) ?? null;
+      const parentAnchor = (() => {
+        const raw = (n as any)?.parentAnchor as any;
+        if (!raw || typeof raw !== 'object') return undefined;
+        if (raw.kind !== 'pdf-selection') return undefined;
+        const pageNumberRaw = Number(raw.pageNumber);
+        const yPctRaw = Number(raw.yPct);
+        if (!Number.isFinite(pageNumberRaw) || !Number.isFinite(yPctRaw)) return undefined;
+        const pageNumber = Math.max(1, Math.floor(pageNumberRaw));
+        const yPct = clamp(yPctRaw, 0, 1);
+        return { kind: 'pdf-selection', pageNumber, yPct } as ParentAnchor;
+      })();
       if (n.kind === 'text') {
         const content = typeof n.content === 'string' ? n.content : String(n.content ?? '');
         const isEditNode = Boolean((n as any)?.isEditNode) || n.id.startsWith('n');
@@ -1031,6 +1088,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 	          kind: 'text',
 	          id: n.id,
 	          parentId,
+	          ...(parentAnchor ? { parentAnchor } : {}),
           rect: { ...n.rect },
           title: n.title,
           ...(isEditNode ? { isEditNode: true } : {}),
@@ -1069,6 +1127,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           kind: 'pdf',
           id: n.id,
           parentId,
+          ...(parentAnchor ? { parentAnchor } : {}),
           rect: { ...n.rect },
           title: n.title,
           fileName: n.fileName ?? null,
@@ -1083,6 +1142,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         kind: 'ink',
         id: n.id,
         parentId,
+        ...(parentAnchor ? { parentAnchor } : {}),
         rect: { ...n.rect },
         title: n.title,
         strokes: (n.strokes ?? []).map((s) => ({
@@ -1181,6 +1241,25 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
   setAllowEditingAllTextNodes(enabled: boolean): void {
     this.allowEditingAllTextNodes = Boolean(enabled);
+  }
+
+  setSpawnEditNodeByDrawEnabled(enabled: boolean): void {
+    this.spawnEditNodeByDrawEnabled = Boolean(enabled);
+  }
+
+  setSpawnInkNodeByDrawEnabled(enabled: boolean): void {
+    this.spawnInkNodeByDrawEnabled = Boolean(enabled);
+  }
+
+  cancelPdfAnnotationPlacement(): boolean {
+    const hadPlacement = this.pdfAnnotationPlacement != null;
+    const g = this.activeGesture;
+    const hadActiveSpawn = Boolean(g && g.kind === 'spawn-by-draw' && g.pdfAnnotation);
+    if (!hadPlacement && !hadActiveSpawn) return false;
+    if (hadActiveSpawn) this.activeGesture = null;
+    this.pdfAnnotationPlacement = null;
+    this.requestRender();
+    return true;
   }
 
   setRawViewerNodeId(nodeId: string | null): void {
@@ -1384,21 +1463,48 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     }
   }
 
-  spawnTextNode(opts?: { title?: string; content?: string; author?: ChatAuthor }): string {
+  beginSpawnTextNodeByDraw(opts?: { title?: string; content?: string; author?: ChatAuthor }): void {
+    const title = typeof opts?.title === 'string' ? opts.title : undefined;
+    const content = typeof opts?.content === 'string' ? opts.content : undefined;
+    const author: ChatAuthor | undefined = opts?.author === 'assistant' ? 'assistant' : opts?.author === 'user' ? 'user' : undefined;
+    const normalized =
+      title !== undefined || content !== undefined || author !== undefined
+        ? { ...(title !== undefined ? { title } : {}), ...(content !== undefined ? { content } : {}), ...(author !== undefined ? { author } : {}) }
+        : undefined;
+
+    this.pendingSpawnByDraw = { kind: 'text', ...(normalized ? { opts: normalized } : {}) };
+  }
+
+  beginSpawnInkNodeByDraw(): void {
+    this.pendingSpawnByDraw = { kind: 'ink' };
+  }
+
+  cancelSpawnByDraw(): boolean {
+    const hadPending = this.pendingSpawnByDraw != null;
+    const hadActive = this.activeGesture?.kind === 'spawn-by-draw';
+    if (!hadPending && !hadActive) return false;
+    this.pendingSpawnByDraw = null;
+    if (hadActive) this.activeGesture = null;
+    this.requestRender();
+    return true;
+  }
+
+  spawnTextNode(opts?: { title?: string; content?: string; author?: ChatAuthor; rect?: Rect }): string {
     const title = typeof opts?.title === 'string' ? opts.title.trim() : '';
     const content = typeof opts?.content === 'string' ? opts.content : String(opts?.content ?? '');
     const author: ChatAuthor = opts?.author === 'assistant' ? 'assistant' : 'user';
 
     const id = `n${Date.now().toString(36)}-${(this.nodeSeq++).toString(36)}`;
-    const center = this.camera.screenToWorld({ x: this.cssW * 0.5, y: this.cssH * 0.5 });
     const nodeW = 460;
     const nodeH = 240;
+    const explicitRect = this.normalizeSpawnRect(opts?.rect);
+    const center = this.camera.screenToWorld({ x: this.cssW * 0.5, y: this.cssH * 0.5 });
 
     const node: TextNode = {
       kind: 'text',
       id,
       parentId: null,
-      rect: { x: center.x - nodeW * 0.5, y: center.y - nodeH * 0.5, w: nodeW, h: nodeH },
+      rect: explicitRect ?? { x: center.x - nodeW * 0.5, y: center.y - nodeH * 0.5, w: nodeW, h: nodeH },
       title: title || 'Text',
       isEditNode: true,
       author,
@@ -1414,26 +1520,6 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     // Keep new nodes visible (prevents off-screen editors, especially when a tall PDF node is present).
     const view = this.worldViewportRect();
-    const z = Math.max(0.001, this.camera.zoom || 1);
-    const marginWorld = 12 / z;
-    const clampRectToView = (r: Rect): Rect => {
-      const minX = view.x + marginWorld;
-      const minY = view.y + marginWorld;
-      const maxX = view.x + view.w - marginWorld - r.w;
-      const maxY = view.y + view.h - marginWorld - r.h;
-
-      const clampOrCenter = (v: number, lo: number, hi: number, size: number, origin: number, span: number) => {
-        if (Number.isFinite(hi) && hi >= lo) return clamp(v, lo, hi);
-        return origin + (span - size) * 0.5;
-      };
-
-      return {
-        x: clampOrCenter(r.x, minX, maxX, r.w, view.x, view.w),
-        y: clampOrCenter(r.y, minY, maxY, r.h, view.y, view.h),
-        w: r.w,
-        h: r.h,
-      };
-    };
 
     const tryPlaceBesidePdf = (pdfRect: Rect): Rect | null => {
       const stepY = nodeH + gapY;
@@ -1464,7 +1550,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       for (const side of sides) {
         for (const dy of yOffsets) {
           const raw: Rect = { x: side.x, y: candidate.y + dy, w: candidate.w, h: candidate.h };
-          const clamped = clampRectToView(raw);
+          const clamped = this.clampRectToView(raw);
 
           // If we had to clamp horizontally, this side doesn't actually fit in view.
           if (Math.abs(clamped.x - raw.x) > 0.5) continue;
@@ -1485,7 +1571,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         w: candidate.w,
         h: candidate.h,
       };
-      const above = clampRectToView(rawAbove);
+      const above = this.clampRectToView(rawAbove);
       if (!this.nodes.some((n) => n.kind === 'pdf' && rectsIntersect(n.rect, above))) {
         const overlapCount = countOverlaps(above);
         if (overlapCount === 0) return above;
@@ -1495,25 +1581,26 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       return best?.rect ?? null;
     };
 
-    for (let i = 0; i < 60; i += 1) {
-      const pdfOverlap =
-        (this.nodes.find((n) => n.kind === 'pdf' && rectsIntersect(n.rect, candidate)) as PdfNode | undefined) ?? null;
-      const overlap = pdfOverlap ?? this.nodes.find((n) => rectsIntersect(n.rect, candidate)) ?? null;
-      if (!overlap) break;
-      if (overlap.kind === 'pdf') {
-        const placed = tryPlaceBesidePdf(overlap.rect);
-        if (placed) {
-          candidate.x = placed.x;
-          candidate.y = placed.y;
+    if (!explicitRect) {
+      for (let i = 0; i < 60; i += 1) {
+        const pdfOverlap =
+          (this.nodes.find((n) => n.kind === 'pdf' && rectsIntersect(n.rect, candidate)) as PdfNode | undefined) ?? null;
+        const overlap = pdfOverlap ?? this.nodes.find((n) => rectsIntersect(n.rect, candidate)) ?? null;
+        if (!overlap) break;
+        if (overlap.kind === 'pdf') {
+          const placed = tryPlaceBesidePdf(overlap.rect);
+          if (placed) {
+            candidate.x = placed.x;
+            candidate.y = placed.y;
+          }
+          break;
         }
-        break;
+        candidate.y = overlap.rect.y + overlap.rect.h + gapY;
       }
-      candidate.y = overlap.rect.y + overlap.rect.h + gapY;
     }
 
-    const clamped = clampRectToView(candidate);
-    node.rect.x = clamped.x;
-    node.rect.y = clamped.y;
+    const clamped = this.clampRectToView(candidate);
+    node.rect = clamped;
 
     this.recomputeTextNodeDisplayHash(node);
     this.nodes.push(node);
@@ -1524,24 +1611,31 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.bringNodeToFront(id);
     this.requestRender();
     if (changed) this.emitUiState();
+    try {
+      this.onRequestPersist?.();
+    } catch {
+      // ignore
+    }
 
     return id;
   }
 
-  spawnInkNode(): void {
+  spawnInkNode(opts?: { rect?: Rect }): string {
     const id = `i${Date.now().toString(36)}-${(this.nodeSeq++).toString(36)}`;
     const center = this.camera.screenToWorld({ x: this.cssW * 0.5, y: this.cssH * 0.5 });
     const nodeW = 420;
     const nodeH = 280;
+    const explicitRect = this.normalizeSpawnRect(opts?.rect);
     const node: InkNode = {
       kind: 'ink',
       id,
       parentId: null,
-      rect: { x: center.x - nodeW * 0.5, y: center.y - nodeH * 0.5, w: nodeW, h: nodeH },
+      rect: explicitRect ?? { x: center.x - nodeW * 0.5, y: center.y - nodeH * 0.5, w: nodeW, h: nodeH },
       title: 'Ink node',
       strokes: [],
       raster: null,
     };
+    if (explicitRect) node.rect = this.clampRectToView(node.rect);
     this.nodes.push(node);
     const changed = this.selectedNodeId !== id || this.editingNodeId !== null;
     this.selectedNodeId = id;
@@ -1549,6 +1643,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.bringNodeToFront(id);
     this.requestRender();
     if (changed) this.emitUiState();
+    try {
+      this.onRequestPersist?.();
+    } catch {
+      // ignore
+    }
+    return id;
   }
 
   spawnChatTurn(args: {
@@ -2209,7 +2309,6 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     // Only for mouse/trackpad (hover without buttons pressed).
     if (this.editingNodeId) return;
     if (this.activeGesture) return;
-    if (this.tool !== 'select') return;
 
     const t = ev.pointerType || 'mouse';
     if (t !== 'mouse') return;
@@ -2219,6 +2318,38 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const p: Vec2 = { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
     if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return;
     if (p.x < 0 || p.y < 0 || p.x > rect.width || p.y > rect.height) return;
+
+    const pdfAnn = this.pdfAnnotationPlacement;
+    if (pdfAnn) {
+      this.setCanvasCursor('crosshair');
+      const hadHover = this.hoverTextNodeId !== null || this.hoverPdfPage !== null || this.hoverNodeHeaderButton !== null;
+      if (hadHover) {
+        this.hoverTextNodeId = null;
+        this.hoverPdfPage = null;
+        this.hoverNodeHeaderButton = null;
+      }
+
+      const world = this.camera.screenToWorld(p);
+      const prev = pdfAnn.hoverWorld;
+      const changed = !prev || Math.abs(prev.x - world.x) > 0.25 || Math.abs(prev.y - world.y) > 0.25;
+      if (changed) pdfAnn.hoverWorld = world;
+      if (changed || hadHover) this.requestRender();
+      return;
+    }
+
+    if (this.pendingSpawnByDraw) {
+      const hadHover = this.hoverTextNodeId !== null || this.hoverPdfPage !== null || this.hoverNodeHeaderButton !== null;
+      this.setCanvasCursor('crosshair');
+      if (hadHover) {
+        this.hoverTextNodeId = null;
+        this.hoverPdfPage = null;
+        this.hoverNodeHeaderButton = null;
+        this.requestRender();
+      }
+      return;
+    }
+
+    if (this.tool !== 'select') return;
 
     const world = this.camera.screenToWorld(p);
     const hit = this.findTopmostNodeAtWorld(world);
@@ -3589,12 +3720,66 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           // ignore
         }
       },
+      onRequestAnnotateTextSelection: (nodeId, selectionText, anchor) => {
+        this.beginPdfAnnotationPlacement({ kind: 'text', pdfNodeId: nodeId, selectionText, anchor });
+      },
+      onRequestAnnotateInkSelection: (nodeId, selectionText, anchor) => {
+        this.beginPdfAnnotationPlacement({ kind: 'ink', pdfNodeId: nodeId, selectionText, anchor });
+      },
       onTextLayerReady: () => {
         if (this.pdfSelectLastClient && this.pdfSelectTarget) this.schedulePdfPenSelectionUpdate();
         this.requestRender();
       },
     });
     return this.pdfTextLod2;
+  }
+
+  private beginPdfAnnotationPlacement(opts: {
+    kind: 'text' | 'ink';
+    pdfNodeId: string;
+    selectionText: string;
+    anchor: PdfSelectionStartAnchor;
+  }): void {
+    const pdfNodeId = typeof opts.pdfNodeId === 'string' ? opts.pdfNodeId : String(opts.pdfNodeId ?? '');
+    if (!pdfNodeId) return;
+    const selectionText = String(opts.selectionText ?? '').trim();
+    if (!selectionText) return;
+    const pageNumber = Math.max(1, Math.floor(opts.anchor?.pageNumber ?? 1));
+    const yPct = clamp(Number(opts.anchor?.yPct ?? 0.5), 0, 1);
+
+    this.pdfAnnotationPlacement = {
+      kind: opts.kind === 'ink' ? 'ink' : 'text',
+      pdfNodeId,
+      selectionText,
+      anchor: { pageNumber, yPct },
+      hoverWorld: null,
+    };
+    this.requestRender();
+  }
+
+  private applyPdfAnnotationToChildNode(childNodeId: string, placement: PdfAnnotationPlacement): void {
+    const childId = typeof childNodeId === 'string' ? childNodeId : String(childNodeId ?? '');
+    if (!childId) return;
+    const pdfNodeId = typeof placement.pdfNodeId === 'string' ? placement.pdfNodeId : String(placement.pdfNodeId ?? '');
+    if (!pdfNodeId) return;
+
+    const node = this.nodes.find((n) => n.id === childId) ?? null;
+    if (!node) return;
+
+    node.parentId = pdfNodeId;
+    node.parentAnchor = {
+      kind: 'pdf-selection',
+      pageNumber: Math.max(1, Math.floor(placement.anchor.pageNumber || 1)),
+      yPct: clamp(Number(placement.anchor.yPct || 0.5), 0, 1),
+    };
+
+    if (node.kind === 'text') {
+      node.userPreface = { contexts: [placement.selectionText] };
+      this.recomputeTextNodeDisplayHash(node);
+      this.textRasterGeneration += 1;
+    }
+
+    this.requestRender();
   }
 
   private localToClient(p: Vec2): { x: number; y: number } {
@@ -4497,6 +4682,72 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return { x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) };
   }
 
+  private clampRectToView(r: Rect): Rect {
+    const view = this.worldViewportRect();
+    const z = Math.max(0.001, this.camera.zoom || 1);
+    const marginWorld = 12 / z;
+
+    const minX = view.x + marginWorld;
+    const minY = view.y + marginWorld;
+    const maxX = view.x + view.w - marginWorld - r.w;
+    const maxY = view.y + view.h - marginWorld - r.h;
+
+    const clampOrCenter = (v: number, lo: number, hi: number, size: number, origin: number, span: number) => {
+      if (Number.isFinite(hi) && hi >= lo) return clamp(v, lo, hi);
+      return origin + (span - size) * 0.5;
+    };
+
+    return {
+      x: clampOrCenter(r.x, minX, maxX, r.w, view.x, view.w),
+      y: clampOrCenter(r.y, minY, maxY, r.h, view.y, view.h),
+      w: r.w,
+      h: r.h,
+    };
+  }
+
+  private normalizeSpawnRect(r: Rect | null | undefined): Rect | null {
+    if (!r) return null;
+    let x = Number(r.x);
+    let y = Number(r.y);
+    let w = Number(r.w);
+    let h = Number(r.h);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)) return null;
+    if (w < 0) {
+      x += w;
+      w = -w;
+    }
+    if (h < 0) {
+      y += h;
+      h = -h;
+    }
+    if (w <= 0 || h <= 0) return null;
+    if (w < this.minNodeW) w = this.minNodeW;
+    if (h < this.minNodeH) h = this.minNodeH;
+    return { x, y, w, h };
+  }
+
+  private rectFromWorldDrag(startWorld: Vec2, endWorld: Vec2): Rect | null {
+    const sx = Number(startWorld.x);
+    const sy = Number(startWorld.y);
+    let ex = Number(endWorld.x);
+    let ey = Number(endWorld.y);
+    if (!Number.isFinite(sx) || !Number.isFinite(sy) || !Number.isFinite(ex) || !Number.isFinite(ey)) return null;
+
+    const dx = ex - sx;
+    const dy = ey - sy;
+
+    if (Math.abs(dx) < this.minNodeW) ex = sx + (dx >= 0 ? this.minNodeW : -this.minNodeW);
+    if (Math.abs(dy) < this.minNodeH) ey = sy + (dy >= 0 ? this.minNodeH : -this.minNodeH);
+
+    const raw: Rect = {
+      x: Math.min(sx, ex),
+      y: Math.min(sy, ey),
+      w: Math.abs(ex - sx),
+      h: Math.abs(ey - sy),
+    };
+    return this.clampRectToView(raw);
+  }
+
   private bringNodeToFront(nodeId: string): void {
     const idx = this.nodes.findIndex((n) => n.id === nodeId);
     if (idx < 0 || idx === this.nodes.length - 1) return;
@@ -4570,6 +4821,58 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (this.editingNodeId) return null;
 
     const world = this.camera.screenToWorld(p);
+
+    const pdfAnn = this.pdfAnnotationPlacement;
+    if (pdfAnn && (info.pointerType || 'mouse') === 'mouse') {
+      this.suppressTapPointerIds.add(info.pointerId);
+
+      const drawToSpawn = pdfAnn.kind === 'ink' ? this.spawnInkNodeByDrawEnabled : this.spawnEditNodeByDrawEnabled;
+      if (drawToSpawn) {
+        this.activeGesture = {
+          kind: 'spawn-by-draw',
+          pointerId: info.pointerId,
+          spawn: pdfAnn.kind === 'ink' ? { kind: 'ink' } : { kind: 'text', opts: { title: 'Note' } },
+          startWorld: world,
+          currentWorld: world,
+          hasDrag: false,
+          pdfAnnotation: pdfAnn,
+        };
+        return 'node';
+      }
+
+      const rect = pdfAnn.kind === 'ink'
+        ? { x: world.x, y: world.y, w: 420, h: 280 }
+        : { x: world.x, y: world.y, w: 460, h: 240 };
+
+      const createdId =
+        pdfAnn.kind === 'ink'
+          ? this.spawnInkNode({ rect })
+          : this.spawnTextNode({ title: 'Note', rect });
+      this.applyPdfAnnotationToChildNode(createdId, pdfAnn);
+      if (pdfAnn.kind === 'text') this.cancelEditing();
+      this.pdfAnnotationPlacement = null;
+      try {
+        this.onRequestPersist?.();
+      } catch {
+        // ignore
+      }
+      return 'node';
+    }
+
+    const pendingSpawn = this.pendingSpawnByDraw;
+    if (pendingSpawn) {
+      this.pendingSpawnByDraw = null;
+      this.activeGesture = {
+        kind: 'spawn-by-draw',
+        pointerId: info.pointerId,
+        spawn: pendingSpawn,
+        startWorld: world,
+        currentWorld: world,
+        hasDrag: false,
+      };
+      return 'node';
+    }
+
     const hit = this.findTopmostNodeAtWorld(world);
 
     // Pen drag-to-highlight for text nodes (LOD2 DOM overlay).
@@ -4930,6 +5233,14 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       return;
     }
 
+    if (g.kind === 'spawn-by-draw') {
+      const world = this.camera.screenToWorld(p);
+      g.currentWorld = world;
+      g.hasDrag = true;
+      this.requestRender();
+      return;
+    }
+
     const node = this.nodes.find((n) => n.id === g.nodeId);
     if (!node) return;
 
@@ -5019,6 +5330,47 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const g = this.activeGesture;
     if (!g || g.pointerId !== info.pointerId) return;
 
+    if (g.kind === 'spawn-by-draw') {
+      this.activeGesture = null;
+      if (!info.wasDrag) {
+        if (g.hasDrag) this.requestRender();
+        return;
+      }
+
+      const world = this.camera.screenToWorld(p);
+      const rect = this.rectFromWorldDrag(g.startWorld, world);
+      if (!rect) {
+        if (g.hasDrag) this.requestRender();
+        return;
+      }
+
+      if (g.spawn.kind === 'text') {
+        const id = this.spawnTextNode({ ...(g.spawn.opts ?? {}), rect });
+        if (g.pdfAnnotation) {
+          this.applyPdfAnnotationToChildNode(id, g.pdfAnnotation);
+          this.cancelEditing();
+          this.pdfAnnotationPlacement = null;
+          try {
+            this.onRequestPersist?.();
+          } catch {
+            // ignore
+          }
+        }
+      } else {
+        const id = this.spawnInkNode({ rect });
+        if (g.pdfAnnotation) {
+          this.applyPdfAnnotationToChildNode(id, g.pdfAnnotation);
+          this.pdfAnnotationPlacement = null;
+          try {
+            this.onRequestPersist?.();
+          } catch {
+            // ignore
+          }
+        }
+      }
+      return;
+    }
+
     if (g.kind === 'text-select') {
       const client = this.localToClient(p);
       this.textSelectLastClient = client;
@@ -5085,6 +5437,25 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       const range = this.pdfSelectRange;
       const text = range ? this.extractPlainTextFromRange(range) : '';
       if (overlay && range && text) {
+        const selectionStart = (() => {
+          try {
+            const rects = Array.from(range.getClientRects());
+            const first = rects[0];
+            if (!first) return null;
+            const contentRect = overlay.getTextLayerElement().getBoundingClientRect();
+            const z = Math.max(0.01, overlay.getZoom() || 1);
+            const localY = (first.top - contentRect.top) / z + first.height / z / 2;
+            const worldH = contentRect.height / z;
+            if (!Number.isFinite(localY) || !Number.isFinite(worldH) || worldH <= 0.001) return null;
+            const yPct = clamp(localY / worldH, 0, 1);
+            if (!Number.isFinite(yPct)) return null;
+            const pageNumber = g.pageNumber;
+            if (!Number.isFinite(pageNumber) || pageNumber < 1) return null;
+            return { pageNumber, yPct } satisfies PdfSelectionStartAnchor;
+          } catch {
+            return null;
+          }
+        })();
         const rect = (() => {
           try {
             const rects = Array.from(range.getClientRects());
@@ -5094,7 +5465,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           }
         })();
         if (rect) {
-          overlay.openMenu({ anchorRect: rect, text });
+          overlay.openMenu({ anchorRect: rect, text, selectionStart: selectionStart ?? null });
         } else {
           this.clearPdfTextSelection({ suppressOverlayCallback: true });
         }
@@ -5861,10 +6232,29 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
       if (!rectsIntersect(parent.rect, view) && !rectsIntersect(child.rect, view)) continue;
 
+      const anchors = (() => {
+        if (parent.kind !== 'pdf') return undefined;
+        const a = child.parentAnchor;
+        if (!a || a.kind !== 'pdf-selection') return undefined;
+        const state = this.pdfStateByNodeId.get(parent.id);
+        if (!state) return undefined;
+        const pageRect = this.getPdfPageRect(parent, state, a.pageNumber);
+        if (!pageRect) return undefined;
+
+        const childCx = child.rect.x + child.rect.w * 0.5;
+        const leftX = pageRect.x;
+        const rightX = pageRect.x + pageRect.w;
+        const side = Math.abs(childCx - rightX) < Math.abs(childCx - leftX) ? ('right' as const) : ('left' as const);
+        const x = side === 'right' ? rightX : leftX;
+        const y = pageRect.y + clamp(a.yPct, 0, 1) * pageRect.h;
+        return { start: { side, point: { x, y } } };
+      })();
+
       const route = router.route({
         parent: { id: parent.id, rect: parent.rect },
         child: { id: child.id, rect: child.rect },
         style: routeStyle,
+        ...(anchors ? { anchors } : {}),
       });
       if (!route) continue;
 
@@ -6109,6 +6499,72 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     }
   }
 
+  private drawPdfAnnotationPlacementPreview(): void {
+    const placement = this.pdfAnnotationPlacement;
+    if (!placement) return;
+
+    const endpoint = (() => {
+      const g = this.activeGesture;
+      if (g && g.kind === 'spawn-by-draw' && g.pdfAnnotation) return g.currentWorld;
+      return placement.hoverWorld;
+    })();
+    if (!endpoint) return;
+
+    const pdfNode = this.nodes.find((n): n is PdfNode => n.kind === 'pdf' && n.id === placement.pdfNodeId) ?? null;
+    if (!pdfNode || pdfNode.status !== 'ready') return;
+    const state = this.pdfStateByNodeId.get(pdfNode.id);
+    if (!state) return;
+    const pageRect = this.getPdfPageRect(pdfNode, state, placement.anchor.pageNumber);
+    if (!pageRect) return;
+
+    const anchorY = pageRect.y + clamp(placement.anchor.yPct, 0, 1) * pageRect.h;
+    const leftX = pageRect.x;
+    const rightX = pageRect.x + pageRect.w;
+    const startX = Math.abs(endpoint.x - rightX) < Math.abs(endpoint.x - leftX) ? rightX : leftX;
+
+    const start: Vec2 = { x: startX, y: anchorY };
+    const end: Vec2 = endpoint;
+
+    const z = Math.max(0.01, this.camera.zoom || 1);
+    const arrowHeadLen = 12 / z;
+    const arrowHalfW = 6 / z;
+
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.lineWidth = 2 / z;
+    ctx.strokeStyle = this.replyArrowColor;
+    ctx.fillStyle = this.replyArrowColor;
+    ctx.globalAlpha = this.replyArrowOpacity * 0.75;
+    ctx.setLineDash([7 / z, 5 / z]);
+
+    ctx.beginPath();
+    ctx.moveTo(start.x, start.y);
+    ctx.lineTo(end.x, end.y);
+    ctx.stroke();
+
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const len = Math.hypot(dx, dy);
+    if (len > 0.001) {
+      const ux = dx / len;
+      const uy = dy / len;
+      const px = -uy;
+      const py = ux;
+
+      const baseX = end.x - ux * arrowHeadLen;
+      const baseY = end.y - uy * arrowHeadLen;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(end.x, end.y);
+      ctx.lineTo(baseX + px * arrowHalfW, baseY + py * arrowHalfW);
+      ctx.lineTo(baseX - px * arrowHalfW, baseY - py * arrowHalfW);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    ctx.restore();
+  }
+
   private drawWorldInk(): void {
     const ctx = this.ctx;
     const g = this.activeGesture;
@@ -6118,6 +6574,42 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     ctx.save();
     for (const s of this.worldInkStrokes) this.drawInkStroke(ctx, s);
     if (hasInProgress && g) this.drawInkStroke(ctx, g.stroke);
+    ctx.restore();
+  }
+
+  private drawSpawnByDrawPreview(): void {
+    const g = this.activeGesture;
+    if (!g || g.kind !== 'spawn-by-draw' || !g.hasDrag) return;
+
+    const rect = this.rectFromWorldDrag(g.startWorld, g.currentWorld);
+    if (!rect) return;
+
+    const ctx = this.ctx;
+    const z = Math.max(0.01, this.camera.zoom || 1);
+    const stroke = g.spawn.kind === 'ink' ? 'rgba(167,139,250,0.92)' : 'rgba(147,197,253,0.92)';
+    const fill = g.spawn.kind === 'ink' ? 'rgba(167,139,250,0.10)' : 'rgba(147,197,253,0.10)';
+
+    ctx.save();
+    ctx.fillStyle = fill;
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 2 / z;
+    ctx.setLineDash([7 / z, 5 / z]);
+
+    const { x, y, w, h } = rect;
+    const r = Math.min(18, w * 0.5, h * 0.5);
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.arcTo(x + w, y, x + w, y + r, r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+    ctx.lineTo(x + r, y + h);
+    ctx.arcTo(x, y + h, x, y + h - r, r);
+    ctx.lineTo(x, y + r);
+    ctx.arcTo(x, y, x + r, y, r);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
     ctx.restore();
   }
 
@@ -6180,10 +6672,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.applyWorldTransform();
     this.drawGrid();
     this.drawParentArrows();
+    this.drawPdfAnnotationPlacementPreview();
     this.updateTextRastersForViewport();
     this.updatePdfPageRendersForViewport();
     this.drawDemoNodes();
     this.drawWorldInk();
+    this.drawSpawnByDrawPreview();
     this.renderTextStreamLod2Target(nextTextStreamLod2Target);
     this.renderTextLod2Target(nextTextLod2Target);
     this.renderPdfTextLod2Target(nextPdfLod2Target);

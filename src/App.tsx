@@ -459,6 +459,8 @@ export default function App() {
       nodeFontSizePx: number;
       sidebarFontFamily: FontFamilyKey;
       sidebarFontSizePx: number;
+      spawnEditNodeByDraw: boolean;
+      spawnInkNodeByDraw: boolean;
     };
     chatStates: Map<string, WorldEngineChatState>;
     chatMeta: Map<string, ChatRuntimeMeta>;
@@ -494,6 +496,10 @@ export default function App() {
   const [debugHudVisible, setDebugHudVisible] = useState(true);
   const [allowEditingAllTextNodes, setAllowEditingAllTextNodes] = useState(false);
   const allowEditingAllTextNodesRef = useRef<boolean>(allowEditingAllTextNodes);
+  const [spawnEditNodeByDraw, setSpawnEditNodeByDraw] = useState(false);
+  const spawnEditNodeByDrawRef = useRef<boolean>(spawnEditNodeByDraw);
+  const [spawnInkNodeByDraw, setSpawnInkNodeByDraw] = useState(false);
+  const spawnInkNodeByDrawRef = useRef<boolean>(spawnInkNodeByDraw);
   const [stressSpawnCount, setStressSpawnCount] = useState<number>(50);
   const [backgroundLibrary, setBackgroundLibrary] = useState<BackgroundLibraryItem[]>(() => []);
   const [backgroundStorageKey, setBackgroundStorageKey] = useState<string | null>(() => null);
@@ -652,6 +658,14 @@ export default function App() {
     allowEditingAllTextNodesRef.current = allowEditingAllTextNodes;
     engineRef.current?.setAllowEditingAllTextNodes(allowEditingAllTextNodes);
   }, [allowEditingAllTextNodes]);
+
+  useEffect(() => {
+    spawnEditNodeByDrawRef.current = spawnEditNodeByDraw;
+  }, [spawnEditNodeByDraw]);
+
+  useEffect(() => {
+    spawnInkNodeByDrawRef.current = spawnInkNodeByDraw;
+  }, [spawnInkNodeByDraw]);
 
   useEffect(() => {
     edgeRouterIdRef.current = edgeRouterId;
@@ -875,6 +889,8 @@ export default function App() {
               nodeFontSizePx: Math.round(clampNumber(nodeFontSizePxRef.current, 10, 30, DEFAULT_NODE_FONT_SIZE_PX)),
               sidebarFontFamily: sidebarFontFamilyRef.current,
               sidebarFontSizePx: Math.round(clampNumber(sidebarFontSizePxRef.current, 8, 24, DEFAULT_SIDEBAR_FONT_SIZE_PX)),
+              spawnEditNodeByDraw: Boolean(spawnEditNodeByDrawRef.current),
+              spawnInkNodeByDraw: Boolean(spawnInkNodeByDrawRef.current),
             },
           });
         } catch {
@@ -2237,6 +2253,8 @@ export default function App() {
     engine.setReplyArrowColor(replyArrowColorRef.current);
     engine.setReplyArrowOpacity(replyArrowOpacityRef.current);
     engine.setAllowEditingAllTextNodes(allowEditingAllTextNodesRef.current);
+    engine.setSpawnEditNodeByDrawEnabled(spawnEditNodeByDrawRef.current);
+    engine.setSpawnInkNodeByDrawEnabled(spawnInkNodeByDrawRef.current);
     engine.onDebug = setDebug;
     engine.onUiState = setUi;
     engine.onRequestReply = (nodeId) => {
@@ -2332,6 +2350,14 @@ export default function App() {
       }
 
       if (e.key === 'Escape') {
+        if (engineRef.current.cancelPdfAnnotationPlacement()) {
+          e.preventDefault();
+          return;
+        }
+        if (engineRef.current.cancelSpawnByDraw()) {
+          e.preventDefault();
+          return;
+        }
         engineRef.current.clearSelection();
         e.preventDefault();
         return;
@@ -2487,6 +2513,10 @@ export default function App() {
     setNodeFontSizePx(nodeFontSizePxRef.current);
     setSidebarFontFamily(sidebarFontFamilyRef.current);
     setSidebarFontSizePx(sidebarFontSizePxRef.current);
+    spawnEditNodeByDrawRef.current = Boolean(visual.spawnEditNodeByDraw);
+    spawnInkNodeByDrawRef.current = Boolean(visual.spawnInkNodeByDraw);
+    setSpawnEditNodeByDraw(spawnEditNodeByDrawRef.current);
+    setSpawnInkNodeByDraw(spawnInkNodeByDrawRef.current);
 
     bootedRef.current = true;
     setActiveChatId(resolvedActive);
@@ -2508,6 +2538,8 @@ export default function App() {
       engine.setReplyArrowOpacity(replyArrowOpacityRef.current);
       engine.setNodeTextFontFamily(fontFamilyCss(nodeFontFamilyRef.current));
       engine.setNodeTextFontSizePx(nodeFontSizePxRef.current);
+      engine.setSpawnEditNodeByDrawEnabled(spawnEditNodeByDrawRef.current);
+      engine.setSpawnInkNodeByDrawEnabled(spawnInkNodeByDrawRef.current);
       engine.cancelEditing();
       const nextState = chatStatesRef.current.get(resolvedActive) ?? createEmptyChatState();
       chatStatesRef.current.set(resolvedActive, nextState);
@@ -2762,6 +2794,8 @@ export default function App() {
           24,
           DEFAULT_SIDEBAR_FONT_SIZE_PX,
         ),
+        spawnEditNodeByDraw: Boolean((visualSrc as any)?.spawnEditNodeByDraw),
+        spawnInkNodeByDraw: Boolean((visualSrc as any)?.spawnInkNodeByDraw),
       };
 
       const modelUserSettings = buildModelUserSettings(allModels, ws.llm?.modelUserSettings);
@@ -3879,7 +3913,13 @@ export default function App() {
                 title="New text node"
                 aria-label="New text node"
                 onClick={() => {
-                  engineRef.current?.spawnTextNode({ title: 'Note' });
+                  const engine = engineRef.current;
+                  if (!engine) return;
+                  if (spawnEditNodeByDraw) {
+                    engine.beginSpawnTextNodeByDraw({ title: 'Note' });
+                    return;
+                  }
+                  engine.spawnTextNode({ title: 'Note' });
                   schedulePersistSoon();
                 }}
               >
@@ -3890,7 +3930,16 @@ export default function App() {
 	            type="button"
 	            title="New ink node"
 	            aria-label="New ink node"
-            onClick={() => engineRef.current?.spawnInkNode()}
+            onClick={() => {
+              const engine = engineRef.current;
+              if (!engine) return;
+              if (spawnInkNodeByDraw) {
+                engine.beginSpawnInkNodeByDraw();
+                return;
+              }
+              engine.spawnInkNode();
+              schedulePersistSoon();
+            }}
           >
             <Icons.inkBox className="toolStrip__icon" />
           </button>
@@ -4052,6 +4101,22 @@ export default function App() {
           onToggleDebugHudVisible={() => setDebugHudVisible((prev) => !prev)}
           allowEditingAllTextNodes={allowEditingAllTextNodes}
           onToggleAllowEditingAllTextNodes={() => setAllowEditingAllTextNodes((prev) => !prev)}
+          spawnEditNodeByDraw={spawnEditNodeByDraw}
+          onToggleSpawnEditNodeByDraw={() => {
+            const next = !spawnEditNodeByDrawRef.current;
+            spawnEditNodeByDrawRef.current = next;
+            setSpawnEditNodeByDraw(next);
+            engineRef.current?.setSpawnEditNodeByDrawEnabled(next);
+            schedulePersistSoon();
+          }}
+          spawnInkNodeByDraw={spawnInkNodeByDraw}
+          onToggleSpawnInkNodeByDraw={() => {
+            const next = !spawnInkNodeByDrawRef.current;
+            spawnInkNodeByDrawRef.current = next;
+            setSpawnInkNodeByDraw(next);
+            engineRef.current?.setSpawnInkNodeByDrawEnabled(next);
+            schedulePersistSoon();
+          }}
           spawnCount={stressSpawnCount}
           onChangeSpawnCount={(raw) => {
             const next = Number.isFinite(raw) ? Math.max(1, Math.min(500, Math.round(raw))) : 50;
