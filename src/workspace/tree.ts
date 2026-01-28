@@ -75,15 +75,26 @@ export function renameItem(root: WorkspaceFolder, itemId: string, nextName: stri
 export function insertItem(root: WorkspaceFolder, folderId: string, item: WorkspaceItem): WorkspaceFolder {
   const target = folderId ? findItem(root, folderId) : null;
   const effectiveFolderId = target && target.kind === 'folder' ? folderId : root.id;
-  return insertItemInto(root, effectiveFolderId, item);
+  return insertItemInto(root, effectiveFolderId, item, 'end');
 }
 
-function insertItemInto(root: WorkspaceFolder, folderId: string, item: WorkspaceItem): WorkspaceFolder {
-  if (root.id === folderId) return { ...root, expanded: true, children: [...root.children, item] };
+export function insertItemAtTop(root: WorkspaceFolder, folderId: string, item: WorkspaceItem): WorkspaceFolder {
+  const target = folderId ? findItem(root, folderId) : null;
+  const effectiveFolderId = target && target.kind === 'folder' ? folderId : root.id;
+  return insertItemInto(root, effectiveFolderId, item, 'start');
+}
+
+type InsertPosition = 'start' | 'end';
+
+function insertItemInto(root: WorkspaceFolder, folderId: string, item: WorkspaceItem, position: InsertPosition): WorkspaceFolder {
+  if (root.id === folderId) {
+    const nextChildren = position === 'start' ? [item, ...root.children] : [...root.children, item];
+    return { ...root, expanded: true, children: nextChildren };
+  }
   let changed = false;
   const nextChildren = root.children.map((child) => {
     if (child.kind !== 'folder') return child;
-    const next = insertItemInto(child, folderId, item);
+    const next = insertItemInto(child, folderId, item, position);
     if (next !== child) changed = true;
     return next;
   });
