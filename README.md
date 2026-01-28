@@ -31,6 +31,21 @@ GEMINI_API_KEY=...
 - Import PDF: click `Import PDF` (creates a new PDF node)
 - Ink: draw on the canvas (world ink) or inside an ink node; `New Ink Node` creates another; `Clear Ink` clears world ink
 
+## One-time import from graphchatgem
+
+1) In `graphchatgem`, export/download your chat(s) to a `*.graphchat.json` file.
+
+2) Convert it to a graphchatv1 archive:
+
+```bash
+cd graphchatv1
+node scripts/convert-graphchatgem-archive.js /path/to/export.graphchat.json
+```
+
+This writes a sibling `*.graphchatv1.json` file (graphchatv1’s importer requires `format: "graphchatv1"`).
+
+3) In `graphchatv1`, use the app’s Import to load the generated `*.graphchatv1.json`.
+
 ## Verify Markdown/LaTeX (current text node)
 
 - Double-click the sample text node (or press `Enter`) to edit.
