@@ -196,8 +196,18 @@ export class PdfTextLod2Overlay {
   onTextLayerReady?: () => void;
   onRequestReplyToSelection?: (nodeId: string, selectionText: string) => void;
   onRequestAddToContext?: (nodeId: string, selectionText: string) => void;
-  onRequestAnnotateTextSelection?: (nodeId: string, selectionText: string, anchor: PdfSelectionStartAnchor) => void;
-  onRequestAnnotateInkSelection?: (nodeId: string, selectionText: string, anchor: PdfSelectionStartAnchor) => void;
+  onRequestAnnotateTextSelection?: (
+    nodeId: string,
+    selectionText: string,
+    anchor: PdfSelectionStartAnchor,
+    client?: { x: number; y: number },
+  ) => void;
+  onRequestAnnotateInkSelection?: (
+    nodeId: string,
+    selectionText: string,
+    anchor: PdfSelectionStartAnchor,
+    client?: { x: number; y: number },
+  ) => void;
 
   private readonly onDocPointerDownCapture = (e: Event) => {
     if (!this.isMenuOpen()) return;
@@ -464,8 +474,18 @@ export class PdfTextLod2Overlay {
     onTextLayerReady?: () => void;
     onRequestReplyToSelection?: (nodeId: string, selectionText: string) => void;
     onRequestAddToContext?: (nodeId: string, selectionText: string) => void;
-    onRequestAnnotateTextSelection?: (nodeId: string, selectionText: string, anchor: PdfSelectionStartAnchor) => void;
-    onRequestAnnotateInkSelection?: (nodeId: string, selectionText: string, anchor: PdfSelectionStartAnchor) => void;
+    onRequestAnnotateTextSelection?: (
+      nodeId: string,
+      selectionText: string,
+      anchor: PdfSelectionStartAnchor,
+      client?: { x: number; y: number },
+    ) => void;
+    onRequestAnnotateInkSelection?: (
+      nodeId: string,
+      selectionText: string,
+      anchor: PdfSelectionStartAnchor,
+      client?: { x: number; y: number },
+    ) => void;
   }) {
     this.host = opts.host;
     this.onRequestCloseSelection = opts.onRequestCloseSelection;
@@ -598,7 +618,7 @@ export class PdfTextLod2Overlay {
     annotateTextBtn.className = 'gc-selectionMenu__btn';
     annotateTextBtn.type = 'button';
     annotateTextBtn.textContent = 'Annotate with text';
-    annotateTextBtn.addEventListener('click', () => {
+    annotateTextBtn.addEventListener('click', (e) => {
       const nodeId = this.visibleNodeId;
       const pageNumber = this.visiblePageNumber;
       const anchor = this.menuSelectionStart;
@@ -608,7 +628,9 @@ export class PdfTextLod2Overlay {
         return;
       }
       try {
-        this.onRequestAnnotateTextSelection?.(nodeId, text, anchor);
+        const ev = e as MouseEvent;
+        const client = { x: Number(ev.clientX), y: Number(ev.clientY) };
+        this.onRequestAnnotateTextSelection?.(nodeId, text, anchor, client);
       } catch {
         // ignore
       }
@@ -620,7 +642,7 @@ export class PdfTextLod2Overlay {
     annotateInkBtn.className = 'gc-selectionMenu__btn';
     annotateInkBtn.type = 'button';
     annotateInkBtn.textContent = 'Annotate with ink';
-    annotateInkBtn.addEventListener('click', () => {
+    annotateInkBtn.addEventListener('click', (e) => {
       const nodeId = this.visibleNodeId;
       const pageNumber = this.visiblePageNumber;
       const anchor = this.menuSelectionStart;
@@ -630,7 +652,9 @@ export class PdfTextLod2Overlay {
         return;
       }
       try {
-        this.onRequestAnnotateInkSelection?.(nodeId, text, anchor);
+        const ev = e as MouseEvent;
+        const client = { x: Number(ev.clientX), y: Number(ev.clientY) };
+        this.onRequestAnnotateInkSelection?.(nodeId, text, anchor, client);
       } catch {
         // ignore
       }

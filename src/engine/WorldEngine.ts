@@ -3720,11 +3720,11 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           // ignore
         }
       },
-      onRequestAnnotateTextSelection: (nodeId, selectionText, anchor) => {
-        this.beginPdfAnnotationPlacement({ kind: 'text', pdfNodeId: nodeId, selectionText, anchor });
+      onRequestAnnotateTextSelection: (nodeId, selectionText, anchor, client) => {
+        this.beginPdfAnnotationPlacement({ kind: 'text', pdfNodeId: nodeId, selectionText, anchor, client });
       },
-      onRequestAnnotateInkSelection: (nodeId, selectionText, anchor) => {
-        this.beginPdfAnnotationPlacement({ kind: 'ink', pdfNodeId: nodeId, selectionText, anchor });
+      onRequestAnnotateInkSelection: (nodeId, selectionText, anchor, client) => {
+        this.beginPdfAnnotationPlacement({ kind: 'ink', pdfNodeId: nodeId, selectionText, anchor, client });
       },
       onTextLayerReady: () => {
         if (this.pdfSelectLastClient && this.pdfSelectTarget) this.schedulePdfPenSelectionUpdate();
@@ -3739,7 +3739,16 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     pdfNodeId: string;
     selectionText: string;
     anchor: PdfSelectionStartAnchor;
+    client?: { x: number; y: number } | null;
   }): void {
+    // During annotation placement, ensure the PDF LOD2 text overlay isn't intercepting pointermove;
+    // otherwise the dashed preview arrow can appear "frozen" until the mouse leaves the PDF region.
+    this.hoverPdfPage = null;
+    this.hoverTextNodeId = null;
+    this.hoverNodeHeaderButton = null;
+    this.pdfLod2Target = null;
+    this.pdfTextLod2?.hide();
+
     const pdfNodeId = typeof opts.pdfNodeId === 'string' ? opts.pdfNodeId : String(opts.pdfNodeId ?? '');
     if (!pdfNodeId) return;
     const selectionText = String(opts.selectionText ?? '').trim();
@@ -3747,12 +3756,27 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const pageNumber = Math.max(1, Math.floor(opts.anchor?.pageNumber ?? 1));
     const yPct = clamp(Number(opts.anchor?.yPct ?? 0.5), 0, 1);
 
+    const hoverWorld = (() => {
+      const client = opts.client;
+      if (!client) return null;
+      const clientX = Number(client.x);
+      const clientY = Number(client.y);
+      if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return null;
+      const rect = this.canvas.getBoundingClientRect();
+      if (!Number.isFinite(rect.width) || !Number.isFinite(rect.height) || rect.width <= 0.5 || rect.height <= 0.5) return null;
+      const p: Vec2 = {
+        x: clamp(clientX - rect.left, 0, rect.width),
+        y: clamp(clientY - rect.top, 0, rect.height),
+      };
+      return this.camera.screenToWorld(p);
+    })();
+
     this.pdfAnnotationPlacement = {
       kind: opts.kind === 'ink' ? 'ink' : 'text',
       pdfNodeId,
       selectionText,
       anchor: { pageNumber, yPct },
-      hoverWorld: null,
+      hoverWorld,
     };
     this.requestRender();
   }
@@ -6672,12 +6696,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.applyWorldTransform();
     this.drawGrid();
     this.drawParentArrows();
-    this.drawPdfAnnotationPlacementPreview();
     this.updateTextRastersForViewport();
     this.updatePdfPageRendersForViewport();
     this.drawDemoNodes();
     this.drawWorldInk();
     this.drawSpawnByDrawPreview();
+    this.drawPdfAnnotationPlacementPreview();
     this.renderTextStreamLod2Target(nextTextStreamLod2Target);
     this.renderTextLod2Target(nextTextLod2Target);
     this.renderPdfTextLod2Target(nextPdfLod2Target);
