@@ -353,6 +353,12 @@ export class TextLod2Overlay {
     (content.style as any).wordWrap = 'break-word';
     content.style.fontFamily =
       'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"';
+    // Mobile: enable smooth momentum scrolling when the overlay is interactive.
+    (content.style as any).webkitOverflowScrolling = 'touch';
+    // Contain scroll chaining so the canvas doesn't feel like it's "grabbing" while reading.
+    (content.style as any).overscrollBehavior = 'contain';
+    // Allow native panning for scroll while keeping pinch-zoom disabled (app owns zoom).
+    (content.style as any).touchAction = 'pan-x pan-y';
     this.content = content;
     if (opts.textStyle) this.setBaseTextStyle(opts.textStyle);
 

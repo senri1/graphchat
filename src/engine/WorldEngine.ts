@@ -512,6 +512,7 @@ export class WorldEngine {
   private tool: Tool = 'select';
   private activeGesture: ActiveGesture | null = null;
   private suppressTapPointerIds = new Set<number>();
+  private readonly touchUi: boolean;
 
   private readonly overlayHost: HTMLElement | null;
   private textLod2: TextLod2Overlay | null = null;
@@ -780,6 +781,21 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const ctx = this.canvas.getContext('2d', { alpha: false, desynchronized: true });
     if (!ctx) throw new Error('Missing 2D canvas context');
     this.ctx = ctx;
+
+    // Mobile detection (used to enable "tap-to-read/scroll" DOM overlays).
+    this.touchUi = (() => {
+      if (typeof window === 'undefined') return false;
+      if (typeof window.matchMedia !== 'function') return false;
+      try {
+        return (
+          window.matchMedia('(pointer: coarse)').matches ||
+          window.matchMedia('(hover: none)').matches ||
+          window.matchMedia('(any-hover: none)').matches
+        );
+      } catch {
+        return false;
+      }
+    })();
 
     const inputEl = this.canvas;
     this.input = new InputController(inputEl, this.camera, {
@@ -3653,6 +3669,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     if (this.hoverTextNodeId && this.hoverTextNodeId !== rawId) return { nodeId: this.hoverTextNodeId, mode: 'select' };
 
+    // Touch devices don't have hover; keep the selected text node "interactive" so it can be scrolled/read.
+    if (this.touchUi && this.selectedNodeId && this.selectedNodeId !== rawId) {
+      const selectedText = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === this.selectedNodeId) ?? null;
+      if (selectedText) return { nodeId: selectedText.id, mode: 'select' };
+    }
+
     // While an assistant is streaming, pin the LOD2 overlay to the generating node so
     // the canvas doesn't flicker to the LOD0 placeholder between raster updates.
     const view = this.worldViewportRect({ overscan: 280 });
@@ -3767,8 +3789,11 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
             return nextHtml;
           })();
     const isHovered = this.hoverTextNodeId === node.id;
+    const isSelected = this.selectedNodeId === node.id;
     const interactive =
-      target.mode === 'select' && this.textSelectNodeId !== node.id && (!node.isGenerating || isHovered);
+      target.mode === 'select' &&
+      this.textSelectNodeId !== node.id &&
+      (!node.isGenerating || isHovered || (this.touchUi && isSelected));
     const desiredScrollTop = this.getTextNodeScrollY(node);
     lod2.show({
       nodeId: node.id,
