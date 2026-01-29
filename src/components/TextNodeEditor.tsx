@@ -518,7 +518,6 @@ export default function TextNodeEditor(props: Props) {
 
       <div className={`editor__body ${previewEnabled ? 'editor__body--preview' : ''}`}>
         <div className="editor__pane editor__pane--edit">
-          <div className="editor__paneLabel">Edit</div>
           {prefaceEl}
           <textarea
             ref={taRef}
@@ -544,7 +543,6 @@ export default function TextNodeEditor(props: Props) {
 
         {previewEnabled ? (
           <div className="editor__pane editor__pane--preview">
-            <div className="editor__paneLabel">Preview</div>
             <div className="editor__preview">
               {prefaceEl}
               <div className="editor__previewScaled">
