@@ -5067,7 +5067,6 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           ? this.spawnInkNode({ rect })
           : this.spawnTextNode({ title: 'Note', rect });
       this.applyPdfAnnotationToChildNode(createdId, pdfAnn);
-      if (pdfAnn.kind === 'text') this.cancelEditing();
       this.pdfAnnotationPlacement = null;
       try {
         this.onRequestPersist?.();
@@ -5665,7 +5664,6 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       const createdId =
         placement.kind === 'ink' ? this.spawnInkNode({ rect }) : this.spawnTextNode({ title: 'Note', rect });
       this.applyPdfAnnotationToChildNode(createdId, placement);
-      if (placement.kind === 'text') this.cancelEditing();
       this.pdfAnnotationPlacement = null;
       try {
         this.onRequestPersist?.();
@@ -5690,7 +5688,6 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       const createdId =
         placement.kind === 'ink' ? this.spawnInkNode({ rect }) : this.spawnTextNode({ title: 'Note', rect });
       this.applyPdfAnnotationToChildNode(createdId, placement);
-      if (placement.kind === 'text') this.cancelEditing();
       this.pdfAnnotationPlacement = null;
       try {
         this.onRequestPersist?.();
@@ -5720,7 +5717,6 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         const id = this.spawnTextNode({ ...(g.spawn.opts ?? {}), rect });
         if (g.pdfAnnotation) {
           this.applyPdfAnnotationToChildNode(id, g.pdfAnnotation);
-          this.cancelEditing();
           this.pdfAnnotationPlacement = null;
           try {
             this.onRequestPersist?.();
