@@ -2,10 +2,13 @@ import React, { useDeferredValue, useEffect, useMemo, useRef, useState } from 'r
 import MarkdownMath from './MarkdownMath';
 import type { Rect } from '../engine/types';
 
+type TextNodeUserPreface = { replyTo: string; contexts: string[]; collapsedPrefaceContexts: Record<number, boolean> };
+
 type Props = {
   nodeId: string;
   title: string | null;
   initialValue: string;
+  userPreface?: TextNodeUserPreface | null;
   anchorRect: Rect | null;
   getScreenRect?: () => Rect | null;
   getZoom?: () => number;
@@ -14,6 +17,7 @@ type Props = {
   baseFontSizePx: number;
   onResize: (nextRect: Rect) => void;
   onResizeEnd: () => void;
+  onTogglePrefaceContext?: (contextIndex: number) => void;
   onCommit: (next: string) => void;
   onCancel: () => void;
 };
@@ -21,9 +25,10 @@ type Props = {
 type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
 
 export default function TextNodeEditor(props: Props) {
-  const { nodeId, title, initialValue, anchorRect, getScreenRect, getZoom, viewport, zoom, baseFontSizePx, onResize, onResizeEnd, onCommit, onCancel } = props;
+  const { nodeId, title, initialValue, userPreface, anchorRect, getScreenRect, getZoom, viewport, zoom, baseFontSizePx, onResize, onResizeEnd, onTogglePrefaceContext, onCommit, onCancel } = props;
   const [draft, setDraft] = useState(() => initialValue ?? '');
   const [previewEnabled, setPreviewEnabled] = useState(false);
+  const [collapsedPrefaceContexts, setCollapsedPrefaceContexts] = useState<Record<number, boolean>>(() => userPreface?.collapsedPrefaceContexts ?? {});
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const anchorRectRef = useRef<Rect | null>(anchorRect ?? null);
@@ -65,6 +70,10 @@ export default function TextNodeEditor(props: Props) {
     const raf = requestAnimationFrame(() => taRef.current?.focus());
     return () => cancelAnimationFrame(raf);
   }, [nodeId, initialValue]);
+
+  useEffect(() => {
+    setCollapsedPrefaceContexts(userPreface?.collapsedPrefaceContexts ?? {});
+  }, [nodeId]);
 
   useEffect(() => {
     setPreviewEnabled(false);
@@ -340,6 +349,102 @@ export default function TextNodeEditor(props: Props) {
     [baseFontSize],
   );
 
+  const prefaceEl = useMemo(() => {
+    const preface = userPreface ?? null;
+    if (!preface) return null;
+    const replyTo = String(preface.replyTo ?? '').trim();
+    const ctx = Array.isArray(preface.contexts) ? preface.contexts.map((t) => String(t ?? '').trim()).filter(Boolean) : [];
+    if (!replyTo && ctx.length === 0) return null;
+
+    const stripStrong = (text: string): string => String(text ?? '').replace(/\*\*(.+?)\*\*/g, '$1');
+    const summarizeFirstLine = (text: string): string => {
+      const t = String(text ?? '');
+      const firstLine = t.split('\n')[0] ?? '';
+      return stripStrong(firstLine);
+    };
+
+    const containerStyle: React.CSSProperties = {
+      margin: 'calc(8px * var(--editor-scale, 1)) 0 calc(10px * var(--editor-scale, 1))',
+      padding: 'calc(8px * var(--editor-scale, 1)) calc(10px * var(--editor-scale, 1))',
+      border: '1px solid rgba(255,255,255,0.12)',
+      borderRadius: 'calc(12px * var(--editor-scale, 1))',
+      background: 'rgba(0,0,0,0.18)',
+      fontSize: 'calc(var(--editor-font-size) * var(--editor-scale, 1) * 0.85)',
+      color: 'rgba(255,255,255,0.88)',
+    };
+
+    return (
+      <div style={containerStyle}>
+        {replyTo ? (
+          <div style={{ margin: `0 0 calc(6px * var(--editor-scale, 1))` }}>
+            <span style={{ opacity: 0.75 }}>Replying to:</span>{' '}
+            <span style={{ fontStyle: 'italic', whiteSpace: 'pre-wrap' }}>{replyTo}</span>
+          </div>
+        ) : null}
+
+        {ctx.map((text, i) => {
+          const collapsed = Boolean(collapsedPrefaceContexts?.[i]);
+          const chevron = collapsed ? '▸' : '▾';
+          const display = collapsed ? summarizeFirstLine(text) : text;
+          const textStyle: React.CSSProperties = collapsed
+            ? { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }
+            : { whiteSpace: 'pre-wrap' };
+          const rowAlign = collapsed ? 'center' : 'flex-start';
+          const chevronMarginTop = collapsed ? '0' : '0.15em';
+          const bodyStyle: React.CSSProperties = collapsed
+            ? { flex: 1, minWidth: 0, display: 'flex', alignItems: 'center' }
+            : { flex: 1, minWidth: 0 };
+          return (
+            <div
+              key={i}
+              style={{
+                display: 'flex',
+                alignItems: rowAlign,
+                gap: `calc(6px * var(--editor-scale, 1))`,
+                margin: `0 0 calc(6px * var(--editor-scale, 1))`,
+              }}
+            >
+              <span
+                aria-hidden="true"
+                onClick={() => {
+                  setCollapsedPrefaceContexts((prev) => {
+                    const next = { ...(prev ?? {}) };
+                    if (next[i]) delete next[i];
+                    else next[i] = true;
+                    return next;
+                  });
+                  try {
+                    onTogglePrefaceContext?.(i);
+                  } catch {
+                    // ignore
+                  }
+                }}
+                style={{
+                  width: '1em',
+                  flex: '0 0 1em',
+                  marginTop: chevronMarginTop,
+                  display: 'inline-flex',
+                  justifyContent: 'center',
+                  color: 'rgba(255,255,255,0.55)',
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                }}
+              >
+                {chevron}
+              </span>
+              <div style={bodyStyle}>
+                <span style={{ opacity: 0.75, flex: '0 0 auto', marginRight: `calc(6px * var(--editor-scale, 1))` }}>
+                  Context {i + 1}:
+                </span>
+                <span style={{ fontStyle: 'italic', ...textStyle, flex: 1, minWidth: 0 }}>{display}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }, [collapsedPrefaceContexts, onTogglePrefaceContext, userPreface]);
+
   return (
     <div
       ref={rootRef}
@@ -414,6 +519,7 @@ export default function TextNodeEditor(props: Props) {
       <div className={`editor__body ${previewEnabled ? 'editor__body--preview' : ''}`}>
         <div className="editor__pane editor__pane--edit">
           <div className="editor__paneLabel">Edit</div>
+          {prefaceEl}
           <textarea
             ref={taRef}
             className="editor__textarea"
@@ -440,6 +546,7 @@ export default function TextNodeEditor(props: Props) {
           <div className="editor__pane editor__pane--preview">
             <div className="editor__paneLabel">Preview</div>
             <div className="editor__preview">
+              {prefaceEl}
               <div className="editor__previewScaled">
                 {(deferredDraft ?? '').trim().length > 0 ? (
                   <MarkdownMath source={deferredDraft} className="mdx" style={previewStyle} />

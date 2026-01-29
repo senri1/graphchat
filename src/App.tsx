@@ -2377,6 +2377,7 @@ export default function App() {
 
   const editorAnchor = ui.editingNodeId ? engineRef.current?.getNodeScreenRect(ui.editingNodeId) ?? null : null;
   const editorTitle = ui.editingNodeId ? engineRef.current?.getNodeTitle(ui.editingNodeId) ?? null : null;
+  const editorUserPreface = ui.editingNodeId ? engineRef.current?.getTextNodeUserPreface(ui.editingNodeId) ?? null : null;
   const editorZoom = debug?.zoom ?? engineRef.current?.camera.zoom ?? 1;
   const rawAnchor = rawViewer ? engineRef.current?.getTextNodeContentScreenRect(rawViewer.nodeId) ?? null : null;
   const nodeMenuButtonRect = nodeMenuId ? getNodeMenuButtonRect(nodeMenuId) : null;
@@ -3462,6 +3463,7 @@ export default function App() {
 	            nodeId={ui.editingNodeId}
 	            title={editorTitle}
 	            initialValue={ui.editingText}
+              userPreface={editorUserPreface}
 	            anchorRect={editorAnchor}
               getScreenRect={() => engineRef.current?.getNodeScreenRect(ui.editingNodeId as string) ?? null}
               getZoom={() => engineRef.current?.camera.zoom ?? 1}
@@ -3469,6 +3471,9 @@ export default function App() {
 	            zoom={editorZoom}
 	            baseFontSizePx={nodeFontSizePx}
               onResize={(nextRect) => engineRef.current?.setNodeScreenRect(ui.editingNodeId as string, nextRect)}
+              onTogglePrefaceContext={(contextIndex) =>
+                engineRef.current?.toggleTextNodePrefaceContextCollapsed(ui.editingNodeId as string, contextIndex)
+              }
               onResizeEnd={() => schedulePersistSoon()}
 	            onCommit={(next) => {
 	              engineRef.current?.commitEditing(next);

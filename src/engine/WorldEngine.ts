@@ -2554,6 +2554,48 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return node?.title ?? null;
   }
 
+  getTextNodeUserPreface(nodeId: string): { replyTo: string; contexts: string[]; collapsedPrefaceContexts: Record<number, boolean> } | null {
+    const id = typeof nodeId === 'string' ? nodeId : String(nodeId ?? '');
+    if (!id) return null;
+    const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === id) ?? null;
+    if (!node || node.author !== 'user') return null;
+
+    const replyTo = (node.userPreface?.replyTo ?? '').trim();
+    const ctxRaw = Array.isArray(node.userPreface?.contexts) ? node.userPreface!.contexts! : [];
+    const contexts = ctxRaw.map((t) => String(t ?? '').trim()).filter(Boolean);
+    if (!replyTo && contexts.length === 0) return null;
+
+    return { replyTo, contexts, collapsedPrefaceContexts: { ...(node.collapsedPrefaceContexts ?? {}) } };
+  }
+
+  toggleTextNodePrefaceContextCollapsed(nodeId: string, contextIndex: number): void {
+    const id = typeof nodeId === 'string' ? nodeId : String(nodeId ?? '');
+    if (!id) return;
+    const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === id) ?? null;
+    if (!node || node.author !== 'user') return;
+
+    const idx = Number(contextIndex);
+    if (!Number.isFinite(idx)) return;
+
+    const prev = node.collapsedPrefaceContexts ?? {};
+    const next: Record<number, boolean> = { ...prev };
+    if (next[idx]) delete next[idx];
+    else next[idx] = true;
+    node.collapsedPrefaceContexts = Object.keys(next).length ? next : undefined;
+
+    this.recomputeTextNodeDisplayHash(node);
+    this.textRasterGeneration += 1;
+    const contentRect = this.textContentRect(node.rect);
+    const sig = this.textRasterSigForNode(node, contentRect).sig;
+    this.textResizeHold = { nodeId: node.id, sig, expiresAt: performance.now() + 2200 };
+    this.requestRender();
+    try {
+      this.onRequestPersist?.();
+    } catch {
+      // ignore
+    }
+  }
+
   hasNode(nodeId: string): boolean {
     if (!nodeId) return false;
     return this.nodes.some((n) => n.id === nodeId);
