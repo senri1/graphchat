@@ -7,7 +7,8 @@ export type HighlightRect = { left: number; top: number; width: number; height: 
 
 export type TextLod2Action =
   | { kind: 'summary_toggle'; nodeId: string }
-  | { kind: 'summary_chunk_toggle'; nodeId: string; summaryIndex: number };
+  | { kind: 'summary_chunk_toggle'; nodeId: string; summaryIndex: number }
+  | { kind: 'preface_context_toggle'; nodeId: string; contextIndex: number };
 
 function clamp(v: number, min: number, max: number): number {
   if (v < min) return min;
@@ -183,6 +184,17 @@ export class TextLod2Overlay {
     if (!nodeId) return;
     const target = e.target as Element | null;
     if (!target) return;
+
+    const ctx = target.closest?.('[data-gcv1-preface-context-toggle]') as HTMLElement | null;
+    if (ctx) {
+      const raw = ctx.getAttribute('data-gcv1-preface-context-toggle') ?? '';
+      const contextIndex = Number(raw);
+      if (!Number.isFinite(contextIndex)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.onRequestAction?.({ kind: 'preface_context_toggle', nodeId, contextIndex });
+      return;
+    }
 
     const chunk = target.closest?.('[data-gcv1-summary-chunk-toggle]') as HTMLElement | null;
     if (chunk) {

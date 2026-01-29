@@ -69,6 +69,7 @@ export type ChatNode =
         replyTo?: string;
         contexts?: string[];
       };
+      collapsedPrefaceContexts?: Record<number, boolean>;
       isEditNode?: boolean;
       isGenerating?: boolean;
       modelId?: string | null;

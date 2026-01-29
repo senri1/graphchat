@@ -289,6 +289,7 @@ type TextNode = DemoNodeBase & {
   rect: Rect;
   content: string;
   userPreface?: { replyTo?: string; contexts?: string[] };
+  collapsedPrefaceContexts?: Record<number, boolean>;
   contentHash: string;
   displayHash: string;
   isGenerating?: boolean;
@@ -901,6 +902,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           author: n.author,
           content: n.content,
           ...(n.userPreface ? { userPreface: n.userPreface } : {}),
+          ...(n.collapsedPrefaceContexts ? { collapsedPrefaceContexts: n.collapsedPrefaceContexts } : {}),
           isGenerating: n.isGenerating,
           modelId: n.modelId ?? null,
           llmParams: n.llmParams,
@@ -1045,6 +1047,17 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
             ...(contexts.length ? { contexts } : {}),
           };
         })();
+        const collapsedPrefaceContexts = (() => {
+          const raw = (n as any)?.collapsedPrefaceContexts;
+          if (!raw || typeof raw !== 'object') return undefined;
+          const out: Record<number, boolean> = {};
+          for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+            const idx = Number(k);
+            if (!Number.isFinite(idx)) continue;
+            if (v) out[idx] = true;
+          }
+          return Object.keys(out).length ? out : undefined;
+        })();
         const thinkingSummary = (() => {
           const raw = (n as any)?.thinkingSummary;
           if (!Array.isArray(raw)) return undefined;
@@ -1110,9 +1123,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           rect: { ...n.rect },
           title: n.title,
           ...(isEditNode ? { isEditNode: true } : {}),
-          author,
-          content,
-          ...(userPreface ? { userPreface } : {}),
+	          author,
+	          content,
+	          ...(userPreface ? { userPreface } : {}),
+          collapsedPrefaceContexts,
           contentHash: fingerprintText(content),
           displayHash: '',
           isGenerating: Boolean((n as any)?.isGenerating),
@@ -3164,6 +3178,13 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       const ctxRaw = Array.isArray(node.userPreface?.contexts) ? node.userPreface!.contexts! : [];
       const ctx = ctxRaw.map((t) => String(t ?? '').trim()).filter(Boolean);
       if (ctx.length > 0) parts.push(`contexts:${ctx.join('\n')}`);
+      const collapsed = node.collapsedPrefaceContexts ?? {};
+      const collapsedKeys = Object.keys(collapsed)
+        .map((k) => Number(k))
+        .filter((n) => Number.isFinite(n) && collapsed[n])
+        .sort((a, b) => a - b)
+        .join(',');
+      if (collapsedKeys) parts.push(`ctxcollapsed:${collapsedKeys}`);
     }
 
     if (node.author === 'assistant') {
@@ -3438,12 +3459,30 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           );
         }
         for (let i = 0; i < ctx.length; i += 1) {
+          const collapsed = Boolean(node.collapsedPrefaceContexts?.[i]);
+          const chevron = collapsed ? '▸' : '▾';
+          const display = collapsed ? summarizeFirstLine(ctx[i]) : ctx[i];
+          const textStyle = collapsed
+            ? 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'
+            : 'white-space:pre-wrap;';
+          const rowAlign = collapsed ? 'center' : 'flex-start';
+          const chevronMarginTop = collapsed ? '0' : '0.15em';
+          const bodyStyle = collapsed
+            ? 'flex:1;min-width:0;display:flex;align-items:center;'
+            : 'flex:1;min-width:0;';
           parts.push(
-            '<div style="margin:0 0 6px;">' +
-              `<span style="opacity:0.75;">Context ${i + 1}:</span> ` +
-              '<span style="font-style:italic;white-space:pre-wrap;">' +
-              escapeHtml(ctx[i]) +
+            `<div style="display:flex;align-items:${rowAlign};gap:6px;margin:0 0 6px;">` +
+              `<span data-gcv1-preface-context-toggle="${i}" aria-hidden="true" ` +
+              `style="width:1em;flex:0 0 1em;margin-top:${chevronMarginTop};display:inline-flex;justify-content:center;` +
+              'color:rgba(255,255,255,0.55);cursor:pointer;user-select:none;">' +
+              chevron +
               '</span>' +
+              `<div style="${bodyStyle}">` +
+              `<span style="opacity:0.75;flex:0 0 auto;margin-right:6px;">Context ${i + 1}:</span>` +
+              `<span style="font-style:italic;${textStyle}flex:1;min-width:0;">` +
+              escapeHtml(display) +
+              '</span>' +
+              '</div>' +
               '</div>',
           );
         }
@@ -3548,6 +3587,24 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         });
       }
 
+      const contextBtns = Array.from(
+        contentEl.querySelectorAll('[data-gcv1-preface-context-toggle]'),
+      ) as HTMLElement[];
+      for (const el of contextBtns) {
+        const raw = el.getAttribute('data-gcv1-preface-context-toggle') ?? '';
+        const idx = Number(raw);
+        if (!Number.isFinite(idx)) continue;
+        const r = el.getBoundingClientRect();
+        zones.push({
+          kind: 'preface_context_toggle',
+          contextIndex: idx,
+          left: (r.left - base.left) / z,
+          top: (r.top - base.top) / z,
+          width: r.width / z,
+          height: r.height / z,
+        });
+      }
+
       this.textLod2HitZones = { nodeId, displayHash, zones };
     } catch {
       this.textLod2HitZones = null;
@@ -3634,7 +3691,33 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         const nodeId = action?.nodeId;
         if (!nodeId) return;
         const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === nodeId) ?? null;
-        if (!node || node.author !== 'assistant') return;
+        if (!node) return;
+
+        if (action.kind === 'preface_context_toggle') {
+          if (node.author !== 'user') return;
+          const idx = Number(action.contextIndex);
+          if (!Number.isFinite(idx)) return;
+          const prev = node.collapsedPrefaceContexts ?? {};
+          const next: Record<number, boolean> = { ...prev };
+          if (next[idx]) delete next[idx];
+          else next[idx] = true;
+          node.collapsedPrefaceContexts = Object.keys(next).length ? next : undefined;
+
+          this.recomputeTextNodeDisplayHash(node);
+          this.textRasterGeneration += 1;
+          const contentRect = this.textContentRect(node.rect);
+          const sig = this.textRasterSigForNode(node, contentRect).sig;
+          this.textResizeHold = { nodeId: node.id, sig, expiresAt: performance.now() + 2200 };
+          this.requestRender();
+          try {
+            this.onRequestPersist?.();
+          } catch {
+            // ignore
+          }
+          return;
+        }
+
+        if (node.author !== 'assistant') return;
 
         if (action.kind === 'summary_toggle') {
           const blocks = this.getFinalReasoningBlocks(node);
@@ -3851,6 +3934,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     if (node.kind === 'text') {
       node.userPreface = { contexts: [placement.selectionText] };
+      node.collapsedPrefaceContexts = { 0: true };
       this.recomputeTextNodeDisplayHash(node);
       this.textRasterGeneration += 1;
     }
@@ -5224,9 +5308,13 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 	      }
 	    }
 
-	    if (hit.kind === 'text' && hit.author === 'assistant') {
+	    if (hit.kind === 'text') {
 	      const zone = this.getTextNodeHitZoneAtWorld(hit, world);
-	      if (zone && (zone.kind === 'summary_toggle' || zone.kind === 'summary_chunk_toggle')) {
+	      const isToggleZone =
+	        zone &&
+	        ((hit.author === 'assistant' && (zone.kind === 'summary_toggle' || zone.kind === 'summary_chunk_toggle')) ||
+	          (hit.author === 'user' && zone.kind === 'preface_context_toggle'));
+	      if (isToggleZone) {
 	        this.requestRender();
 	        if (selectionChanged) this.emitUiState();
 	        return 'node';
@@ -5897,6 +5985,45 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
             }
             return;
           }
+        }
+      }
+
+      if (hit.kind === 'text' && hit.author === 'user') {
+        const zone = this.getTextNodeHitZoneAtWorld(hit, world);
+        if (zone?.kind === 'preface_context_toggle') {
+          const selectionChanged = this.selectedNodeId !== hit.id || this.editingNodeId !== null;
+          this.selectedNodeId = hit.id;
+          this.editingNodeId = null;
+          this.bringNodeToFront(hit.id);
+
+          const idx = Number(zone.contextIndex);
+          if (Number.isFinite(idx)) {
+            const prev = hit.collapsedPrefaceContexts ?? {};
+            const next: Record<number, boolean> = { ...prev };
+            if (next[idx]) delete next[idx];
+            else next[idx] = true;
+            hit.collapsedPrefaceContexts = Object.keys(next).length ? next : undefined;
+
+            this.recomputeTextNodeDisplayHash(hit);
+            this.textRasterGeneration += 1;
+            const contentRect = this.textContentRect(hit.rect);
+            const sig = this.textRasterSigForNode(hit, contentRect).sig;
+            this.textResizeHold = { nodeId: hit.id, sig, expiresAt: performance.now() + 2200 };
+            this.requestRender();
+            if (selectionChanged) this.emitUiState();
+            try {
+              this.onRequestPersist?.();
+            } catch {
+              // ignore
+            }
+            return;
+          }
+
+          if (selectionChanged) {
+            this.requestRender();
+            this.emitUiState();
+          }
+          return;
         }
       }
 

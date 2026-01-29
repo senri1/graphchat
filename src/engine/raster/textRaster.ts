@@ -11,7 +11,8 @@ export type TextRasterResult = {
 
 export type TextHitZone =
   | { kind: 'summary_toggle'; left: number; top: number; width: number; height: number }
-  | { kind: 'summary_chunk_toggle'; summaryIndex: number; left: number; top: number; width: number; height: number };
+  | { kind: 'summary_chunk_toggle'; summaryIndex: number; left: number; top: number; width: number; height: number }
+  | { kind: 'preface_context_toggle'; contextIndex: number; left: number; top: number; width: number; height: number };
 
 const DEFAULT_TEXT_COLOR = 'rgba(255,255,255,0.92)';
 const DEFAULT_TEXT_FONT_SIZE_PX = 14;
@@ -356,6 +357,22 @@ function measureHitZones(card: HTMLDivElement): TextHitZone[] {
       zones.push({
         kind: 'summary_chunk_toggle',
         summaryIndex: idx,
+        left: r.left - cardRect.left,
+        top: r.top - cardRect.top,
+        width: r.width,
+        height: r.height,
+      });
+    }
+
+    const contextBtns = Array.from(card.querySelectorAll('[data-gcv1-preface-context-toggle]')) as HTMLElement[];
+    for (const el of contextBtns) {
+      const raw = el.getAttribute('data-gcv1-preface-context-toggle') ?? '';
+      const idx = Number(raw);
+      if (!Number.isFinite(idx)) continue;
+      const r = el.getBoundingClientRect();
+      zones.push({
+        kind: 'preface_context_toggle',
+        contextIndex: idx,
         left: r.left - cardRect.left,
         top: r.top - cardRect.top,
         width: r.width,
