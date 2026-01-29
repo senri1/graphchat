@@ -34,12 +34,12 @@ function isPrimaryButton(ev: PointerEvent): boolean {
   return true;
 }
 
-function isTwoFingerTouch(pointers: Map<number, PointerInfo>): boolean {
-  if (pointers.size !== 2) return false;
-  for (const p of pointers.values()) {
-    if (p.type !== 'touch') return false;
+function getTouchPointerIds(pointers: Map<number, PointerInfo>): number[] {
+  const ids: number[] = [];
+  for (const [id, info] of pointers) {
+    if (info.type === 'touch') ids.push(id);
   }
-  return true;
+  return ids;
 }
 
 export class InputController {
@@ -60,6 +60,53 @@ export class InputController {
     this.el = el;
     this.camera = camera;
     this.events = events ?? {};
+  }
+
+  adoptPointer(opts: {
+    pointerId: number;
+    pointerType: string;
+    pos: Vec2;
+    captureMode: PointerCaptureMode;
+    forceDrag?: boolean;
+  }): void {
+    const pointerId = opts.pointerId;
+    const pointerType = opts.pointerType || 'mouse';
+    const pos = opts.pos;
+
+    if (pointerType !== 'touch') {
+      // Pen/mouse pointers cannot be concurrently active; force-finish any stale pointers of the same type.
+      const stale = Array.from(this.pointers.entries()).filter(([, info]) => info.type === pointerType);
+      for (const [id, info] of stale) {
+        if (id === pointerId) continue;
+        this.finalizePointer(id, info.pos, { suppressTap: true });
+      }
+    }
+
+    const existing = this.pointers.get(pointerId);
+    if (existing) {
+      this.finalizePointer(pointerId, existing.pos, { suppressTap: true });
+    } else if (this.capturedPointers.has(pointerId) || this.dragBegan.has(pointerId)) {
+      this.dragBegan.delete(pointerId);
+      this.capturedPointers.delete(pointerId);
+      this.updateGlobalInkDrawingEnabled();
+      try {
+        (this.el as any).releasePointerCapture?.(pointerId);
+      } catch { }
+    }
+
+    const info: PointerInfo = { id: pointerId, type: pointerType, startPos: pos, pos, lastPos: pos };
+    this.pointers.set(pointerId, info);
+    this.capturedPointers.set(pointerId, opts.captureMode);
+    this.dragBegan.delete(pointerId);
+    if (opts.forceDrag || opts.captureMode === 'draw' || opts.captureMode === 'text') this.dragBegan.add(pointerId);
+    this.updateGlobalInkDrawingEnabled();
+
+    try {
+      (this.el as any).setPointerCapture?.(pointerId);
+    } catch { }
+
+    this.setInteracting(true);
+    this.recomputePinchState();
   }
 
   start(): void {
@@ -285,13 +332,17 @@ export class InputController {
     if (!info) return;
 
     const pos = this.getLocalPos(ev);
+    const dx = pos.x - info.lastPos.x;
+    const dy = pos.y - info.lastPos.y;
     info.pos = pos;
 
     if (this.pinch) {
       this.updatePinch();
+      const captureMode = this.capturedPointers.get(ev.pointerId) ?? null;
+      if (captureMode && (dx || dy) && (captureMode === 'draw' || captureMode === 'text' || this.dragBegan.has(ev.pointerId))) {
+        this.events.onPointerMove?.(pos, { pointerType: info.type, pointerId: ev.pointerId });
+      }
     } else {
-      const dx = pos.x - info.lastPos.x;
-      const dy = pos.y - info.lastPos.y;
       const captureMode = this.capturedPointers.get(ev.pointerId) ?? null;
 
       if (captureMode) {
@@ -357,26 +408,22 @@ export class InputController {
   };
 
   private recomputePinchState(): void {
-    const wasPinching = this.pinch != null;
-    const isPinching = isTwoFingerTouch(this.pointers);
+    const touchIds = getTouchPointerIds(this.pointers);
+    const isPinching = touchIds.length >= 2;
     if (!isPinching) {
       this.pinch = null;
       return;
     }
 
-    if (!wasPinching && this.capturedPointers.size > 0) {
-      // Pinch takes precedence: cancel any custom interactions.
-      for (const id of this.capturedPointers.keys()) {
-        const p = this.pointers.get(id);
-        this.events.onPointerCancel?.({ pointerType: p?.type ?? 'touch', pointerId: id });
+    const ids = (() => {
+      const pinch = this.pinch;
+      if (pinch) {
+        const a = this.pointers.get(pinch.ids[0]);
+        const b = this.pointers.get(pinch.ids[1]);
+        if (a?.type === 'touch' && b?.type === 'touch') return pinch.ids;
       }
-      this.capturedPointers.clear();
-      this.updateGlobalInkDrawingEnabled();
-      // Reset drag threshold state so pinch→single-finger doesn't jump.
-      for (const id of this.pointers.keys()) this.dragBegan.delete(id);
-    }
-
-    const ids = Array.from(this.pointers.keys()).slice(0, 2) as [number, number];
+      return [touchIds[0]!, touchIds[1]!] as [number, number];
+    })();
     const a = this.pointers.get(ids[0])!;
     const b = this.pointers.get(ids[1])!;
     const center: Vec2 = { x: (a.pos.x + b.pos.x) * 0.5, y: (a.pos.y + b.pos.y) * 0.5 };

@@ -8,6 +8,7 @@ export type HighlightRect = { left: number; top: number; width: number; height: 
 export type PdfSelectionStartAnchor = { pageNumber: number; yPct: number };
 
 type TextContentSource = ReadableStream<unknown> | unknown;
+type AnnotatePointerTrigger = { pointerId: number; pointerType: string };
 
 function clamp(v: number, min: number, max: number): number {
   if (v < min) return min;
@@ -187,6 +188,7 @@ export class PdfTextLod2Overlay {
   private selectRange: Range | null = null;
   private selectLastClient: { x: number; y: number } | null = null;
   private selectRaf: number | null = null;
+  private suppressAnnotateClick = false;
 
   private textLayer: TextLayer | null = null;
   private textLayerReadyKey: string | null = null;
@@ -201,12 +203,14 @@ export class PdfTextLod2Overlay {
     selectionText: string,
     anchor: PdfSelectionStartAnchor,
     client?: { x: number; y: number },
+    trigger?: AnnotatePointerTrigger | null,
   ) => void;
   onRequestAnnotateInkSelection?: (
     nodeId: string,
     selectionText: string,
     anchor: PdfSelectionStartAnchor,
     client?: { x: number; y: number },
+    trigger?: AnnotatePointerTrigger | null,
   ) => void;
 
   private readonly onDocPointerDownCapture = (e: Event) => {
@@ -479,12 +483,14 @@ export class PdfTextLod2Overlay {
       selectionText: string,
       anchor: PdfSelectionStartAnchor,
       client?: { x: number; y: number },
+      trigger?: AnnotatePointerTrigger | null,
     ) => void;
     onRequestAnnotateInkSelection?: (
       nodeId: string,
       selectionText: string,
       anchor: PdfSelectionStartAnchor,
       client?: { x: number; y: number },
+      trigger?: AnnotatePointerTrigger | null,
     ) => void;
   }) {
     this.host = opts.host;
@@ -618,7 +624,11 @@ export class PdfTextLod2Overlay {
     annotateTextBtn.className = 'gc-selectionMenu__btn';
     annotateTextBtn.type = 'button';
     annotateTextBtn.textContent = 'Annotate with text';
-    annotateTextBtn.addEventListener('click', (e) => {
+    const handleAnnotate = (
+      kind: 'text' | 'ink',
+      client: { x: number; y: number },
+      trigger?: AnnotatePointerTrigger | null,
+    ) => {
       const nodeId = this.visibleNodeId;
       const pageNumber = this.visiblePageNumber;
       const anchor = this.menuSelectionStart;
@@ -627,14 +637,38 @@ export class PdfTextLod2Overlay {
         this.closeMenu();
         return;
       }
+      const saved = { nodeId, text, anchor, client, trigger: trigger ?? null };
+      this.closeMenu();
       try {
-        const ev = e as MouseEvent;
-        const client = { x: Number(ev.clientX), y: Number(ev.clientY) };
-        this.onRequestAnnotateTextSelection?.(nodeId, text, anchor, client);
+        if (kind === 'text')
+          this.onRequestAnnotateTextSelection?.(saved.nodeId, saved.text, saved.anchor, saved.client, saved.trigger);
+        else this.onRequestAnnotateInkSelection?.(saved.nodeId, saved.text, saved.anchor, saved.client, saved.trigger);
       } catch {
         // ignore
       }
-      this.closeMenu();
+    };
+    annotateTextBtn.addEventListener('pointerdown', (e: PointerEvent) => {
+      const pointerType = (e.pointerType || 'mouse') as string;
+      if (pointerType === 'mouse') return;
+      this.suppressAnnotateClick = true;
+      try {
+        window.setTimeout(() => {
+          this.suppressAnnotateClick = false;
+        }, 800);
+      } catch {
+        // ignore
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      handleAnnotate('text', { x: Number(e.clientX), y: Number(e.clientY) }, { pointerId: e.pointerId, pointerType });
+    });
+    annotateTextBtn.addEventListener('click', (e) => {
+      if (this.suppressAnnotateClick) {
+        this.suppressAnnotateClick = false;
+        return;
+      }
+      const ev = e as MouseEvent;
+      handleAnnotate('text', { x: Number(ev.clientX), y: Number(ev.clientY) }, null);
     });
     this.menuAnnotateTextBtn = annotateTextBtn;
 
@@ -642,23 +676,28 @@ export class PdfTextLod2Overlay {
     annotateInkBtn.className = 'gc-selectionMenu__btn';
     annotateInkBtn.type = 'button';
     annotateInkBtn.textContent = 'Annotate with ink';
-    annotateInkBtn.addEventListener('click', (e) => {
-      const nodeId = this.visibleNodeId;
-      const pageNumber = this.visiblePageNumber;
-      const anchor = this.menuSelectionStart;
-      const text = (this.menuText ?? '').trim();
-      if (!nodeId || pageNumber == null || !anchor || anchor.pageNumber !== pageNumber || !text) {
-        this.closeMenu();
-        return;
-      }
+    annotateInkBtn.addEventListener('pointerdown', (e: PointerEvent) => {
+      const pointerType = (e.pointerType || 'mouse') as string;
+      if (pointerType === 'mouse') return;
+      this.suppressAnnotateClick = true;
       try {
-        const ev = e as MouseEvent;
-        const client = { x: Number(ev.clientX), y: Number(ev.clientY) };
-        this.onRequestAnnotateInkSelection?.(nodeId, text, anchor, client);
+        window.setTimeout(() => {
+          this.suppressAnnotateClick = false;
+        }, 800);
       } catch {
         // ignore
       }
-      this.closeMenu();
+      e.preventDefault();
+      e.stopPropagation();
+      handleAnnotate('ink', { x: Number(e.clientX), y: Number(e.clientY) }, { pointerId: e.pointerId, pointerType });
+    });
+    annotateInkBtn.addEventListener('click', (e) => {
+      if (this.suppressAnnotateClick) {
+        this.suppressAnnotateClick = false;
+        return;
+      }
+      const ev = e as MouseEvent;
+      handleAnnotate('ink', { x: Number(ev.clientX), y: Number(ev.clientY) }, null);
     });
     this.menuAnnotateInkBtn = annotateInkBtn;
 

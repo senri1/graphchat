@@ -400,6 +400,7 @@ type PdfAnnotationPlacement = {
   selectionText: string;
   anchor: PdfSelectionStartAnchor;
   hoverWorld: Vec2 | null;
+  outlineRect: Rect | null;
 };
 
 type InkRaster = {
@@ -483,13 +484,30 @@ type ActiveSpawnByDrawGesture = {
   pdfAnnotation?: PdfAnnotationPlacement;
 };
 
+type ActivePdfAnnotationPlaceGesture = {
+  kind: 'pdf-annotation-place';
+  pointerId: number;
+  pointerType: string;
+  hadHover: boolean;
+};
+
+type ActivePdfAnnotationOutlineResizeGesture = {
+  kind: 'pdf-annotation-outline-resize';
+  pointerId: number;
+  corner: ResizeCorner;
+  startWorld: Vec2;
+  startRect: Rect;
+};
+
 type ActiveGesture =
   | ActiveNodeGesture
   | ActiveInkGesture
   | ActiveEraseGesture
   | ActiveTextSelectGesture
   | ActivePdfTextSelectGesture
-  | ActiveSpawnByDrawGesture;
+  | ActiveSpawnByDrawGesture
+  | ActivePdfAnnotationPlaceGesture
+  | ActivePdfAnnotationOutlineResizeGesture;
 
 export class WorldEngine {
   private readonly canvas: HTMLCanvasElement;
@@ -1254,9 +1272,11 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   cancelPdfAnnotationPlacement(): boolean {
     const hadPlacement = this.pdfAnnotationPlacement != null;
     const g = this.activeGesture;
-    const hadActiveSpawn = Boolean(g && g.kind === 'spawn-by-draw' && g.pdfAnnotation);
-    if (!hadPlacement && !hadActiveSpawn) return false;
-    if (hadActiveSpawn) this.activeGesture = null;
+    const hadActive =
+      (g && g.kind === 'spawn-by-draw' && g.pdfAnnotation) ||
+      (g && (g.kind === 'pdf-annotation-place' || g.kind === 'pdf-annotation-outline-resize'));
+    if (!hadPlacement && !hadActive) return false;
+    if (hadActive) this.activeGesture = null;
     this.pdfAnnotationPlacement = null;
     this.requestRender();
     return true;
@@ -3720,11 +3740,11 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           // ignore
         }
       },
-      onRequestAnnotateTextSelection: (nodeId, selectionText, anchor, client) => {
-        this.beginPdfAnnotationPlacement({ kind: 'text', pdfNodeId: nodeId, selectionText, anchor, client });
+      onRequestAnnotateTextSelection: (nodeId, selectionText, anchor, client, trigger) => {
+        this.beginPdfAnnotationPlacement({ kind: 'text', pdfNodeId: nodeId, selectionText, anchor, client, trigger });
       },
-      onRequestAnnotateInkSelection: (nodeId, selectionText, anchor, client) => {
-        this.beginPdfAnnotationPlacement({ kind: 'ink', pdfNodeId: nodeId, selectionText, anchor, client });
+      onRequestAnnotateInkSelection: (nodeId, selectionText, anchor, client, trigger) => {
+        this.beginPdfAnnotationPlacement({ kind: 'ink', pdfNodeId: nodeId, selectionText, anchor, client, trigger });
       },
       onTextLayerReady: () => {
         if (this.pdfSelectLastClient && this.pdfSelectTarget) this.schedulePdfPenSelectionUpdate();
@@ -3740,6 +3760,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     selectionText: string;
     anchor: PdfSelectionStartAnchor;
     client?: { x: number; y: number } | null;
+    trigger?: { pointerId: number; pointerType: string } | null;
   }): void {
     // During annotation placement, ensure the PDF LOD2 text overlay isn't intercepting pointermove;
     // otherwise the dashed preview arrow can appear "frozen" until the mouse leaves the PDF region.
@@ -3756,7 +3777,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const pageNumber = Math.max(1, Math.floor(opts.anchor?.pageNumber ?? 1));
     const yPct = clamp(Number(opts.anchor?.yPct ?? 0.5), 0, 1);
 
+    const trigger = opts.trigger ?? null;
+    const triggerPointerType = trigger?.pointerType || 'mouse';
+    const isDirectPointerPlacement = trigger != null && triggerPointerType !== 'mouse';
+
     const hoverWorld = (() => {
+      if (isDirectPointerPlacement) return null;
       const client = opts.client;
       if (!client) return null;
       const clientX = Number(client.x);
@@ -3777,7 +3803,33 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       selectionText,
       anchor: { pageNumber, yPct },
       hoverWorld,
+      outlineRect: null,
     };
+
+    if (isDirectPointerPlacement) {
+      const client = opts.client ?? null;
+      const clientX = Number(client?.x);
+      const clientY = Number(client?.y);
+      if (Number.isFinite(clientX) && Number.isFinite(clientY) && trigger) {
+        const rect = this.canvas.getBoundingClientRect();
+        const p: Vec2 = { x: clientX - rect.left, y: clientY - rect.top };
+        this.activeGesture = {
+          kind: 'pdf-annotation-place',
+          pointerId: trigger.pointerId,
+          pointerType: triggerPointerType,
+          hadHover: false,
+        };
+        this.suppressTapPointerIds.add(trigger.pointerId);
+        this.input.adoptPointer({
+          pointerId: trigger.pointerId,
+          pointerType: triggerPointerType,
+          pos: p,
+          captureMode: 'node',
+          forceDrag: true,
+        });
+      }
+    }
+
     this.requestRender();
   }
 
@@ -4847,6 +4899,22 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const world = this.camera.screenToWorld(p);
 
     const pdfAnn = this.pdfAnnotationPlacement;
+    if (pdfAnn && pdfAnn.outlineRect) {
+      const corner = this.hitResizeHandle(world, pdfAnn.outlineRect, { pointerType: info.pointerType });
+      if (corner) {
+        this.suppressTapPointerIds.add(info.pointerId);
+        this.activeGesture = {
+          kind: 'pdf-annotation-outline-resize',
+          pointerId: info.pointerId,
+          corner,
+          startWorld: world,
+          startRect: { ...pdfAnn.outlineRect },
+        };
+        this.requestRender();
+        return 'node';
+      }
+      return null;
+    }
     if (pdfAnn && (info.pointerType || 'mouse') === 'mouse') {
       this.suppressTapPointerIds.add(info.pointerId);
 
@@ -5210,6 +5278,87 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       return;
     }
 
+    if (g.kind === 'pdf-annotation-place') {
+      const placement = this.pdfAnnotationPlacement;
+      if (!placement) {
+        this.activeGesture = null;
+        this.requestRender();
+        return;
+      }
+
+      const inCanvas = p.x >= 0 && p.y >= 0 && p.x <= this.cssW && p.y <= this.cssH;
+      if (!inCanvas) {
+        if (placement.hoverWorld) {
+          placement.hoverWorld = null;
+          this.requestRender();
+        }
+        return;
+      }
+
+      g.hadHover = true;
+      placement.hoverWorld = this.camera.screenToWorld(p);
+      this.requestRender();
+      return;
+    }
+
+    if (g.kind === 'pdf-annotation-outline-resize') {
+      const placement = this.pdfAnnotationPlacement;
+      const startRect = g.startRect;
+      if (!placement?.outlineRect) return;
+
+      const world = this.camera.screenToWorld(p);
+      const dx = world.x - g.startWorld.x;
+      const dy = world.y - g.startWorld.y;
+
+      const right = startRect.x + startRect.w;
+      const bottom = startRect.y + startRect.h;
+
+      let next: Rect;
+      switch (g.corner) {
+        case 'nw': {
+          next = { x: startRect.x + dx, y: startRect.y + dy, w: startRect.w - dx, h: startRect.h - dy };
+          if (next.w < this.minNodeW) {
+            next.w = this.minNodeW;
+            next.x = right - next.w;
+          }
+          if (next.h < this.minNodeH) {
+            next.h = this.minNodeH;
+            next.y = bottom - next.h;
+          }
+          break;
+        }
+        case 'ne': {
+          next = { x: startRect.x, y: startRect.y + dy, w: startRect.w + dx, h: startRect.h - dy };
+          if (next.w < this.minNodeW) next.w = this.minNodeW;
+          if (next.h < this.minNodeH) {
+            next.h = this.minNodeH;
+            next.y = bottom - next.h;
+          }
+          break;
+        }
+        case 'sw': {
+          next = { x: startRect.x + dx, y: startRect.y, w: startRect.w - dx, h: startRect.h + dy };
+          if (next.w < this.minNodeW) {
+            next.w = this.minNodeW;
+            next.x = right - next.w;
+          }
+          if (next.h < this.minNodeH) next.h = this.minNodeH;
+          break;
+        }
+        case 'se': {
+          next = { x: startRect.x, y: startRect.y, w: startRect.w + dx, h: startRect.h + dy };
+          if (next.w < this.minNodeW) next.w = this.minNodeW;
+          if (next.h < this.minNodeH) next.h = this.minNodeH;
+          break;
+        }
+      }
+
+      placement.outlineRect = next;
+      placement.hoverWorld = { x: next.x, y: next.y };
+      this.requestRender();
+      return;
+    }
+
     if (g.kind === 'ink-world') {
       const world = this.camera.screenToWorld(p);
       this.pushInkPoint(g.stroke, { x: world.x, y: world.y }, this.inkMinPointDistWorld(g.pointerType));
@@ -5354,12 +5503,81 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const g = this.activeGesture;
     if (!g || g.pointerId !== info.pointerId) return;
 
+    if (g.kind === 'pdf-annotation-place') {
+      const placement = this.pdfAnnotationPlacement;
+      this.activeGesture = null;
+
+      const inCanvas = p.x >= 0 && p.y >= 0 && p.x <= this.cssW && p.y <= this.cssH;
+      if (!placement || !inCanvas || !g.hadHover) {
+        this.pdfAnnotationPlacement = null;
+        if (info.wasDrag) this.suppressTapPointerIds.delete(info.pointerId);
+        this.requestRender();
+        return;
+      }
+
+      const world = this.camera.screenToWorld(p);
+      const drawToSpawn = placement.kind === 'ink' ? this.spawnInkNodeByDrawEnabled : this.spawnEditNodeByDrawEnabled;
+
+      if (drawToSpawn) {
+        const rect = placement.kind === 'ink'
+          ? { x: world.x, y: world.y, w: 420, h: 280 }
+          : { x: world.x, y: world.y, w: 460, h: 240 };
+        placement.outlineRect = rect;
+        placement.hoverWorld = { x: rect.x, y: rect.y };
+        if (info.wasDrag) this.suppressTapPointerIds.delete(info.pointerId);
+        this.requestRender();
+        return;
+      }
+
+      const rect = placement.kind === 'ink'
+        ? { x: world.x, y: world.y, w: 420, h: 280 }
+        : { x: world.x, y: world.y, w: 460, h: 240 };
+      const createdId =
+        placement.kind === 'ink' ? this.spawnInkNode({ rect }) : this.spawnTextNode({ title: 'Note', rect });
+      this.applyPdfAnnotationToChildNode(createdId, placement);
+      if (placement.kind === 'text') this.cancelEditing();
+      this.pdfAnnotationPlacement = null;
+      try {
+        this.onRequestPersist?.();
+      } catch {
+        // ignore
+      }
+      if (info.wasDrag) this.suppressTapPointerIds.delete(info.pointerId);
+      return;
+    }
+
+    if (g.kind === 'pdf-annotation-outline-resize') {
+      const placement = this.pdfAnnotationPlacement;
+      const rect = placement?.outlineRect ?? null;
+      this.activeGesture = null;
+      if (!placement || !rect) {
+        this.pdfAnnotationPlacement = null;
+        if (info.wasDrag) this.suppressTapPointerIds.delete(info.pointerId);
+        this.requestRender();
+        return;
+      }
+
+      const createdId =
+        placement.kind === 'ink' ? this.spawnInkNode({ rect }) : this.spawnTextNode({ title: 'Note', rect });
+      this.applyPdfAnnotationToChildNode(createdId, placement);
+      if (placement.kind === 'text') this.cancelEditing();
+      this.pdfAnnotationPlacement = null;
+      try {
+        this.onRequestPersist?.();
+      } catch {
+        // ignore
+      }
+      if (info.wasDrag) this.suppressTapPointerIds.delete(info.pointerId);
+      return;
+    }
+
     if (g.kind === 'spawn-by-draw') {
       this.activeGesture = null;
       if (!info.wasDrag) {
         if (g.hasDrag) this.requestRender();
         return;
       }
+      this.suppressTapPointerIds.delete(info.pointerId);
 
       const world = this.camera.screenToWorld(p);
       const rect = this.rectFromWorldDrag(g.startWorld, world);
@@ -5588,6 +5806,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (g && g.pointerId === info.pointerId) {
       if (g.kind === 'text-select') this.clearTextSelection({ suppressOverlayCallback: true });
       if (g.kind === 'pdf-text-select') this.clearPdfTextSelection({ suppressOverlayCallback: true });
+      if (g.kind === 'pdf-annotation-place') this.pdfAnnotationPlacement = null;
+      if (g.kind === 'pdf-annotation-outline-resize') this.pdfAnnotationPlacement = null;
+      if (g.kind === 'spawn-by-draw' && g.pdfAnnotation) this.pdfAnnotationPlacement = null;
       this.activeGesture = null;
     }
     this.suppressTapPointerIds.delete(info.pointerId);
@@ -6651,6 +6872,42 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     ctx.restore();
   }
 
+  private drawPdfAnnotationOutlinePreview(): void {
+    const placement = this.pdfAnnotationPlacement;
+    const rect = placement?.outlineRect ?? null;
+    if (!placement || !rect) return;
+
+    const ctx = this.ctx;
+    const z = Math.max(0.01, this.camera.zoom || 1);
+    const stroke = placement.kind === 'ink' ? 'rgba(167,139,250,0.92)' : 'rgba(147,197,253,0.92)';
+    const fill = placement.kind === 'ink' ? 'rgba(167,139,250,0.10)' : 'rgba(147,197,253,0.10)';
+
+    ctx.save();
+    ctx.fillStyle = fill;
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 2 / z;
+    ctx.setLineDash([7 / z, 5 / z]);
+
+    const { x, y, w, h } = rect;
+    const r = Math.min(18, w * 0.5, h * 0.5);
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.arcTo(x + w, y, x + w, y + r, r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+    ctx.lineTo(x + r, y + h);
+    ctx.arcTo(x, y + h, x, y + h - r, r);
+    ctx.lineTo(x, y + r);
+    ctx.arcTo(x, y, x + r, y, r);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+
+    this.drawResizeHandles(rect, { fillStyle: stroke });
+  }
+
   private drawWorldInk(): void {
     const ctx = this.ctx;
     const g = this.activeGesture;
@@ -6699,7 +6956,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     ctx.restore();
   }
 
-  private drawResizeHandles(rect: Rect): void {
+  private drawResizeHandles(rect: Rect, opts?: { fillStyle?: string }): void {
     const ctx = this.ctx;
     const z = Math.max(0.01, this.camera.zoom || 1);
     const size = this.resizeHandleDrawPx / z;
@@ -6711,7 +6968,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const x1 = rect.x + rect.w - size - pad;
     const y1 = rect.y + rect.h - size - pad;
 
-    ctx.fillStyle = 'rgba(147,197,253,0.85)';
+    ctx.fillStyle = opts?.fillStyle ?? 'rgba(147,197,253,0.85)';
     ctx.strokeStyle = 'rgba(0,0,0,0.35)';
     ctx.lineWidth = 1 / z;
 
@@ -6763,6 +7020,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.drawDemoNodes();
     this.drawWorldInk();
     this.drawSpawnByDrawPreview();
+    this.drawPdfAnnotationOutlinePreview();
     this.drawPdfAnnotationPlacementPreview();
     this.renderTextStreamLod2Target(nextTextStreamLod2Target);
     this.renderTextLod2Target(nextTextLod2Target);
