@@ -339,13 +339,27 @@ function collectContextAttachments(nodes: ChatNode[], startNodeId: string): Cont
   for (const n of nodes) byId.set(n.id, n);
 
   const out: ContextAttachmentItem[] = [];
+  const seenPdfStorageKeys = new Set<string>();
   let cur: ChatNode | null = byId.get(startNodeId) ?? null;
   while (cur) {
     if (cur.kind === 'text' && cur.author === 'user' && Array.isArray(cur.attachments)) {
       for (let i = 0; i < cur.attachments.length; i += 1) {
         const att = cur.attachments[i];
         if (!att) continue;
+        if (att.kind === 'pdf' && typeof (att as any)?.storageKey === 'string') {
+          const k = String((att as any).storageKey).trim();
+          if (k) seenPdfStorageKeys.add(k);
+        }
         out.push({ key: `${cur.id}:${i}`, nodeId: cur.id, attachment: att });
+      }
+    }
+    if (cur.kind === 'pdf') {
+      const storageKey = typeof (cur as any)?.storageKey === 'string' ? String((cur as any).storageKey).trim() : '';
+      if (storageKey && !seenPdfStorageKeys.has(storageKey)) {
+        seenPdfStorageKeys.add(storageKey);
+        const name = typeof cur.fileName === 'string' && cur.fileName.trim() ? cur.fileName.trim() : undefined;
+        const attachment: ChatAttachment = { kind: 'pdf', mimeType: 'application/pdf', storageKey, ...(name ? { name } : {}) };
+        out.push({ key: `pdf:${cur.id}`, nodeId: cur.id, attachment });
       }
     }
     const parentId = (cur as any)?.parentId as string | null | undefined;
@@ -2260,9 +2274,31 @@ export default function App() {
     engine.onRequestReply = (nodeId) => {
       const chatId = activeChatIdRef.current;
       const meta = ensureChatMeta(chatId);
+      const snapshot = engine.exportChatState();
+      const hit = snapshot.nodes.find((n) => n.id === nodeId) ?? null;
+      if (hit && hit.kind === 'pdf') {
+        const storageKey = typeof (hit as any)?.storageKey === 'string' ? String((hit as any).storageKey).trim() : '';
+        if (!storageKey) {
+          showToast('This PDF cannot be attached (missing file storage key). Try re-importing the PDF.', 'error');
+          return;
+        }
+
+        const alreadyAttached = (meta.draftAttachments ?? []).some(
+          (att) => att?.kind === 'pdf' && typeof (att as any)?.storageKey === 'string' && String((att as any).storageKey).trim() === storageKey,
+        );
+        if (alreadyAttached) return;
+
+        const name = typeof hit.fileName === 'string' && hit.fileName.trim() ? hit.fileName.trim() : undefined;
+        const nextAtt: ChatAttachment = { kind: 'pdf', mimeType: 'application/pdf', storageKey, ...(name ? { name } : {}) };
+        meta.draftAttachments = [...(meta.draftAttachments ?? []), nextAtt];
+        if (activeChatIdRef.current === chatId) {
+          setComposerDraftAttachments(meta.draftAttachments.slice());
+        }
+        schedulePersistSoon();
+        return;
+      }
       const preview = engine.getNodeReplyPreview(nodeId);
       const next: ReplySelection = { nodeId, preview };
-      const snapshot = engine.exportChatState();
       const ctx = collectContextAttachments(snapshot.nodes, nodeId);
       const keys = ctx.map((it) => it.key);
       meta.replyTo = next;
@@ -2282,6 +2318,26 @@ export default function App() {
       const preview = collapsed.length <= max ? collapsed : `${collapsed.slice(0, max - 1).trimEnd()}…`;
       const next: ReplySelection = { nodeId, preview, text: raw };
       const snapshot = engine.exportChatState();
+      const hit = snapshot.nodes.find((n) => n.id === nodeId) ?? null;
+      if (hit && hit.kind === 'pdf') {
+        const storageKey = typeof (hit as any)?.storageKey === 'string' ? String((hit as any).storageKey).trim() : '';
+        if (storageKey) {
+          const alreadyAttached = (meta.draftAttachments ?? []).some(
+            (att) =>
+              att?.kind === 'pdf' &&
+              typeof (att as any)?.storageKey === 'string' &&
+              String((att as any).storageKey).trim() === storageKey,
+          );
+          if (!alreadyAttached) {
+            const name = typeof hit.fileName === 'string' && hit.fileName.trim() ? hit.fileName.trim() : undefined;
+            const nextAtt: ChatAttachment = { kind: 'pdf', mimeType: 'application/pdf', storageKey, ...(name ? { name } : {}) };
+            meta.draftAttachments = [...(meta.draftAttachments ?? []), nextAtt];
+            if (activeChatIdRef.current === chatId) {
+              setComposerDraftAttachments(meta.draftAttachments.slice());
+            }
+          }
+        }
+      }
       const ctx = collectContextAttachments(snapshot.nodes, nodeId);
       const keys = ctx.map((it) => it.key);
       meta.replyTo = next;
@@ -3591,7 +3647,6 @@ export default function App() {
             meta.draftAttachments = meta.draftAttachments.filter((_att, i) => i !== idx);
             const storageKey =
               removed && (removed.kind === 'image' || removed.kind === 'pdf') ? (removed.storageKey as string | undefined) : undefined;
-            if (storageKey) void deleteAttachment(storageKey);
             if (storageKey) {
               const dedupe = ensureDraftAttachmentDedupe(activeChatId);
               const fileSig = dedupe.byStorageKey.get(storageKey);
@@ -3601,6 +3656,7 @@ export default function App() {
               }
               dedupe.byStorageKey.delete(storageKey);
             }
+            if (storageKey) attachmentsGcDirtyRef.current = true;
             setComposerDraftAttachments(meta.draftAttachments.slice());
           }}
           contextAttachments={replyContextAttachments}
@@ -3651,10 +3707,10 @@ export default function App() {
             !(typeof replySelection?.text === 'string' && replySelection.text.trim()) &&
             (contextSelections ?? []).every((t) => !String(t ?? '').trim())
           }
-	          onSend={() => {
-	            const engine = engineRef.current;
-	            if (!engine) return;
-	            const raw = composerDraft;
+		          onSend={() => {
+		            const engine = engineRef.current;
+		            if (!engine) return;
+		            const raw = composerDraft;
               const replyToText = typeof replySelection?.text === 'string' ? replySelection.text.trim() : '';
               const contextTexts = (contextSelections ?? []).map((t) => String(t ?? '').trim()).filter(Boolean);
               const hasPreface = Boolean(replyToText || contextTexts.length > 0);
@@ -3669,13 +3725,34 @@ export default function App() {
 	              return label || 'Assistant';
 	            })();
 
-	            const meta = ensureChatMeta(activeChatId);
-	            const desiredParentId = replySelection?.nodeId && engine.hasNode(replySelection.nodeId) ? replySelection.nodeId : null;
-              const userPreface = hasPreface
-                ? {
-                    ...(replyToText ? { replyTo: replyToText } : {}),
-                    ...(contextTexts.length ? { contexts: contextTexts } : {}),
+		            const meta = ensureChatMeta(activeChatId);
+		            let desiredParentId = replySelection?.nodeId && engine.hasNode(replySelection.nodeId) ? replySelection.nodeId : null;
+                if (!desiredParentId) {
+                  const pdfStorageKey = (composerDraftAttachments ?? []).reduce<string>((acc, att) => {
+                    if (acc) return acc;
+                    if (!att || att.kind !== 'pdf') return '';
+                    const key = typeof (att as any)?.storageKey === 'string' ? String((att as any).storageKey).trim() : '';
+                    return key;
+                  }, '');
+                  if (pdfStorageKey) {
+                    try {
+                      const snapshot = engine.exportChatState();
+                      const pdfNode =
+                        snapshot.nodes.find(
+                          (n): n is Extract<ChatNode, { kind: 'pdf' }> =>
+                            n.kind === 'pdf' && String((n as any)?.storageKey ?? '').trim() === pdfStorageKey,
+                        ) ?? null;
+                      if (pdfNode && engine.hasNode(pdfNode.id)) desiredParentId = pdfNode.id;
+                    } catch {
+                      // ignore
+                    }
                   }
+                }
+	              const userPreface = hasPreface
+	                ? {
+	                    ...(replyToText ? { replyTo: replyToText } : {}),
+	                    ...(contextTexts.length ? { contexts: contextTexts } : {}),
+	                  }
                 : undefined;
 	            const res = engine.spawnChatTurn({
 	              userText: raw,

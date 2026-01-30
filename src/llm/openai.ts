@@ -1,5 +1,5 @@
 import systemInstructions from './SystemInstructions.md?raw';
-import type { ChatNode } from '../model/chat';
+import type { ChatAttachment, ChatNode } from '../model/chat';
 import { DEFAULT_MODEL_ID, getModelInfo, type TextVerbosity } from './registry';
 import { blobToDataUrl, getAttachment as getStoredAttachment } from '../storage/attachments';
 import { getPayload } from '../storage/payloads';
@@ -116,6 +116,22 @@ async function buildOpenAIInputFromChatNodes(nodes: ChatNode[], leafUserNodeId: 
   const input: any[] = [];
 
   for (const n of chain) {
+    if (n.kind === 'pdf') {
+      const key = `pdf:${n.id}`;
+      if (!leafSelection.has(key)) continue;
+      const storageKey = typeof (n as any)?.storageKey === 'string' ? String((n as any).storageKey).trim() : '';
+      if (!storageKey) continue;
+      const name = typeof (n as any)?.fileName === 'string' ? String((n as any).fileName).trim() : '';
+      const att: ChatAttachment = {
+        kind: 'pdf',
+        mimeType: 'application/pdf',
+        storageKey,
+        ...(name ? { name } : {}),
+      };
+      const part = await attachmentToOpenAIContent(att);
+      if (part) input.push({ role: 'user', content: [part] });
+      continue;
+    }
     if (n.kind !== 'text') continue;
     if (n.author === 'user') {
       const content: any[] = [];

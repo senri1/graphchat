@@ -228,6 +228,56 @@ async function buildGeminiHistory(args: {
 
   const history: GeminiMessage[] = [];
   for (const n of chain) {
+    if (n.kind === 'pdf') {
+      const key = `pdf:${n.id}`;
+      if (!leafSelection.has(key)) continue;
+
+      const storageKey = typeof (n as any)?.storageKey === 'string' ? String((n as any).storageKey).trim() : '';
+      if (!storageKey) continue;
+
+      if (!args.ai) {
+        history.push({
+          role: 'user',
+          parts: [{ text: '[Attachment omitted: Gemini API client unavailable when building request.]' }],
+        });
+        continue;
+      }
+
+      let rec: { blob: Blob; mimeType?: string } | null = null;
+      try {
+        rec = await getStoredAttachment(storageKey);
+      } catch {
+        rec = null;
+      }
+      if (!rec?.blob) {
+        history.push({
+          role: 'user',
+          parts: [{ text: '[Attachment omitted: failed to read file from storage.]' }],
+        });
+        continue;
+      }
+
+      const filename = typeof (n as any)?.fileName === 'string' && String((n as any).fileName).trim() ? String((n as any).fileName).trim() : undefined;
+      const mimeType = (typeof (rec as any)?.mimeType === 'string' && String((rec as any).mimeType).trim()) ? String((rec as any).mimeType).trim() : 'application/pdf';
+
+      try {
+        const meta = await ensureGeminiFile({
+          ai: args.ai,
+          blob: rec.blob,
+          mimeType,
+          filename,
+          storageKey,
+        });
+        history.push({ role: 'user', parts: [{ fileData: { fileUri: meta.uri, mimeType: meta.mimeType } }] });
+      } catch {
+        history.push({
+          role: 'user',
+          parts: [{ text: '[Attachment omitted: failed to upload file to Gemini Files API.]' }],
+        });
+      }
+      continue;
+    }
+
     if (n.kind !== 'text') continue;
 
     if (n.author === 'user') {
