@@ -1324,6 +1324,7 @@ export default function App() {
     userNodeId: string;
     assistantNodeId: string;
     settings: OpenAIChatSettings;
+    nodesOverride?: ChatNode[];
   }) => {
     const chatId = args.chatId;
     if (!chatId) return;
@@ -1387,7 +1388,7 @@ export default function App() {
       let request: Record<string, unknown>;
       try {
         request = await buildOpenAIResponseRequest({
-          nodes: state?.nodes ?? [],
+          nodes: args.nodesOverride ?? state?.nodes ?? [],
           leafUserNodeId: args.userNodeId,
           settings,
         });
@@ -1820,6 +1821,7 @@ export default function App() {
     userNodeId: string;
     assistantNodeId: string;
     settings: GeminiChatSettings;
+    nodesOverride?: ChatNode[];
   }) => {
     const chatId = args.chatId;
     if (!chatId) return;
@@ -1884,7 +1886,7 @@ export default function App() {
       let requestSnapshot: any;
       try {
         const ctx = await buildGeminiContext({
-          nodes: state?.nodes ?? [],
+          nodes: args.nodesOverride ?? state?.nodes ?? [],
           leafUserNodeId: args.userNodeId,
           settings,
         });
@@ -3551,6 +3553,136 @@ export default function App() {
     schedulePersistSoon();
   };
 
+  const sendAssistantTurnFromUserNode = (args: {
+    userNodeId: string;
+    modelIdOverride?: string | null;
+    clearComposerText?: boolean;
+  }) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+
+    const userNodeId = String(args.userNodeId ?? '').trim();
+    if (!userNodeId) return;
+
+    const chatId = activeChatIdRef.current;
+    const meta = ensureChatMeta(chatId);
+
+    const composerReplyToText = typeof replySelection?.text === 'string' ? replySelection.text.trim() : '';
+    const composerContextTexts = (contextSelections ?? []).map((t) => String(t ?? '').trim()).filter(Boolean);
+
+    const selectedModelId = String(args.modelIdOverride || composerModelId || DEFAULT_MODEL_ID).trim() || DEFAULT_MODEL_ID;
+    const assistantTitle = (() => {
+      const info = getModelInfo(selectedModelId);
+      const shortLabel = typeof info?.shortLabel === 'string' ? info.shortLabel.trim() : '';
+      if (shortLabel) return shortLabel;
+      const label = typeof info?.label === 'string' ? info.label.trim() : '';
+      return label || 'Assistant';
+    })();
+
+    const preSnapshot = engine.exportChatState();
+    const userNode =
+      preSnapshot.nodes.find((n): n is Extract<ChatNode, { kind: 'text' }> => n.kind === 'text' && n.id === userNodeId) ??
+      null;
+    if (!userNode) return;
+
+    const userText = typeof userNode.content === 'string' ? userNode.content : String((userNode as any).content ?? '');
+
+    const nodeReplyToText = (userNode.userPreface?.replyTo ?? '').trim();
+    const nodeContextTexts = Array.isArray(userNode.userPreface?.contexts)
+      ? userNode.userPreface!.contexts!.map((t) => String(t ?? '').trim()).filter(Boolean)
+      : [];
+
+    const replyToText = composerReplyToText || nodeReplyToText;
+    const contextTexts = [...nodeContextTexts, ...composerContextTexts];
+    const hasPreface = Boolean(replyToText || contextTexts.length > 0);
+
+    if (!userText.trim() && composerDraftAttachments.length === 0 && !hasPreface) return;
+
+    const res = engine.spawnAssistantTurn({
+      userNodeId,
+      assistantTitle,
+      assistantModelId: selectedModelId,
+    });
+    if (!res) return;
+
+    meta.turns.push({
+      id: genId('turn'),
+      createdAt: Date.now(),
+      userNodeId,
+      assistantNodeId: res.assistantNodeId,
+      attachmentNodeIds: [],
+    });
+    meta.headNodeId = res.assistantNodeId;
+    meta.replyTo = null;
+    meta.contextSelections = [];
+    meta.draftAttachments = [];
+    meta.selectedAttachmentKeys = [];
+    if (args.clearComposerText !== false) meta.draft = '';
+    draftAttachmentDedupeRef.current.delete(chatId);
+    lastAddAttachmentFilesRef.current = { sig: '', at: 0 };
+    setReplySelection(null);
+    setContextSelections([]);
+    setReplyContextAttachments([]);
+    setReplySelectedAttachmentKeys([]);
+    if (args.clearComposerText !== false) setComposerDraft('');
+    setComposerDraftAttachments([]);
+
+    const snapshot = engine.exportChatState();
+    chatStatesRef.current.set(chatId, snapshot);
+
+    const userPreface = hasPreface
+      ? {
+          ...(replyToText ? { replyTo: replyToText } : {}),
+          ...(contextTexts.length ? { contexts: contextTexts } : {}),
+        }
+      : undefined;
+    const nodesOverride = snapshot.nodes.map((n) => {
+      if (n.kind !== 'text') return n;
+      if (n.id !== userNodeId) return n;
+      return {
+        ...n,
+        content: userText,
+        userPreface,
+        attachments: composerDraftAttachments.length ? composerDraftAttachments : undefined,
+        selectedAttachmentKeys: replySelectedAttachmentKeys.length ? replySelectedAttachmentKeys : undefined,
+      };
+    });
+
+    const provider = getModelInfo(selectedModelId)?.provider ?? 'openai';
+    if (provider === 'gemini') {
+      const settings: GeminiChatSettings = {
+        modelId: selectedModelId,
+        webSearchEnabled: composerWebSearch,
+      };
+      startGeminiGeneration({
+        chatId,
+        userNodeId,
+        assistantNodeId: res.assistantNodeId,
+        settings,
+        nodesOverride,
+      });
+    } else {
+      const modelSettings = modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
+      const settings: OpenAIChatSettings = {
+        modelId: selectedModelId,
+        verbosity: modelSettings?.verbosity,
+        webSearchEnabled: composerWebSearch,
+        reasoningSummary: modelSettings?.reasoningSummary,
+        stream: modelSettings?.streaming,
+        background: modelSettings?.background,
+      };
+      startOpenAIGeneration({
+        chatId,
+        userNodeId,
+        assistantNodeId: res.assistantNodeId,
+        settings,
+        nodesOverride,
+      });
+    }
+
+    schedulePersistSoon();
+  };
+
   const updateEditNodeSendMenuPosition = React.useCallback(() => {
     const nodeId = editNodeSendMenuId;
     if (!nodeId) {
@@ -3618,29 +3750,9 @@ export default function App() {
     const pending = pendingEditNodeSend;
     if (!pending) return;
     setPendingEditNodeSend(null);
-
-    const engine = engineRef.current;
-    if (!engine) return;
-
-    const snapshot = engine.exportChatState();
-    const node =
-      snapshot.nodes.find((n): n is Extract<ChatNode, { kind: 'text' }> => n.kind === 'text' && n.id === pending.nodeId) ?? null;
-    if (!node) return;
-
-    const extraUserPreface = (() => {
-      const replyTo = String((node as any)?.userPreface?.replyTo ?? '').trim();
-      const ctxRaw = Array.isArray((node as any)?.userPreface?.contexts) ? ((node as any).userPreface.contexts as any[]) : [];
-      const contexts = ctxRaw.map((t) => String(t ?? '').trim()).filter(Boolean);
-      if (!replyTo && contexts.length === 0) return null;
-      return { ...(replyTo ? { replyTo } : {}), ...(contexts.length ? { contexts } : {}) };
-    })();
-
-    sendTurn({
-      userText: String((node as any)?.content ?? ''),
-      extraUserPreface,
+    sendAssistantTurnFromUserNode({
+      userNodeId: pending.nodeId,
       modelIdOverride: pending.modelIdOverride ?? null,
-      defaultParentNodeId: pending.nodeId,
-      allowPdfAttachmentParentFallback: false,
       clearComposerText: false,
     });
   }, [pendingEditNodeSend]);
@@ -3843,18 +3955,10 @@ export default function App() {
               onSend={(text, opts) => {
                 const id = String(ui.editingNodeId ?? '').trim();
                 if (!id) return;
-                const extraUserPreface = editorUserPreface
-                  ? {
-                      ...(editorUserPreface.replyTo ? { replyTo: editorUserPreface.replyTo } : {}),
-                      ...(editorUserPreface.contexts.length ? { contexts: editorUserPreface.contexts } : {}),
-                    }
-                  : null;
-                sendTurn({
-                  userText: text,
-                  extraUserPreface,
+                engineRef.current?.setEditingText(text);
+                sendAssistantTurnFromUserNode({
+                  userNodeId: id,
                   modelIdOverride: opts?.modelIdOverride ?? null,
-                  defaultParentNodeId: id,
-                  allowPdfAttachmentParentFallback: false,
                   clearComposerText: false,
                 });
               }}

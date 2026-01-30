@@ -1803,6 +1803,61 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return { userNodeId, assistantNodeId };
   }
 
+  spawnAssistantTurn(args: {
+    userNodeId: string;
+    assistantTitle?: string;
+    assistantModelId?: string | null;
+  }): { assistantNodeId: string } | null {
+    const userNodeId = typeof args.userNodeId === 'string' ? args.userNodeId : String(args.userNodeId ?? '');
+    if (!userNodeId) return null;
+    const assistantTitle = typeof args.assistantTitle === 'string' ? args.assistantTitle : '';
+    const assistantModelId = typeof args.assistantModelId === 'string' ? args.assistantModelId : null;
+
+    const userNode = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === userNodeId) ?? null;
+    if (!userNode) return null;
+
+    const now = Date.now().toString(36);
+    const assistantNodeId = `a${now}-${(this.nodeSeq++).toString(36)}`;
+    const gapY = 26;
+
+    const assistantNode: TextNode = {
+      kind: 'text',
+      id: assistantNodeId,
+      parentId: userNodeId,
+      rect: { x: userNode.rect.x, y: userNode.rect.y + userNode.rect.h + gapY, w: userNode.rect.w, h: TEXT_NODE_SPAWN_MIN_H_PX },
+      title: assistantTitle.trim() || 'Assistant',
+      author: 'assistant',
+      content: '',
+      contentHash: fingerprintText(''),
+      displayHash: '',
+      summaryExpanded: false,
+      modelId: assistantModelId,
+    };
+
+    // Avoid spawning directly on top of existing nodes in the current view.
+    const candidate: Rect = { ...assistantNode.rect };
+    for (let i = 0; i < 60; i += 1) {
+      const overlap = this.nodes.find((n) => rectsIntersect(n.rect, candidate)) ?? null;
+      if (!overlap) break;
+      candidate.y = overlap.rect.y + overlap.rect.h + gapY;
+      assistantNode.rect.y = candidate.y;
+    }
+
+    this.recomputeTextNodeDisplayHash(assistantNode);
+    this.nodes.push(assistantNode);
+    this.bringNodeToFront(assistantNodeId);
+
+    const changed = this.selectedNodeId !== assistantNodeId || this.editingNodeId !== null;
+    this.selectedNodeId = assistantNodeId;
+    this.editingNodeId = null;
+
+    this.textRasterGeneration += 1;
+    this.requestRender();
+    if (changed) this.emitUiState();
+
+    return { assistantNodeId };
+  }
+
   clearWorldInk(): void {
     if (this.worldInkStrokes.length === 0) return;
     this.worldInkStrokes = [];
