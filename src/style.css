@@ -2447,6 +2447,25 @@ html.gc-ink-drawing * {
   align-items: center;
 }
 
+.editor__btnGroup {
+  display: inline-flex;
+  align-items: center;
+}
+
+.editor__btn--splitMain {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: 0;
+}
+
+.editor__btn--splitArrow {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: 0;
+  min-width: calc(22px * var(--editor-scale, 1));
+  padding: 0 calc(8px * var(--editor-scale, 1));
+}
+
 .editor__btn--toggleOn {
   border-color: rgba(255, 255, 255, 0.22);
   background: rgba(255, 255, 255, 0.08);

@@ -1,6 +1,8 @@
-import React, { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import MarkdownMath from './MarkdownMath';
 import type { Rect } from '../engine/types';
+import type { ModelInfo } from '../llm/registry';
 
 type TextNodeUserPreface = { replyTo: string; contexts: string[]; collapsedPrefaceContexts: Record<number, boolean> };
 
@@ -9,6 +11,8 @@ type Props = {
   title: string | null;
   initialValue: string;
   userPreface?: TextNodeUserPreface | null;
+  modelId: string;
+  modelOptions: ModelInfo[];
   anchorRect: Rect | null;
   getScreenRect?: () => Rect | null;
   getZoom?: () => number;
@@ -20,12 +24,15 @@ type Props = {
   onTogglePrefaceContext?: (contextIndex: number) => void;
   onCommit: (next: string) => void;
   onCancel: () => void;
+  onSend: (text: string, opts?: { modelIdOverride?: string | null }) => void;
 };
 
 type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
 
+type MenuPos = { left: number; top?: number; bottom?: number; maxHeight: number };
+
 export default function TextNodeEditor(props: Props) {
-  const { nodeId, title, initialValue, userPreface, anchorRect, getScreenRect, getZoom, viewport, zoom, baseFontSizePx, onResize, onResizeEnd, onTogglePrefaceContext, onCommit, onCancel } = props;
+  const { nodeId, title, initialValue, userPreface, modelId, modelOptions, anchorRect, getScreenRect, getZoom, viewport, zoom, baseFontSizePx, onResize, onResizeEnd, onTogglePrefaceContext, onCommit, onCancel, onSend } = props;
   const [draft, setDraft] = useState(() => initialValue ?? '');
   const [previewEnabled, setPreviewEnabled] = useState(false);
   const [collapsedPrefaceContexts, setCollapsedPrefaceContexts] = useState<Record<number, boolean>>(() => userPreface?.collapsedPrefaceContexts ?? {});
@@ -38,6 +45,7 @@ export default function TextNodeEditor(props: Props) {
   const onCancelRef = useRef(onCancel);
   const onResizeRef = useRef(onResize);
   const onResizeEndRef = useRef(onResizeEnd);
+  const onSendRef = useRef(onSend);
   const resizeRef = useRef<{
     pointerId: number;
     corner: ResizeCorner;
@@ -61,7 +69,8 @@ export default function TextNodeEditor(props: Props) {
     onCancelRef.current = onCancel;
     onResizeRef.current = onResize;
     onResizeEndRef.current = onResizeEnd;
-  }, [onCancel, onCommit, onResize, onResizeEnd]);
+    onSendRef.current = onSend;
+  }, [onCancel, onCommit, onResize, onResizeEnd, onSend]);
 
   useEffect(() => {
     committedRef.current = false;
@@ -78,6 +87,77 @@ export default function TextNodeEditor(props: Props) {
   useEffect(() => {
     setPreviewEnabled(false);
   }, [nodeId]);
+
+  const modelMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [modelMenuPos, setModelMenuPos] = useState<MenuPos | null>(null);
+
+  useEffect(() => {
+    setModelMenuOpen(false);
+    setModelMenuPos(null);
+  }, [nodeId]);
+
+  const closeModelMenu = useCallback(() => {
+    setModelMenuOpen(false);
+  }, []);
+
+  const updateModelMenuPosition = useCallback(() => {
+    const btn = modelMenuButtonRef.current;
+    if (!btn) return;
+    const rect = btn.getBoundingClientRect();
+
+    const gap = 8;
+    const viewportPadding = 8;
+    const estimatedWidth = 115;
+    const maxMenuH = 256;
+    const itemH = 34;
+    const paddingY = 14;
+    const desiredH = Math.min(maxMenuH, Math.max(56, modelOptions.length * itemH + paddingY));
+
+    const spaceAbove = rect.top - gap - viewportPadding;
+    const spaceBelow = window.innerHeight - rect.bottom - gap - viewportPadding;
+    const openAbove = spaceAbove >= desiredH || spaceAbove >= spaceBelow;
+    const top = openAbove ? undefined : rect.bottom + gap;
+    const bottom = openAbove ? window.innerHeight - rect.top + gap : undefined;
+    const maxHeight = Math.max(0, Math.min(maxMenuH, openAbove ? spaceAbove : spaceBelow));
+
+    const left = Math.min(window.innerWidth - viewportPadding - estimatedWidth, Math.max(viewportPadding, rect.left));
+    setModelMenuPos({ top, bottom, left, maxHeight });
+  }, [modelOptions.length]);
+
+  const openModelMenu = useCallback(() => {
+    if (modelOptions.length === 0) return;
+    updateModelMenuPosition();
+    setModelMenuOpen(true);
+  }, [modelOptions.length, updateModelMenuPosition]);
+
+  useEffect(() => {
+    if (!modelMenuOpen) return;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeModelMenu();
+    };
+
+    const onReposition = () => {
+      if (modelMenuOpen) updateModelMenuPosition();
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('resize', onReposition);
+    window.addEventListener('scroll', onReposition, true);
+    const vv = window.visualViewport;
+    vv?.addEventListener('resize', onReposition);
+    vv?.addEventListener('scroll', onReposition);
+
+    onReposition();
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('resize', onReposition);
+      window.removeEventListener('scroll', onReposition, true);
+      vv?.removeEventListener('resize', onReposition);
+      vv?.removeEventListener('scroll', onReposition);
+    };
+  }, [closeModelMenu, modelMenuOpen, updateModelMenuPosition]);
 
   useEffect(() => {
     if (resizeRef.current || dragRef.current) return;
@@ -296,6 +376,10 @@ export default function TextNodeEditor(props: Props) {
     onCommitRef.current(draftRef.current);
   };
 
+  const send = (modelIdOverride?: string | null) => {
+    onSendRef.current(draftRef.current, { modelIdOverride: modelIdOverride ?? null });
+  };
+
   const baseFontSize = Math.max(1, Math.round(Number.isFinite(baseFontSizePx) ? baseFontSizePx : 14));
   const activeAnchorRect = liveRect ?? anchorRect;
 
@@ -507,6 +591,33 @@ export default function TextNodeEditor(props: Props) {
           >
             Preview
           </button>
+          <div className="editor__btnGroup" role="group" aria-label="Send">
+            <button
+              className="editor__btn editor__btn--primary editor__btn--splitMain"
+              type="button"
+              onClick={() => send(null)}
+            >
+              Send
+            </button>
+            <button
+              ref={modelMenuButtonRef}
+              className="editor__btn editor__btn--primary editor__btn--splitArrow"
+              type="button"
+              onClick={() => {
+                if (modelMenuOpen) {
+                  closeModelMenu();
+                  return;
+                }
+                openModelMenu();
+              }}
+              disabled={modelOptions.length === 0}
+              aria-haspopup="menu"
+              aria-expanded={modelMenuOpen ? 'true' : 'false'}
+              aria-label="Send with model"
+            >
+              ▾
+            </button>
+          </div>
           <button className="editor__btn" type="button" onClick={cancel}>
             Cancel
           </button>
@@ -556,6 +667,42 @@ export default function TextNodeEditor(props: Props) {
           </div>
         ) : null}
       </div>
+
+      {typeof document !== 'undefined' && modelMenuOpen && modelMenuPos
+        ? createPortal(
+            <>
+              <div className="composerMenuBackdrop" onPointerDown={closeModelMenu} aria-hidden="true" />
+              <div
+                className="composerMenu"
+                style={{
+                  top: modelMenuPos.top,
+                  bottom: modelMenuPos.bottom,
+                  left: modelMenuPos.left,
+                  width: 115,
+                  maxHeight: modelMenuPos.maxHeight,
+                }}
+                role="menu"
+              >
+                {modelOptions.map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    className={`composerMenu__item ${m.id === modelId ? 'composerMenu__item--active' : ''}`}
+                    onClick={() => {
+                      closeModelMenu();
+                      send(m.id);
+                    }}
+                    role="menuitem"
+                    title={m.label}
+                  >
+                    {String(m.shortLabel ?? m.label ?? m.id).trim()}
+                  </button>
+                ))}
+              </div>
+            </>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

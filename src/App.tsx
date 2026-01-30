@@ -120,6 +120,19 @@ type ToastState = {
   message: string;
 };
 
+type MenuPos = { left: number; top?: number; bottom?: number; maxHeight: number };
+
+type PendingEditNodeSend = { nodeId: string; modelIdOverride?: string | null };
+
+type SendTurnArgs = {
+  userText: string;
+  extraUserPreface?: { replyTo?: string; contexts?: string[] } | null;
+  modelIdOverride?: string | null;
+  defaultParentNodeId?: string | null;
+  allowPdfAttachmentParentFallback?: boolean;
+  clearComposerText?: boolean;
+};
+
 const DEFAULT_COMPOSER_FONT_FAMILY: FontFamilyKey = 'ui-monospace';
 const DEFAULT_COMPOSER_FONT_SIZE_PX = 13;
 
@@ -492,6 +505,9 @@ export default function App() {
   }));
   const [rawViewer, setRawViewer] = useState<RawViewerState | null>(null);
   const [nodeMenuId, setNodeMenuId] = useState<string | null>(null);
+  const [editNodeSendMenuId, setEditNodeSendMenuId] = useState<string | null>(null);
+  const [editNodeSendMenuPos, setEditNodeSendMenuPos] = useState<MenuPos | null>(null);
+  const [pendingEditNodeSend, setPendingEditNodeSend] = useState<PendingEditNodeSend | null>(null);
 	  const [confirmDelete, setConfirmDelete] = useState<ConfirmDeleteState | null>(null);
 	  const [confirmApplyBackground, setConfirmApplyBackground] = useState<ConfirmApplyBackgroundState | null>(null);
 	  const [confirmExport, setConfirmExport] = useState<ConfirmExportState | null>(null);
@@ -778,6 +794,7 @@ export default function App() {
   useEffect(() => {
     setRawViewer(null);
     setNodeMenuId(null);
+    setEditNodeSendMenuId(null);
   }, [activeChatId]);
 
   useEffect(() => {
@@ -790,6 +807,20 @@ export default function App() {
     const canvas = canvasRef.current;
     if (!engine || !canvas) return null;
     const r = engine.getNodeMenuButtonScreenRect(nodeId);
+    if (!r) return null;
+    const canvasRect = canvas.getBoundingClientRect();
+    const left = canvasRect.left + r.x;
+    const top = canvasRect.top + r.y;
+    const right = left + r.w;
+    const bottom = top + r.h;
+    return { left, top, right, bottom };
+  }, []);
+
+  const getNodeSendMenuButtonRect = React.useCallback((nodeId: string): { left: number; top: number; right: number; bottom: number } | null => {
+    const engine = engineRef.current;
+    const canvas = canvasRef.current;
+    if (!engine || !canvas) return null;
+    const r = engine.getNodeSendButtonArrowScreenRect(nodeId);
     if (!r) return null;
     const canvasRect = canvas.getBoundingClientRect();
     const left = canvasRect.left + r.x;
@@ -2357,7 +2388,17 @@ export default function App() {
       setContextSelections(next);
       schedulePersistSoon();
     };
-    engine.onRequestNodeMenu = (nodeId) => setNodeMenuId((prev) => (prev === nodeId ? null : nodeId));
+    engine.onRequestNodeMenu = (nodeId) => {
+      setNodeMenuId((prev) => (prev === nodeId ? null : nodeId));
+      setEditNodeSendMenuId(null);
+    };
+    engine.onRequestSendEditNode = (nodeId) => {
+      setPendingEditNodeSend({ nodeId, modelIdOverride: null });
+    };
+    engine.onRequestSendEditNodeModelMenu = (nodeId) => {
+      setEditNodeSendMenuId((prev) => (prev === nodeId ? null : nodeId));
+      setNodeMenuId(null);
+    };
     engine.onRequestCancelGeneration = (nodeId) => cancelJob(nodeId);
     engine.onRequestPersist = () => schedulePersistSoon();
     engine.start();
@@ -2437,6 +2478,7 @@ export default function App() {
   const editorZoom = debug?.zoom ?? engineRef.current?.camera.zoom ?? 1;
   const rawAnchor = rawViewer ? engineRef.current?.getTextNodeContentScreenRect(rawViewer.nodeId) ?? null : null;
   const nodeMenuButtonRect = nodeMenuId ? getNodeMenuButtonRect(nodeMenuId) : null;
+  const editNodeSendMenuButtonRect = editNodeSendMenuId ? getNodeSendMenuButtonRect(editNodeSendMenuId) : null;
   const nodeMenuRawEnabled = useMemo(() => {
     const nodeId = nodeMenuId;
     const engine = engineRef.current;
@@ -3375,6 +3417,234 @@ export default function App() {
     void exportAllChats();
   };
 
+  const sendTurn = (args: SendTurnArgs) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+
+    const raw = String(args.userText ?? '');
+
+    const composerReplyToText = typeof replySelection?.text === 'string' ? replySelection.text.trim() : '';
+    const composerContextTexts = (contextSelections ?? []).map((t) => String(t ?? '').trim()).filter(Boolean);
+
+    const nodeReplyToText = typeof args.extraUserPreface?.replyTo === 'string' ? args.extraUserPreface.replyTo.trim() : '';
+    const nodeContextTexts = Array.isArray(args.extraUserPreface?.contexts)
+      ? args.extraUserPreface!.contexts!.map((t) => String(t ?? '').trim()).filter(Boolean)
+      : [];
+
+    const replyToText = composerReplyToText || nodeReplyToText;
+    const contextTexts = [...nodeContextTexts, ...composerContextTexts];
+    const hasPreface = Boolean(replyToText || contextTexts.length > 0);
+
+    if (!raw.trim() && composerDraftAttachments.length === 0 && !hasPreface) return;
+
+    const selectedModelId = String(args.modelIdOverride || composerModelId || DEFAULT_MODEL_ID).trim() || DEFAULT_MODEL_ID;
+    const assistantTitle = (() => {
+      const info = getModelInfo(selectedModelId);
+      const shortLabel = typeof info?.shortLabel === 'string' ? info.shortLabel.trim() : '';
+      if (shortLabel) return shortLabel;
+      const label = typeof info?.label === 'string' ? info.label.trim() : '';
+      return label || 'Assistant';
+    })();
+
+    const chatId = activeChatIdRef.current;
+    const meta = ensureChatMeta(chatId);
+
+    let desiredParentId = replySelection?.nodeId && engine.hasNode(replySelection.nodeId) ? replySelection.nodeId : null;
+    if (!desiredParentId) {
+      const fallback = typeof args.defaultParentNodeId === 'string' ? args.defaultParentNodeId.trim() : '';
+      if (fallback && engine.hasNode(fallback)) desiredParentId = fallback;
+    }
+    if (!desiredParentId && args.allowPdfAttachmentParentFallback !== false) {
+      const pdfStorageKey = (composerDraftAttachments ?? []).reduce<string>((acc, att) => {
+        if (acc) return acc;
+        if (!att || att.kind !== 'pdf') return '';
+        const key = typeof (att as any)?.storageKey === 'string' ? String((att as any).storageKey).trim() : '';
+        return key;
+      }, '');
+      if (pdfStorageKey) {
+        try {
+          const snapshot = engine.exportChatState();
+          const pdfNode =
+            snapshot.nodes.find(
+              (n): n is Extract<ChatNode, { kind: 'pdf' }> =>
+                n.kind === 'pdf' && String((n as any)?.storageKey ?? '').trim() === pdfStorageKey,
+            ) ?? null;
+          if (pdfNode && engine.hasNode(pdfNode.id)) desiredParentId = pdfNode.id;
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    const userPreface = hasPreface
+      ? {
+          ...(replyToText ? { replyTo: replyToText } : {}),
+          ...(contextTexts.length ? { contexts: contextTexts } : {}),
+        }
+      : undefined;
+
+    const res = engine.spawnChatTurn({
+      userText: raw,
+      parentNodeId: desiredParentId,
+      userPreface,
+      userAttachments: composerDraftAttachments.length ? composerDraftAttachments : undefined,
+      selectedAttachmentKeys: replySelectedAttachmentKeys.length ? replySelectedAttachmentKeys : undefined,
+      assistantTitle,
+      assistantModelId: selectedModelId,
+    });
+
+    meta.turns.push({
+      id: genId('turn'),
+      createdAt: Date.now(),
+      userNodeId: res.userNodeId,
+      assistantNodeId: res.assistantNodeId,
+      attachmentNodeIds: [],
+    });
+    meta.headNodeId = res.assistantNodeId;
+    meta.replyTo = null;
+    meta.contextSelections = [];
+    meta.draftAttachments = [];
+    meta.selectedAttachmentKeys = [];
+    if (args.clearComposerText !== false) meta.draft = '';
+    draftAttachmentDedupeRef.current.delete(chatId);
+    lastAddAttachmentFilesRef.current = { sig: '', at: 0 };
+    setReplySelection(null);
+    setContextSelections([]);
+    setReplyContextAttachments([]);
+    setReplySelectedAttachmentKeys([]);
+    if (args.clearComposerText !== false) setComposerDraft('');
+    setComposerDraftAttachments([]);
+
+    const snapshot = engine.exportChatState();
+    chatStatesRef.current.set(chatId, snapshot);
+
+    const provider = getModelInfo(selectedModelId)?.provider ?? 'openai';
+    if (provider === 'gemini') {
+      const settings: GeminiChatSettings = {
+        modelId: selectedModelId,
+        webSearchEnabled: composerWebSearch,
+      };
+      startGeminiGeneration({
+        chatId,
+        userNodeId: res.userNodeId,
+        assistantNodeId: res.assistantNodeId,
+        settings,
+      });
+    } else {
+      const modelSettings = modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
+      const settings: OpenAIChatSettings = {
+        modelId: selectedModelId,
+        verbosity: modelSettings?.verbosity,
+        webSearchEnabled: composerWebSearch,
+        reasoningSummary: modelSettings?.reasoningSummary,
+        stream: modelSettings?.streaming,
+        background: modelSettings?.background,
+      };
+      startOpenAIGeneration({
+        chatId,
+        userNodeId: res.userNodeId,
+        assistantNodeId: res.assistantNodeId,
+        settings,
+      });
+    }
+
+    schedulePersistSoon();
+  };
+
+  const updateEditNodeSendMenuPosition = React.useCallback(() => {
+    const nodeId = editNodeSendMenuId;
+    if (!nodeId) {
+      setEditNodeSendMenuPos(null);
+      return;
+    }
+
+    const rect = getNodeSendMenuButtonRect(nodeId);
+    if (!rect) {
+      setEditNodeSendMenuPos(null);
+      return;
+    }
+
+    const gap = 8;
+    const viewportPadding = 8;
+    const estimatedWidth = 115;
+    const maxMenuH = 256;
+    const itemH = 34;
+    const paddingY = 14;
+    const desiredH = Math.min(maxMenuH, Math.max(56, composerModelOptions.length * itemH + paddingY));
+
+    const spaceAbove = rect.top - gap - viewportPadding;
+    const spaceBelow = window.innerHeight - rect.bottom - gap - viewportPadding;
+    const openAbove = spaceAbove >= desiredH || spaceAbove >= spaceBelow;
+    const top = openAbove ? undefined : rect.bottom + gap;
+    const bottom = openAbove ? window.innerHeight - rect.top + gap : undefined;
+    const maxHeight = Math.max(0, Math.min(maxMenuH, openAbove ? spaceAbove : spaceBelow));
+
+    const left = Math.min(window.innerWidth - viewportPadding - estimatedWidth, Math.max(viewportPadding, rect.left));
+    setEditNodeSendMenuPos({ top, bottom, left, maxHeight });
+  }, [composerModelOptions.length, editNodeSendMenuId, getNodeSendMenuButtonRect]);
+
+  useEffect(() => {
+    if (!editNodeSendMenuId) {
+      setEditNodeSendMenuPos(null);
+      return;
+    }
+
+    updateEditNodeSendMenuPosition();
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setEditNodeSendMenuId(null);
+    };
+
+    const onReposition = () => updateEditNodeSendMenuPosition();
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('resize', onReposition);
+    window.addEventListener('scroll', onReposition, true);
+    window.addEventListener('wheel', onReposition, { passive: true });
+    const vv = window.visualViewport;
+    vv?.addEventListener('resize', onReposition);
+    vv?.addEventListener('scroll', onReposition);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('resize', onReposition);
+      window.removeEventListener('scroll', onReposition, true);
+      window.removeEventListener('wheel', onReposition);
+      vv?.removeEventListener('resize', onReposition);
+      vv?.removeEventListener('scroll', onReposition);
+    };
+  }, [editNodeSendMenuId, updateEditNodeSendMenuPosition]);
+
+  useEffect(() => {
+    const pending = pendingEditNodeSend;
+    if (!pending) return;
+    setPendingEditNodeSend(null);
+
+    const engine = engineRef.current;
+    if (!engine) return;
+
+    const snapshot = engine.exportChatState();
+    const node =
+      snapshot.nodes.find((n): n is Extract<ChatNode, { kind: 'text' }> => n.kind === 'text' && n.id === pending.nodeId) ?? null;
+    if (!node) return;
+
+    const extraUserPreface = (() => {
+      const replyTo = String((node as any)?.userPreface?.replyTo ?? '').trim();
+      const ctxRaw = Array.isArray((node as any)?.userPreface?.contexts) ? ((node as any).userPreface.contexts as any[]) : [];
+      const contexts = ctxRaw.map((t) => String(t ?? '').trim()).filter(Boolean);
+      if (!replyTo && contexts.length === 0) return null;
+      return { ...(replyTo ? { replyTo } : {}), ...(contexts.length ? { contexts } : {}) };
+    })();
+
+    sendTurn({
+      userText: String((node as any)?.content ?? ''),
+      extraUserPreface,
+      modelIdOverride: pending.modelIdOverride ?? null,
+      defaultParentNodeId: pending.nodeId,
+      allowPdfAttachmentParentFallback: false,
+      clearComposerText: false,
+    });
+  }, [pendingEditNodeSend]);
+
 	  return (
 	    <div className="app">
 	      {toast && typeof document !== 'undefined' && document.body
@@ -3514,12 +3784,51 @@ export default function App() {
 	              onClose={() => setNodeMenuId(null)}
 	            />
 	          ) : null}
+            {typeof document !== 'undefined' && editNodeSendMenuId && editNodeSendMenuPos
+              ? createPortal(
+                  <>
+                    <div className="composerMenuBackdrop" onPointerDown={() => setEditNodeSendMenuId(null)} aria-hidden="true" />
+                    <div
+                      className="composerMenu"
+                      style={{
+                        top: editNodeSendMenuPos.top,
+                        bottom: editNodeSendMenuPos.bottom,
+                        left: editNodeSendMenuPos.left,
+                        width: 115,
+                        maxHeight: editNodeSendMenuPos.maxHeight,
+                      }}
+                      role="menu"
+                    >
+                      {composerModelOptions.map((m) => (
+                        <button
+                          key={m.id}
+                          type="button"
+                          className={`composerMenu__item ${m.id === composerModelId ? 'composerMenu__item--active' : ''}`}
+                          onClick={() => {
+                            const nodeId = String(editNodeSendMenuId ?? '').trim();
+                            setEditNodeSendMenuId(null);
+                            if (!nodeId) return;
+                            setPendingEditNodeSend({ nodeId, modelIdOverride: m.id });
+                          }}
+                          role="menuitem"
+                          title={m.label}
+                        >
+                          {String(m.shortLabel ?? m.label ?? m.id).trim()}
+                        </button>
+                      ))}
+                    </div>
+                  </>,
+                  document.body,
+                )
+              : null}
 	        {ui.editingNodeId ? (
 	          <TextNodeEditor
 	            nodeId={ui.editingNodeId}
 	            title={editorTitle}
 	            initialValue={ui.editingText}
               userPreface={editorUserPreface}
+              modelId={composerModelId}
+              modelOptions={composerModelOptions}
 	            anchorRect={editorAnchor}
               getScreenRect={() => engineRef.current?.getNodeScreenRect(ui.editingNodeId as string) ?? null}
               getZoom={() => engineRef.current?.camera.zoom ?? 1}
@@ -3531,6 +3840,24 @@ export default function App() {
                 engineRef.current?.toggleTextNodePrefaceContextCollapsed(ui.editingNodeId as string, contextIndex)
               }
               onResizeEnd={() => schedulePersistSoon()}
+              onSend={(text, opts) => {
+                const id = String(ui.editingNodeId ?? '').trim();
+                if (!id) return;
+                const extraUserPreface = editorUserPreface
+                  ? {
+                      ...(editorUserPreface.replyTo ? { replyTo: editorUserPreface.replyTo } : {}),
+                      ...(editorUserPreface.contexts.length ? { contexts: editorUserPreface.contexts } : {}),
+                    }
+                  : null;
+                sendTurn({
+                  userText: text,
+                  extraUserPreface,
+                  modelIdOverride: opts?.modelIdOverride ?? null,
+                  defaultParentNodeId: id,
+                  allowPdfAttachmentParentFallback: false,
+                  clearComposerText: false,
+                });
+              }}
 	            onCommit={(next) => {
 	              engineRef.current?.commitEditing(next);
 	              schedulePersistSoon();
@@ -3707,118 +4034,8 @@ export default function App() {
             !(typeof replySelection?.text === 'string' && replySelection.text.trim()) &&
             (contextSelections ?? []).every((t) => !String(t ?? '').trim())
           }
-		          onSend={() => {
-		            const engine = engineRef.current;
-		            if (!engine) return;
-		            const raw = composerDraft;
-              const replyToText = typeof replySelection?.text === 'string' ? replySelection.text.trim() : '';
-              const contextTexts = (contextSelections ?? []).map((t) => String(t ?? '').trim()).filter(Boolean);
-              const hasPreface = Boolean(replyToText || contextTexts.length > 0);
-	            if (!raw.trim() && composerDraftAttachments.length === 0 && !hasPreface) return;
-
-	            const selectedModelId = composerModelId || DEFAULT_MODEL_ID;
-	            const assistantTitle = (() => {
-	              const info = getModelInfo(selectedModelId);
-	              const shortLabel = typeof info?.shortLabel === 'string' ? info.shortLabel.trim() : '';
-	              if (shortLabel) return shortLabel;
-	              const label = typeof info?.label === 'string' ? info.label.trim() : '';
-	              return label || 'Assistant';
-	            })();
-
-		            const meta = ensureChatMeta(activeChatId);
-		            let desiredParentId = replySelection?.nodeId && engine.hasNode(replySelection.nodeId) ? replySelection.nodeId : null;
-                if (!desiredParentId) {
-                  const pdfStorageKey = (composerDraftAttachments ?? []).reduce<string>((acc, att) => {
-                    if (acc) return acc;
-                    if (!att || att.kind !== 'pdf') return '';
-                    const key = typeof (att as any)?.storageKey === 'string' ? String((att as any).storageKey).trim() : '';
-                    return key;
-                  }, '');
-                  if (pdfStorageKey) {
-                    try {
-                      const snapshot = engine.exportChatState();
-                      const pdfNode =
-                        snapshot.nodes.find(
-                          (n): n is Extract<ChatNode, { kind: 'pdf' }> =>
-                            n.kind === 'pdf' && String((n as any)?.storageKey ?? '').trim() === pdfStorageKey,
-                        ) ?? null;
-                      if (pdfNode && engine.hasNode(pdfNode.id)) desiredParentId = pdfNode.id;
-                    } catch {
-                      // ignore
-                    }
-                  }
-                }
-	              const userPreface = hasPreface
-	                ? {
-	                    ...(replyToText ? { replyTo: replyToText } : {}),
-	                    ...(contextTexts.length ? { contexts: contextTexts } : {}),
-	                  }
-                : undefined;
-	            const res = engine.spawnChatTurn({
-	              userText: raw,
-	              parentNodeId: desiredParentId,
-                userPreface,
-	              userAttachments: composerDraftAttachments.length ? composerDraftAttachments : undefined,
-	              selectedAttachmentKeys: replySelectedAttachmentKeys.length ? replySelectedAttachmentKeys : undefined,
-	              assistantTitle,
-	              assistantModelId: selectedModelId,
-	            });
-
-            meta.turns.push({
-              id: genId('turn'),
-              createdAt: Date.now(),
-              userNodeId: res.userNodeId,
-              assistantNodeId: res.assistantNodeId,
-              attachmentNodeIds: [],
-            });
-            meta.headNodeId = res.assistantNodeId;
-	            meta.replyTo = null;
-              meta.contextSelections = [];
-	            meta.draft = '';
-	            meta.draftAttachments = [];
-	            meta.selectedAttachmentKeys = [];
-	            draftAttachmentDedupeRef.current.delete(activeChatId);
-	            lastAddAttachmentFilesRef.current = { sig: '', at: 0 };
-	            setReplySelection(null);
-              setContextSelections([]);
-	            setReplyContextAttachments([]);
-	            setReplySelectedAttachmentKeys([]);
-            setComposerDraft('');
-            setComposerDraftAttachments([]);
-
-	            const snapshot = engine.exportChatState();
-	            chatStatesRef.current.set(activeChatId, snapshot);
-              const provider = getModelInfo(selectedModelId)?.provider ?? 'openai';
-              if (provider === 'gemini') {
-                const settings: GeminiChatSettings = {
-                  modelId: selectedModelId,
-                  webSearchEnabled: composerWebSearch,
-                };
-                startGeminiGeneration({
-                  chatId: activeChatId,
-                  userNodeId: res.userNodeId,
-                  assistantNodeId: res.assistantNodeId,
-                  settings,
-                });
-              } else {
-	              const modelSettings =
-	                modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
-		              const settings: OpenAIChatSettings = {
-		                modelId: selectedModelId,
-		                verbosity: modelSettings?.verbosity,
-	                  webSearchEnabled: composerWebSearch,
-	                  reasoningSummary: modelSettings?.reasoningSummary,
-	                  stream: modelSettings?.streaming,
-	                  background: modelSettings?.background,
-	                };
-                startOpenAIGeneration({
-                  chatId: activeChatId,
-                  userNodeId: res.userNodeId,
-                  assistantNodeId: res.assistantNodeId,
-                  settings,
-                });
-              }
-            schedulePersistSoon();
+          onSend={() => {
+            sendTurn({ userText: composerDraft, allowPdfAttachmentParentFallback: true, clearComposerText: true });
           }}
         />
         <input
