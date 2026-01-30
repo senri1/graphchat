@@ -4081,6 +4081,11 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (node.kind === 'text') {
       node.userPreface = { contexts: [placement.selectionText] };
       node.collapsedPrefaceContexts = { 0: true };
+      const desiredPdfKey = `pdf:${pdfNodeId}`;
+      const existing = Array.isArray(node.selectedAttachmentKeys) ? node.selectedAttachmentKeys : [];
+      if (!existing.includes(desiredPdfKey)) {
+        node.selectedAttachmentKeys = [...existing, desiredPdfKey];
+      }
       this.recomputeTextNodeDisplayHash(node);
       this.textRasterGeneration += 1;
     }

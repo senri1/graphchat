@@ -3586,6 +3586,8 @@ export default function App() {
     if (!userNode) return;
 
     const userText = typeof userNode.content === 'string' ? userNode.content : String((userNode as any).content ?? '');
+    const contextAttachmentKeys = collectContextAttachments(preSnapshot.nodes, userNodeId).map((it) => it.key);
+    const contextPdfKeys = contextAttachmentKeys.filter((k) => k.startsWith('pdf:'));
 
     const nodeReplyToText = (userNode.userPreface?.replyTo ?? '').trim();
     const nodeContextTexts = Array.isArray(userNode.userPreface?.contexts)
@@ -3639,13 +3641,29 @@ export default function App() {
     const nodesOverride = snapshot.nodes.map((n) => {
       if (n.kind !== 'text') return n;
       if (n.id !== userNodeId) return n;
-      return {
+      const next: Extract<ChatNode, { kind: 'text' }> = {
         ...n,
         content: userText,
         userPreface,
-        attachments: composerDraftAttachments.length ? composerDraftAttachments : undefined,
-        selectedAttachmentKeys: replySelectedAttachmentKeys.length ? replySelectedAttachmentKeys : undefined,
       };
+
+      // Don't drop existing attachments/selection when the composer is empty.
+      if (composerDraftAttachments.length) next.attachments = composerDraftAttachments;
+      if (replySelectedAttachmentKeys.length) {
+        if (!contextPdfKeys.length) {
+          next.selectedAttachmentKeys = replySelectedAttachmentKeys;
+        } else {
+          const merged = replySelectedAttachmentKeys.slice();
+          for (const k of contextPdfKeys) {
+            if (!merged.includes(k)) merged.push(k);
+          }
+          next.selectedAttachmentKeys = merged;
+        }
+      } else if (!Array.isArray((n as any)?.selectedAttachmentKeys) && contextAttachmentKeys.length) {
+        next.selectedAttachmentKeys = contextAttachmentKeys;
+      }
+
+      return next;
     });
 
     const provider = getModelInfo(selectedModelId)?.provider ?? 'openai';
