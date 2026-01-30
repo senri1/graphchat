@@ -2654,6 +2654,74 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return { replyTo, contexts, collapsedPrefaceContexts: { ...(node.collapsedPrefaceContexts ?? {}) } };
   }
 
+  setTextNodeUserPreface(
+    nodeId: string,
+    userPreface: { replyTo?: string; contexts?: string[] } | null | undefined,
+    opts?: { collapseNewContexts?: boolean },
+  ): void {
+    const id = typeof nodeId === 'string' ? nodeId : String(nodeId ?? '');
+    if (!id) return;
+    const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === id) ?? null;
+    if (!node || node.author !== 'user') return;
+
+    const prevReplyTo = (node.userPreface?.replyTo ?? '').trim();
+    const prevCtxRaw = Array.isArray(node.userPreface?.contexts) ? node.userPreface!.contexts! : [];
+    const prevContexts = prevCtxRaw.map((t) => String(t ?? '').trim()).filter(Boolean);
+
+    const nextReplyTo = typeof userPreface?.replyTo === 'string' ? userPreface.replyTo.trim() : '';
+    const nextCtxRaw = Array.isArray(userPreface?.contexts) ? userPreface.contexts : [];
+    const nextContexts = nextCtxRaw.map((t) => String(t ?? '').trim()).filter(Boolean);
+
+    const nextNormalized =
+      nextReplyTo || nextContexts.length > 0
+        ? {
+            ...(nextReplyTo ? { replyTo: nextReplyTo } : {}),
+            ...(nextContexts.length ? { contexts: nextContexts } : {}),
+          }
+        : undefined;
+
+    const unchanged =
+      prevReplyTo === nextReplyTo &&
+      prevContexts.length === nextContexts.length &&
+      prevContexts.every((t, i) => t === nextContexts[i]);
+    if (unchanged) return;
+
+    node.userPreface = nextNormalized;
+
+    const prevCollapsed = node.collapsedPrefaceContexts ?? {};
+    let nextCollapsed: Record<number, boolean> = prevCollapsed;
+    const prevLen = prevContexts.length;
+    const nextLen = nextContexts.length;
+    if (opts?.collapseNewContexts && nextLen > prevLen) {
+      nextCollapsed = { ...prevCollapsed };
+      for (let i = prevLen; i < nextLen; i += 1) nextCollapsed[i] = true;
+    }
+    if (Object.keys(nextCollapsed).length > 0) {
+      const filtered: Record<number, boolean> = {};
+      for (const [k, v] of Object.entries(nextCollapsed)) {
+        const idx = Number(k);
+        if (!Number.isFinite(idx)) continue;
+        if (idx < 0 || idx >= nextLen) continue;
+        if (v) filtered[idx] = true;
+      }
+      node.collapsedPrefaceContexts = Object.keys(filtered).length ? filtered : undefined;
+    } else {
+      node.collapsedPrefaceContexts = undefined;
+    }
+
+    this.recomputeTextNodeDisplayHash(node);
+    this.textRasterGeneration += 1;
+    const contentRect = this.textContentRect(node.rect);
+    const sig = this.textRasterSigForNode(node, contentRect).sig;
+    this.textResizeHold = { nodeId: node.id, sig, expiresAt: performance.now() + 2200 };
+    this.requestRender();
+    try {
+      this.onRequestPersist?.();
+    } catch {
+      // ignore
+    }
+  }
+
   toggleTextNodePrefaceContextCollapsed(nodeId: string, contextIndex: number): void {
     const id = typeof nodeId === 'string' ? nodeId : String(nodeId ?? '');
     if (!id) return;

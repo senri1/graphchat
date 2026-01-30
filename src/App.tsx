@@ -519,6 +519,7 @@ export default function App() {
   const draftAttachmentDedupeRef = useRef<Map<string, DraftAttachmentDedupeState>>(new Map());
   const [replySelection, setReplySelection] = useState<ReplySelection | null>(null);
   const [contextSelections, setContextSelections] = useState<string[]>(() => []);
+  const contextTargetEditNodeIdRef = useRef<string | null>(null);
   const [replyContextAttachments, setReplyContextAttachments] = useState<ContextAttachmentItem[]>(() => []);
   const [replySelectedAttachmentKeys, setReplySelectedAttachmentKeys] = useState<string[]>(() => []);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -558,6 +559,18 @@ export default function App() {
   const [sidebarFontSizePx, setSidebarFontSizePx] = useState<number>(() => DEFAULT_SIDEBAR_FONT_SIZE_PX);
   const backgroundLibraryRef = useRef<BackgroundLibraryItem[]>(backgroundLibrary);
   const glassNodesEnabledRef = useRef<boolean>(glassNodesEnabled);
+
+  useEffect(() => {
+    const editingId = String(ui.editingNodeId ?? '').trim();
+    if (editingId.startsWith('n')) {
+      contextTargetEditNodeIdRef.current = editingId;
+      return;
+    }
+    const selectedId = String(ui.selectedNodeId ?? '').trim();
+    if (selectedId.startsWith('n')) {
+      contextTargetEditNodeIdRef.current = selectedId;
+    }
+  }, [ui.editingNodeId, ui.selectedNodeId]);
   const glassNodesBlurCssPxWebglRef = useRef<number>(glassNodesBlurCssPxWebgl);
   const glassNodesSaturatePctWebglRef = useRef<number>(glassNodesSaturatePctWebgl);
   const glassNodesBlurCssPxCanvasRef = useRef<number>(glassNodesBlurCssPxCanvas);
@@ -3425,17 +3438,24 @@ export default function App() {
 
     const raw = String(args.userText ?? '');
 
-    const composerReplyToText = typeof replySelection?.text === 'string' ? replySelection.text.trim() : '';
     const composerContextTexts = (contextSelections ?? []).map((t) => String(t ?? '').trim()).filter(Boolean);
 
-    const nodeReplyToText = typeof args.extraUserPreface?.replyTo === 'string' ? args.extraUserPreface.replyTo.trim() : '';
     const nodeContextTexts = Array.isArray(args.extraUserPreface?.contexts)
       ? args.extraUserPreface!.contexts!.map((t) => String(t ?? '').trim()).filter(Boolean)
       : [];
 
-    const replyToText = composerReplyToText || nodeReplyToText;
-    const contextTexts = [...nodeContextTexts, ...composerContextTexts];
-    const hasPreface = Boolean(replyToText || contextTexts.length > 0);
+    const contextTexts = (() => {
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const t of [...nodeContextTexts, ...composerContextTexts]) {
+        if (!t) continue;
+        if (seen.has(t)) continue;
+        seen.add(t);
+        out.push(t);
+      }
+      return out;
+    })();
+    const hasPreface = contextTexts.length > 0;
 
     if (!raw.trim() && composerDraftAttachments.length === 0 && !hasPreface) return;
 
@@ -3480,7 +3500,6 @@ export default function App() {
 
     const userPreface = hasPreface
       ? {
-          ...(replyToText ? { replyTo: replyToText } : {}),
           ...(contextTexts.length ? { contexts: contextTexts } : {}),
         }
       : undefined;
@@ -3494,6 +3513,28 @@ export default function App() {
       assistantTitle,
       assistantModelId: selectedModelId,
     });
+
+    const ctxTargetId = String(contextTargetEditNodeIdRef.current ?? '').trim();
+    if (ctxTargetId && composerContextTexts.length > 0) {
+      try {
+        const existing = engine.getTextNodeUserPreface(ctxTargetId)?.contexts ?? [];
+        const merged = (() => {
+          const seen = new Set<string>();
+          const out: string[] = [];
+          for (const t of [...existing, ...composerContextTexts]) {
+            const s = String(t ?? '').trim();
+            if (!s) continue;
+            if (seen.has(s)) continue;
+            seen.add(s);
+            out.push(s);
+          }
+          return out;
+        })();
+        engine.setTextNodeUserPreface(ctxTargetId, merged.length ? { contexts: merged } : null, { collapseNewContexts: true });
+      } catch {
+        // ignore
+      }
+    }
 
     meta.turns.push({
       id: genId('turn'),
@@ -3563,11 +3604,11 @@ export default function App() {
 
     const userNodeId = String(args.userNodeId ?? '').trim();
     if (!userNodeId) return;
+    contextTargetEditNodeIdRef.current = userNodeId;
 
     const chatId = activeChatIdRef.current;
     const meta = ensureChatMeta(chatId);
 
-    const composerReplyToText = typeof replySelection?.text === 'string' ? replySelection.text.trim() : '';
     const composerContextTexts = (contextSelections ?? []).map((t) => String(t ?? '').trim()).filter(Boolean);
 
     const selectedModelId = String(args.modelIdOverride || composerModelId || DEFAULT_MODEL_ID).trim() || DEFAULT_MODEL_ID;
@@ -3589,16 +3630,31 @@ export default function App() {
     const contextAttachmentKeys = collectContextAttachments(preSnapshot.nodes, userNodeId).map((it) => it.key);
     const contextPdfKeys = contextAttachmentKeys.filter((k) => k.startsWith('pdf:'));
 
-    const nodeReplyToText = (userNode.userPreface?.replyTo ?? '').trim();
     const nodeContextTexts = Array.isArray(userNode.userPreface?.contexts)
       ? userNode.userPreface!.contexts!.map((t) => String(t ?? '').trim()).filter(Boolean)
       : [];
 
-    const replyToText = composerReplyToText || nodeReplyToText;
-    const contextTexts = [...nodeContextTexts, ...composerContextTexts];
-    const hasPreface = Boolean(replyToText || contextTexts.length > 0);
+    const contextTexts = (() => {
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const t of [...nodeContextTexts, ...composerContextTexts]) {
+        if (!t) continue;
+        if (seen.has(t)) continue;
+        seen.add(t);
+        out.push(t);
+      }
+      return out;
+    })();
+    const hasPreface = contextTexts.length > 0;
 
     if (!userText.trim() && composerDraftAttachments.length === 0 && !hasPreface) return;
+
+    // Persist the composed context back onto the edit node so the sent message matches what the node shows.
+    try {
+      engine.setTextNodeUserPreface(userNodeId, hasPreface ? { contexts: contextTexts } : null, { collapseNewContexts: true });
+    } catch {
+      // ignore
+    }
 
     const res = engine.spawnAssistantTurn({
       userNodeId,
@@ -3634,7 +3690,6 @@ export default function App() {
 
     const userPreface = hasPreface
       ? {
-          ...(replyToText ? { replyTo: replyToText } : {}),
           ...(contextTexts.length ? { contexts: contextTexts } : {}),
         }
       : undefined;
@@ -4153,7 +4208,6 @@ export default function App() {
           sendDisabled={
             !composerDraft.trim() &&
             composerDraftAttachments.length === 0 &&
-            !(typeof replySelection?.text === 'string' && replySelection.text.trim()) &&
             (contextSelections ?? []).every((t) => !String(t ?? '').trim())
           }
           onSend={() => {
