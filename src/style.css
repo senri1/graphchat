@@ -2465,6 +2465,10 @@ body {
   align-items: center;
 }
 
+.editor--edit .editor__btnGroup {
+  gap: calc(4px * var(--editor-scale, 1));
+}
+
 .editor__btn--splitMain {
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
@@ -2477,6 +2481,20 @@ body {
   border-left: 0;
   min-width: calc(22px * var(--editor-scale, 1));
   padding: 0 calc(8px * var(--editor-scale, 1));
+}
+
+.editor--edit .editor__btn--splitMain {
+  border-top-right-radius: calc(9px * var(--editor-scale, 1));
+  border-bottom-right-radius: calc(9px * var(--editor-scale, 1));
+  border-right: 1px solid rgba(147, 197, 253, 0.5);
+}
+
+.editor--edit .editor__btn--splitArrow {
+  border-top-left-radius: calc(9px * var(--editor-scale, 1));
+  border-bottom-left-radius: calc(9px * var(--editor-scale, 1));
+  border-left: 1px solid rgba(147, 197, 253, 0.5);
+  min-width: calc(18px * var(--editor-scale, 1));
+  padding: 0 calc(5px * var(--editor-scale, 1));
 }
 
 .editor__btn--toggleOn {
