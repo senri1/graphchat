@@ -357,7 +357,9 @@ function collectAllReferencedAttachmentKeys(args: {
 
 export default function App() {
   const workspaceRef = useRef<HTMLDivElement | null>(null);
+  const worldSurfaceRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const inkCaptureRef = useRef<HTMLDivElement | null>(null);
   const pdfInputRef = useRef<HTMLInputElement | null>(null);
   const backgroundInputRef = useRef<HTMLInputElement | null>(null);
   const composerDockRef = useRef<HTMLDivElement | null>(null);
@@ -2012,10 +2014,11 @@ export default function App() {
 
   useLayoutEffect(() => {
     const container = workspaceRef.current;
+    const surface = worldSurfaceRef.current;
     const canvas = canvasRef.current;
-    if (!container || !canvas) return;
+    if (!container || !surface || !canvas) return;
 
-    const engine = new WorldEngine({ canvas });
+    const engine = new WorldEngine({ canvas, overlayHost: container, inputEl: surface });
     engine.setNodeTextFontFamily(fontFamilyCss(nodeFontFamilyRef.current));
     engine.setNodeTextFontSizePx(nodeFontSizePxRef.current);
     engine.setEdgeRouter(edgeRouterIdRef.current);
@@ -2096,6 +2099,31 @@ export default function App() {
       engineRef.current = null;
     };
   }, []);
+
+  useLayoutEffect(() => {
+    if (ui.tool !== 'draw') return;
+    const el = inkCaptureRef.current;
+    if (!el) return;
+
+    const onTouch = (e: TouchEvent) => {
+      if (!e.cancelable) return;
+      const touches = e.changedTouches ? Array.from(e.changedTouches) : [];
+      for (const t of touches) {
+        const rawTouchType = ((t as any).touchType ?? (t as any).type ?? '').toString().toLowerCase();
+        if (rawTouchType === 'stylus') {
+          e.preventDefault();
+          break;
+        }
+      }
+    };
+
+    el.addEventListener('touchstart', onTouch, { capture: true, passive: false });
+    el.addEventListener('touchmove', onTouch, { capture: true, passive: false });
+    return () => {
+      el.removeEventListener('touchstart', onTouch, true);
+      el.removeEventListener('touchmove', onTouch, true);
+    };
+  }, [ui.tool]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -2736,7 +2764,10 @@ export default function App() {
       />
 
 	      <div className="workspace" ref={workspaceRef}>
-	        <canvas className="stage" ref={canvasRef} />
+          <div className="worldSurface" ref={worldSurfaceRef}>
+	          <canvas className="stage" ref={canvasRef} />
+            {ui.tool === 'draw' ? <div className="inkCaptureLayer" ref={inkCaptureRef} /> : null}
+          </div>
 	          {nodeMenuId && nodeMenuButtonRect ? (
 	            <NodeHeaderMenu
 	              nodeId={nodeMenuId}
