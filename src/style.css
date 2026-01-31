@@ -58,15 +58,6 @@ body {
     -webkit-touch-callout: default;
   }
 }
-
-/* Prevent iOS Safari double-tap from selecting UI text while drawing ink. */
-html.gc-ink-drawing,
-html.gc-ink-drawing * {
-  -webkit-user-select: none !important;
-  user-select: none !important;
-  -webkit-touch-callout: none !important;
-}
-
 .app {
   position: relative;
   width: 100vw;
