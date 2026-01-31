@@ -840,7 +840,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
   private nodeSeq = 1;
 
-  constructor(opts: { canvas: HTMLCanvasElement; overlayHost?: HTMLElement | null }) {
+  constructor(opts: { canvas: HTMLCanvasElement; overlayHost?: HTMLElement | null; inputEl?: HTMLElement | null }) {
     this.canvas = opts.canvas;
     this.overlayHost = opts.overlayHost ?? this.canvas.parentElement;
     const ctx = this.canvas.getContext('2d', { alpha: false, desynchronized: true });
@@ -862,7 +862,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       }
     })();
 
-    const inputEl = this.canvas;
+    const inputEl = opts.inputEl ?? this.canvas;
     this.input = new InputController(inputEl, this.camera, {
       onChange: () => this.requestRender(),
       onInteractingChange: (v) => {

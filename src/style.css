@@ -77,6 +77,13 @@ body {
   touch-action: none;
 }
 
+.worldSurface {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  touch-action: none;
+}
+
 .stage {
   position: absolute;
   inset: 0;
@@ -84,6 +91,17 @@ body {
   height: 100%;
   display: block;
   touch-action: none;
+}
+
+.inkCaptureLayer {
+  position: absolute;
+  inset: 0;
+  background: transparent;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .sidebarDock {

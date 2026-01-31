@@ -187,7 +187,9 @@ export class InputController {
     }
 
     try {
-      (this.el as any).setPointerCapture?.(ev.pointerId);
+      const target = ev.target instanceof Element ? (ev.target as any) : null;
+      if (target?.setPointerCapture) target.setPointerCapture(ev.pointerId);
+      else (this.el as any).setPointerCapture?.(ev.pointerId);
     } catch { }
 
     this.setInteracting(true);
@@ -255,7 +257,9 @@ export class InputController {
     this.capturedPointers.delete(ev.pointerId);
 
     try {
-      (this.el as any).releasePointerCapture?.(ev.pointerId);
+      const target = ev.target instanceof Element ? (ev.target as any) : null;
+      if (target?.releasePointerCapture) target.releasePointerCapture(ev.pointerId);
+      else (this.el as any).releasePointerCapture?.(ev.pointerId);
     } catch { }
 
     this.recomputePinchState();
