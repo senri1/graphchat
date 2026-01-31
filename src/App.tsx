@@ -496,7 +496,7 @@ export default function App() {
       hud,
       layer: parseBoolParam(params, 'inkLayer', true),
       layerPointerEvents: parseBoolParam(params, 'inkLayerPointerEvents', true),
-      preventTouchStart: parseBoolParam(params, 'inkPreventStart', true),
+      preventTouchStart: parseBoolParam(params, 'inkPreventStart', false),
       preventTouchMove: parseBoolParam(params, 'inkPreventMove', true),
       pointerCapture: parseBoolParam(params, 'inkPointerCapture', true),
     };
@@ -5009,8 +5009,15 @@ export default function App() {
               <>
                 <div style={{ opacity: 0.85 }}>
                   ink cfg • layer {inkInputConfig.layer ? '1' : '0'} • pe {inkInputConfig.layerPointerEvents ? '1' : '0'} •
-                  prevent {inkInputConfig.preventTouchStart ? 'start' : 'none'}
-                  {inkInputConfig.preventTouchMove ? '+move' : ''} • capture {inkInputConfig.pointerCapture ? '1' : '0'}
+                  prevent{' '}
+                  {inkInputConfig.preventTouchStart && inkInputConfig.preventTouchMove
+                    ? 'start+move'
+                    : inkInputConfig.preventTouchStart
+                      ? 'start'
+                      : inkInputConfig.preventTouchMove
+                        ? 'move'
+                        : 'none'}{' '}
+                  • capture {inkInputConfig.pointerCapture ? '1' : '0'}
                 </div>
                 <div style={{ opacity: 0.85 }}>
                   last {inkHud.lastEventType}
