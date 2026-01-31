@@ -85,6 +85,10 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
+.inkCaptureLayer--passthrough {
+  pointer-events: none;
+}
+
 .sidebarDock {
   position: absolute;
   top: 10px;

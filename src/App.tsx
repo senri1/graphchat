@@ -101,6 +101,28 @@ type DraftAttachmentDedupeState = {
   byStorageKey: Map<string, string>;
 };
 
+type InkInputDebugConfig = {
+  debug: boolean;
+  hud: boolean;
+  layer: boolean;
+  layerPointerEvents: boolean;
+  preventTouchStart: boolean;
+  preventTouchMove: boolean;
+  pointerCapture: boolean;
+};
+
+type InkInputHudState = {
+  lastEventAgoMs: number;
+  lastEventType: string;
+  lastEventDetail: string;
+  counts: Record<string, number>;
+  recent: Array<{ dtMs: number; type: string; detail: string }>;
+  visibilityState: string;
+  hasFocus: boolean;
+  activeEl: string;
+  selectionRangeCount: number;
+};
+
 const DEFAULT_COMPOSER_FONT_FAMILY: FontFamilyKey = 'ui-monospace';
 const DEFAULT_COMPOSER_FONT_SIZE_PX = 13;
 
@@ -126,6 +148,15 @@ function normalizeHexColor(value: unknown, fallback: string): string {
   if (/^#[0-9a-fA-F]{3}$/.test(raw)) {
     return `#${raw[1]}${raw[1]}${raw[2]}${raw[2]}${raw[3]}${raw[3]}`.toLowerCase();
   }
+  return fallback;
+}
+
+function parseBoolParam(params: URLSearchParams, key: string, fallback: boolean): boolean {
+  if (!params.has(key)) return fallback;
+  const raw = (params.get(key) ?? '').trim().toLowerCase();
+  if (!raw) return true;
+  if (raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on') return true;
+  if (raw === '0' || raw === 'false' || raw === 'no' || raw === 'off') return false;
   return fallback;
 }
 
@@ -366,6 +397,28 @@ export default function App() {
   const engineRef = useRef<WorldEngine | null>(null);
   const generationJobsByAssistantIdRef = useRef<Map<string, GenerationJob>>(new Map());
   const resumedLlmJobsRef = useRef(false);
+  const inkInputConfig = useMemo<InkInputDebugConfig>(() => {
+    const params = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
+    const debug = parseBoolParam(params, 'inkDebug', false);
+    const hud = parseBoolParam(params, 'inkHud', debug);
+    return {
+      debug,
+      hud,
+      layer: parseBoolParam(params, 'inkLayer', true),
+      layerPointerEvents: parseBoolParam(params, 'inkLayerPointerEvents', true),
+      preventTouchStart: parseBoolParam(params, 'inkPreventStart', true),
+      preventTouchMove: parseBoolParam(params, 'inkPreventMove', true),
+      pointerCapture: parseBoolParam(params, 'inkPointerCapture', true),
+    };
+  }, []);
+  const inkDiagRef = useRef({
+    lastEventAt: typeof performance !== 'undefined' ? performance.now() : 0,
+    lastEventType: 'init',
+    lastEventDetail: '',
+    counts: {} as Record<string, number>,
+    recent: [] as Array<{ t: number; type: string; detail: string }>,
+  });
+  const [inkHud, setInkHud] = useState<InkInputHudState | null>(null);
   const [debug, setDebug] = useState<WorldEngineDebug | null>(null);
   const [engineReady, setEngineReady] = useState(false);
   const engineReadyRef = useRef(false);
@@ -2018,7 +2071,12 @@ export default function App() {
     const canvas = canvasRef.current;
     if (!container || !surface || !canvas) return;
 
-    const engine = new WorldEngine({ canvas, overlayHost: container, inputEl: surface });
+    const engine = new WorldEngine({
+      canvas,
+      overlayHost: container,
+      inputEl: surface,
+      inputController: { enablePointerCapture: inkInputConfig.pointerCapture },
+    });
     engine.setNodeTextFontFamily(fontFamilyCss(nodeFontFamilyRef.current));
     engine.setNodeTextFontSizePx(nodeFontSizePxRef.current);
     engine.setEdgeRouter(edgeRouterIdRef.current);
@@ -2100,12 +2158,142 @@ export default function App() {
     };
   }, []);
 
-  useLayoutEffect(() => {
-    if (ui.tool !== 'draw') return;
-    const el = inkCaptureRef.current;
-    if (!el) return;
+  useEffect(() => {
+    if (!inkInputConfig.hud) return;
+    const diag = inkDiagRef.current;
+    diag.lastEventAt = typeof performance !== 'undefined' ? performance.now() : 0;
+    diag.lastEventType = 'init';
+    diag.lastEventDetail = '';
+    diag.counts = {};
+    diag.recent = [];
+
+    const record = (type: string, detail: string = '') => {
+      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      diag.lastEventAt = now;
+      diag.lastEventType = type;
+      diag.lastEventDetail = detail;
+      diag.counts[type] = (diag.counts[type] ?? 0) + 1;
+      diag.recent.push({ t: now, type, detail });
+      if (diag.recent.length > 24) diag.recent.splice(0, diag.recent.length - 24);
+    };
+
+    const describeTarget = (target: unknown): string => {
+      if (!(target instanceof Element)) return '';
+      const tag = target.tagName.toLowerCase();
+      const rawClass = (target as any).className;
+      const cls = typeof rawClass === 'string' ? rawClass.trim() : '';
+      if (!cls) return tag;
+      const parts = cls.split(/\s+/g).filter(Boolean).slice(0, 2);
+      return parts.length ? `${tag}.${parts.join('.')}` : tag;
+    };
+
+    const onPointer = (e: PointerEvent) => {
+      record(e.type, `${e.pointerType}#${e.pointerId}${describeTarget(e.target) ? ` ${describeTarget(e.target)}` : ''}`);
+    };
 
     const onTouch = (e: TouchEvent) => {
+      const touches = e.changedTouches ? Array.from(e.changedTouches) : [];
+      const types: string[] = [];
+      for (const t of touches) {
+        const touchType = ((t as any).touchType ?? (t as any).type ?? '').toString().toLowerCase();
+        if (touchType) types.push(touchType);
+      }
+      const unique = Array.from(new Set(types));
+      const typeDesc = unique.length ? unique.join(',') : touches.length ? `${touches.length}touch` : '';
+      const prevented = e.defaultPrevented ? ' dp' : '';
+      const cancelable = e.cancelable ? '' : ' !c';
+      record(e.type, `${typeDesc}${describeTarget(e.target) ? ` ${describeTarget(e.target)}` : ''}${prevented}${cancelable}`);
+    };
+
+    const onGesture = (e: Event) => record(e.type, '');
+    const onSelectionChange = () => record('selectionchange', `ranges:${document.getSelection()?.rangeCount ?? 0}`);
+    const onVisibilityChange = () => record('visibilitychange', document.visibilityState);
+    const onBlur = () => record('blur', '');
+    const onFocus = () => record('focus', '');
+
+    window.addEventListener('pointerdown', onPointer);
+    window.addEventListener('pointerup', onPointer);
+    window.addEventListener('pointercancel', onPointer);
+    window.addEventListener('touchstart', onTouch, { passive: true });
+    window.addEventListener('touchend', onTouch, { passive: true });
+    window.addEventListener('touchcancel', onTouch, { passive: true });
+    window.addEventListener('gesturestart', onGesture as any, true);
+    window.addEventListener('gesturechange', onGesture as any, true);
+    window.addEventListener('gestureend', onGesture as any, true);
+    document.addEventListener('selectionchange', onSelectionChange);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('blur', onBlur);
+    window.addEventListener('focus', onFocus);
+
+    record('init', '');
+
+    return () => {
+      window.removeEventListener('pointerdown', onPointer);
+      window.removeEventListener('pointerup', onPointer);
+      window.removeEventListener('pointercancel', onPointer);
+      window.removeEventListener('touchstart', onTouch as any);
+      window.removeEventListener('touchend', onTouch as any);
+      window.removeEventListener('touchcancel', onTouch as any);
+      window.removeEventListener('gesturestart', onGesture as any, true);
+      window.removeEventListener('gesturechange', onGesture as any, true);
+      window.removeEventListener('gestureend', onGesture as any, true);
+      document.removeEventListener('selectionchange', onSelectionChange);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('blur', onBlur);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [inkInputConfig.hud]);
+
+  useEffect(() => {
+    if (!inkInputConfig.hud) return;
+    let raf = 0;
+    let lastUpdateAt = 0;
+
+    const tick = (t: number) => {
+      if (t - lastUpdateAt > 200) {
+        lastUpdateAt = t;
+        const diag = inkDiagRef.current;
+        const active = document.activeElement as HTMLElement | null;
+        const activeTag = active?.tagName ? active.tagName.toLowerCase() : 'none';
+        const rawClass = (active as any)?.className;
+        const activeClass = typeof rawClass === 'string' ? rawClass.trim() : '';
+        const activeDesc = activeClass ? `${activeTag}.${activeClass.split(/\s+/g).filter(Boolean).slice(0, 2).join('.')}` : activeTag;
+        const recent = diag.recent.slice(-6).map((it) => ({ dtMs: Math.round(t - it.t), type: it.type, detail: it.detail }));
+
+        setInkHud({
+          lastEventAgoMs: Math.round(t - (diag.lastEventAt || 0)),
+          lastEventType: diag.lastEventType,
+          lastEventDetail: diag.lastEventDetail,
+          counts: diag.counts,
+          recent,
+          visibilityState: document.visibilityState,
+          hasFocus: typeof document.hasFocus === 'function' ? document.hasFocus() : true,
+          activeEl: activeDesc,
+          selectionRangeCount: document.getSelection()?.rangeCount ?? 0,
+        });
+      }
+      raf = window.requestAnimationFrame(tick);
+    };
+
+    raf = window.requestAnimationFrame(tick);
+    return () => {
+      try {
+        window.cancelAnimationFrame(raf);
+      } catch {
+        // ignore
+      }
+    };
+  }, [inkInputConfig.hud]);
+
+  useLayoutEffect(() => {
+    if (ui.tool !== 'draw') return;
+    const target = inkInputConfig.layer && inkInputConfig.layerPointerEvents ? inkCaptureRef.current : worldSurfaceRef.current;
+    const el = target ?? worldSurfaceRef.current;
+    if (!el) return;
+
+    if (!inkInputConfig.preventTouchStart && !inkInputConfig.preventTouchMove) return;
+
+    const maybePreventStylus = (e: TouchEvent) => {
       if (!e.cancelable) return;
       const touches = e.changedTouches ? Array.from(e.changedTouches) : [];
       for (const t of touches) {
@@ -2117,11 +2305,20 @@ export default function App() {
       }
     };
 
-    el.addEventListener('touchstart', onTouch, { capture: true, passive: false });
-    el.addEventListener('touchmove', onTouch, { capture: true, passive: false });
+    const onTouchStart = (e: TouchEvent) => {
+      if (!inkInputConfig.preventTouchStart) return;
+      maybePreventStylus(e);
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      if (!inkInputConfig.preventTouchMove) return;
+      maybePreventStylus(e);
+    };
+
+    if (inkInputConfig.preventTouchStart) el.addEventListener('touchstart', onTouchStart, { capture: true, passive: false });
+    if (inkInputConfig.preventTouchMove) el.addEventListener('touchmove', onTouchMove, { capture: true, passive: false });
     return () => {
-      el.removeEventListener('touchstart', onTouch, true);
-      el.removeEventListener('touchmove', onTouch, true);
+      el.removeEventListener('touchstart', onTouchStart as any, true);
+      el.removeEventListener('touchmove', onTouchMove as any, true);
     };
   }, [ui.tool]);
 
@@ -2766,7 +2963,12 @@ export default function App() {
 	      <div className="workspace" ref={workspaceRef}>
           <div className="worldSurface" ref={worldSurfaceRef}>
 	          <canvas className="stage" ref={canvasRef} />
-            {ui.tool === 'draw' ? <div className="inkCaptureLayer" ref={inkCaptureRef} /> : null}
+            {ui.tool === 'draw' && inkInputConfig.layer ? (
+              <div
+                className={`inkCaptureLayer${inkInputConfig.layerPointerEvents ? '' : ' inkCaptureLayer--passthrough'}`}
+                ref={inkCaptureRef}
+              />
+            ) : null}
           </div>
 	          {nodeMenuId && nodeMenuButtonRect ? (
 	            <NodeHeaderMenu
@@ -3510,6 +3712,34 @@ export default function App() {
                   }`
                 : 'starting…'}
             </div>
+            {inkInputConfig.hud && inkHud ? (
+              <>
+                <div style={{ opacity: 0.85 }}>
+                  ink cfg • layer {inkInputConfig.layer ? '1' : '0'} • pe {inkInputConfig.layerPointerEvents ? '1' : '0'} •
+                  prevent {inkInputConfig.preventTouchStart ? 'start' : 'none'}
+                  {inkInputConfig.preventTouchMove ? '+move' : ''} • capture {inkInputConfig.pointerCapture ? '1' : '0'}
+                </div>
+                <div style={{ opacity: 0.85 }}>
+                  last {inkHud.lastEventType}
+                  {inkHud.lastEventDetail ? ` (${inkHud.lastEventDetail})` : ''} • {inkHud.lastEventAgoMs}ms ago
+                </div>
+                <div style={{ opacity: 0.75 }}>
+                  pd {inkHud.counts.pointerdown ?? 0} • pu {inkHud.counts.pointerup ?? 0} • pc {inkHud.counts.pointercancel ?? 0} • ts{' '}
+                  {inkHud.counts.touchstart ?? 0} • tc {inkHud.counts.touchcancel ?? 0} • sel {inkHud.counts.selectionchange ?? 0}
+                </div>
+                <div style={{ opacity: 0.75 }}>
+                  vis {inkHud.visibilityState} • focus {inkHud.hasFocus ? 'y' : 'n'} • active {inkHud.activeEl} • ranges{' '}
+                  {inkHud.selectionRangeCount}
+                </div>
+                {inkHud.recent.length ? (
+                  <div style={{ opacity: 0.65, fontSize: 11, maxWidth: 420 }}>
+                    {inkHud.recent
+                      .map((it) => `${it.type}${it.detail ? `:${it.detail}` : ''}@${it.dtMs}ms`)
+                      .join(' • ')}
+                  </div>
+                ) : null}
+              </>
+            ) : null}
           </div>
         ) : null}
       </div>
