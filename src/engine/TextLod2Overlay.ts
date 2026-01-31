@@ -5,6 +5,8 @@ export type TextLod2Mode = 'resize' | 'select';
 
 export type HighlightRect = { left: number; top: number; width: number; height: number };
 
+type AnnotatePointerTrigger = { pointerId: number; pointerType: string };
+
 export type TextLod2Action =
   | { kind: 'summary_toggle'; nodeId: string }
   | { kind: 'summary_chunk_toggle'; nodeId: string; summaryIndex: number }
@@ -92,6 +94,182 @@ function extractTextFromRange(baseRange: Range): string {
   }
 }
 
+function extractMarkdownFromRange(baseRange: Range): string {
+  try {
+    const range = baseRange.cloneRange();
+    const closestKatex = (node: Node | null): Element | null => {
+      if (!node) return null;
+      const el =
+        node.nodeType === Node.ELEMENT_NODE ? (node as Element) : ((node as any).parentElement as Element | null);
+      return el ? el.closest('.katex') : null;
+    };
+    const startKatex = closestKatex(range.startContainer);
+    if (startKatex) range.setStartBefore(startKatex);
+    const endKatex = closestKatex(range.endContainer);
+    if (endKatex) range.setEndAfter(endKatex);
+
+    const frag = range.cloneContents();
+    const katexEls = Array.from(frag.querySelectorAll('.katex'));
+    for (const k of katexEls) {
+      const ann = k.querySelector('annotation[encoding="application/x-tex"]') as HTMLElement | null;
+      const tex = (ann?.textContent ?? '').trim();
+      if (!tex) continue;
+      const isDisplay = Boolean(k.closest('.katex-display'));
+      const open = isDisplay ? '$$' : '$';
+      const close = isDisplay ? '$$' : '$';
+      k.replaceWith(document.createTextNode(`${open}${tex}${close}`));
+    }
+
+    const maxBackticks = (text: string): number => {
+      const matches = text.match(/`+/g);
+      if (!matches) return 0;
+      let max = 0;
+      for (const m of matches) if (m.length > max) max = m.length;
+      return max;
+    };
+
+    const wrapInlineCode = (code: string): string => {
+      const t = String(code ?? '');
+      const fenceLen = Math.max(1, maxBackticks(t) + 1);
+      const fence = '`'.repeat(fenceLen);
+      const needsPad = t.startsWith(' ') || t.endsWith(' ');
+      return `${fence}${needsPad ? ' ' : ''}${t}${needsPad ? ' ' : ''}${fence}`;
+    };
+
+    const wrapCodeBlock = (code: string): string => {
+      const t = String(code ?? '');
+      const fenceLen = Math.max(3, maxBackticks(t) + 1);
+      const fence = '`'.repeat(fenceLen);
+      const body = t.replace(/\n?$/, '\n');
+      return `${fence}\n${body}${fence}\n\n`;
+    };
+
+    const mdForChildren = (node: Node): string => {
+      let out = '';
+      const children = Array.from(node.childNodes ?? []);
+      for (const child of children) out += mdForNode(child);
+      return out;
+    };
+
+    const mdForList = (listEl: Element, ordered: boolean, depth: number): string => {
+      const items = Array.from(listEl.children).filter((c) => c.tagName.toLowerCase() === 'li');
+      const lines: string[] = [];
+      for (let i = 0; i < items.length; i += 1) {
+        const li = items[i]!;
+        const prefix = ordered ? `${i + 1}. ` : '- ';
+        const indent = '  '.repeat(depth);
+
+        const bodyParts: string[] = [];
+        const nestedParts: string[] = [];
+        for (const child of Array.from(li.childNodes ?? [])) {
+          if (child.nodeType === Node.ELEMENT_NODE) {
+            const tag = (child as Element).tagName.toLowerCase();
+            if (tag === 'ul' || tag === 'ol') {
+              nestedParts.push(mdForList(child as Element, tag === 'ol', depth + 1));
+              continue;
+            }
+          }
+          bodyParts.push(mdForNode(child));
+        }
+
+        const body = bodyParts.join('').trim().replace(/\n{3,}/g, '\n\n');
+        const baseLine = `${indent}${prefix}${body}`;
+        lines.push(baseLine);
+        for (const nested of nestedParts) {
+          const nestedText = nested.trimEnd();
+          if (nestedText) lines.push(nestedText);
+        }
+      }
+      return lines.join('\n');
+    };
+
+    const mdForBlockquote = (el: Element): string => {
+      const inner = mdForChildren(el).trim().replace(/\n{3,}/g, '\n\n');
+      if (!inner) return '';
+      const lines = inner.split('\n');
+      return `${lines.map((l) => `> ${l}`.trimEnd()).join('\n')}\n\n`;
+    };
+
+    const mdForNode = (node: Node): string => {
+      if (node.nodeType === Node.TEXT_NODE) return (node.nodeValue ?? '').replace(/\u00a0/g, ' ');
+      if (node.nodeType !== Node.ELEMENT_NODE) return '';
+      const el = node as Element;
+      const tag = el.tagName.toLowerCase();
+
+      switch (tag) {
+        case 'br':
+          return '\n';
+        case 'p': {
+          const inner = mdForChildren(el).trim();
+          return inner ? `${inner}\n\n` : '\n\n';
+        }
+        case 'pre': {
+          const codeEl = el.querySelector('code');
+          const codeText = (codeEl?.textContent ?? el.textContent ?? '').replace(/\s+$/, '');
+          return wrapCodeBlock(codeText);
+        }
+        case 'code': {
+          const parentTag = (el.parentElement?.tagName ?? '').toLowerCase();
+          if (parentTag === 'pre') return el.textContent ?? '';
+          return wrapInlineCode(el.textContent ?? '');
+        }
+        case 'strong':
+        case 'b':
+          return `**${mdForChildren(el)}**`;
+        case 'em':
+        case 'i':
+          return `*${mdForChildren(el)}*`;
+        case 'del':
+        case 's':
+        case 'strike':
+          return `~~${mdForChildren(el)}~~`;
+        case 'a': {
+          const href = (el.getAttribute('href') ?? '').trim();
+          const text = mdForChildren(el).trim() || (el.textContent ?? '').trim();
+          if (!href) return text;
+          return `[${text}](${href})`;
+        }
+        case 'h1':
+        case 'h2':
+        case 'h3':
+        case 'h4':
+        case 'h5':
+        case 'h6': {
+          const level = Number(tag.slice(1)) || 1;
+          const inner = mdForChildren(el).trim();
+          const hashes = '#'.repeat(Math.max(1, Math.min(6, level)));
+          return `${hashes} ${inner}\n\n`;
+        }
+        case 'blockquote':
+          return mdForBlockquote(el);
+        case 'ul':
+          return `${mdForList(el, false, 0)}\n\n`;
+        case 'ol':
+          return `${mdForList(el, true, 0)}\n\n`;
+        case 'img': {
+          const alt = (el.getAttribute('alt') ?? '').trim();
+          const src = (el.getAttribute('src') ?? '').trim();
+          if (!src) return alt;
+          return `![${alt}](${src})`;
+        }
+        default:
+          return mdForChildren(el);
+      }
+    };
+
+    let md = '';
+    for (const child of Array.from(frag.childNodes ?? [])) md += mdForNode(child);
+    md = md.replace(/\n{3,}/g, '\n\n').trim();
+    return normalizeMathDelimitersFromCopyTex(md).trim();
+  } catch {
+    try {
+      return normalizeMathDelimitersFromCopyTex(baseRange.toString()).trim();
+    } catch {
+      return '';
+    }
+  }
+}
+
 export class TextLod2Overlay {
   private readonly host: HTMLElement;
   private readonly root: HTMLDivElement;
@@ -104,16 +282,20 @@ export class TextLod2Overlay {
   private readonly menuCopyBtn: HTMLButtonElement;
   private readonly menuReplyBtn: HTMLButtonElement;
   private readonly menuAddToContextBtn: HTMLButtonElement;
+  private readonly menuAnnotateTextBtn: HTMLButtonElement;
+  private readonly menuAnnotateInkBtn: HTMLButtonElement;
 
   private visibleNodeId: string | null = null;
   private mode: TextLod2Mode | null = null;
   private contentHash: string | null = null;
   private lastZoom = 1;
   private menuText: string | null = null;
+  private menuRange: Range | null = null;
   private interactive = false;
 
   private nativePointerId: number | null = null;
   private suppressScrollCallback = false;
+  private suppressAnnotateClick = false;
 
   onRequestCloseSelection?: () => void;
   onRequestAction?: (action: TextLod2Action) => void;
@@ -121,6 +303,18 @@ export class TextLod2Overlay {
   onRequestEdit?: (nodeId: string) => boolean;
   onRequestReplyToSelection?: (nodeId: string, selectionText: string) => void;
   onRequestAddToContext?: (nodeId: string, selectionText: string) => void;
+  onRequestAnnotateTextSelection?: (
+    nodeId: string,
+    selectionText: string,
+    client?: { x: number; y: number },
+    trigger?: AnnotatePointerTrigger | null,
+  ) => void;
+  onRequestAnnotateInkSelection?: (
+    nodeId: string,
+    selectionText: string,
+    client?: { x: number; y: number },
+    trigger?: AnnotatePointerTrigger | null,
+  ) => void;
   onScroll?: (nodeId: string, scrollTop: number) => void;
 
   setBaseTextStyle(style: { fontFamily?: string; fontSizePx?: number; lineHeight?: number; color?: string }): void {
@@ -274,7 +468,7 @@ export class TextLod2Overlay {
       })();
       if (!rect) return;
 
-      this.openMenu({ anchorRect: rect, text });
+      this.openMenu({ anchorRect: rect, text, range });
     });
   };
 
@@ -313,6 +507,18 @@ export class TextLod2Overlay {
     onRequestEdit?: (nodeId: string) => boolean;
     onRequestReplyToSelection?: (nodeId: string, selectionText: string) => void;
     onRequestAddToContext?: (nodeId: string, selectionText: string) => void;
+    onRequestAnnotateTextSelection?: (
+      nodeId: string,
+      selectionText: string,
+      client?: { x: number; y: number },
+      trigger?: AnnotatePointerTrigger | null,
+    ) => void;
+    onRequestAnnotateInkSelection?: (
+      nodeId: string,
+      selectionText: string,
+      client?: { x: number; y: number },
+      trigger?: AnnotatePointerTrigger | null,
+    ) => void;
     zIndex?: number;
     textStyle?: { fontFamily?: string; fontSizePx?: number; lineHeight?: number; color?: string };
   }) {
@@ -323,6 +529,8 @@ export class TextLod2Overlay {
     this.onRequestEdit = opts.onRequestEdit;
     this.onRequestReplyToSelection = opts.onRequestReplyToSelection;
     this.onRequestAddToContext = opts.onRequestAddToContext;
+    this.onRequestAnnotateTextSelection = opts.onRequestAnnotateTextSelection;
+    this.onRequestAnnotateInkSelection = opts.onRequestAnnotateInkSelection;
 
     const root = document.createElement('div');
     root.className = 'gc-textLod2';
@@ -461,9 +669,95 @@ export class TextLod2Overlay {
     });
     this.menuAddToContextBtn = addToContextBtn;
 
+    const annotateTextBtn = document.createElement('button');
+    annotateTextBtn.className = 'gc-selectionMenu__btn';
+    annotateTextBtn.type = 'button';
+    annotateTextBtn.textContent = 'Annotate with text';
+    const handleAnnotate = (
+      kind: 'text' | 'ink',
+      client: { x: number; y: number },
+      trigger?: AnnotatePointerTrigger | null,
+    ) => {
+      const nodeId = this.visibleNodeId;
+      const text = (() => {
+        if (this.menuRange) {
+          const md = extractMarkdownFromRange(this.menuRange).trim();
+          if (md) return md;
+        }
+        return (this.menuText ?? '').trim();
+      })();
+      if (!nodeId || !text) {
+        this.closeMenu();
+        return;
+      }
+      const saved = { nodeId, text, client, trigger: trigger ?? null };
+      this.closeMenu();
+      try {
+        if (kind === 'text') this.onRequestAnnotateTextSelection?.(saved.nodeId, saved.text, saved.client, saved.trigger);
+        else this.onRequestAnnotateInkSelection?.(saved.nodeId, saved.text, saved.client, saved.trigger);
+      } catch {
+        // ignore
+      }
+    };
+    annotateTextBtn.addEventListener('pointerdown', (e: PointerEvent) => {
+      const pointerType = (e.pointerType || 'mouse') as string;
+      if (pointerType === 'mouse') return;
+      this.suppressAnnotateClick = true;
+      try {
+        window.setTimeout(() => {
+          this.suppressAnnotateClick = false;
+        }, 800);
+      } catch {
+        // ignore
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      handleAnnotate('text', { x: Number(e.clientX), y: Number(e.clientY) }, { pointerId: e.pointerId, pointerType });
+    });
+    annotateTextBtn.addEventListener('click', (e) => {
+      if (this.suppressAnnotateClick) {
+        this.suppressAnnotateClick = false;
+        return;
+      }
+      const ev = e as MouseEvent;
+      handleAnnotate('text', { x: Number(ev.clientX), y: Number(ev.clientY) }, null);
+    });
+    this.menuAnnotateTextBtn = annotateTextBtn;
+
+    const annotateInkBtn = document.createElement('button');
+    annotateInkBtn.className = 'gc-selectionMenu__btn';
+    annotateInkBtn.type = 'button';
+    annotateInkBtn.textContent = 'Annotate with ink';
+    annotateInkBtn.addEventListener('pointerdown', (e: PointerEvent) => {
+      const pointerType = (e.pointerType || 'mouse') as string;
+      if (pointerType === 'mouse') return;
+      this.suppressAnnotateClick = true;
+      try {
+        window.setTimeout(() => {
+          this.suppressAnnotateClick = false;
+        }, 800);
+      } catch {
+        // ignore
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      handleAnnotate('ink', { x: Number(e.clientX), y: Number(e.clientY) }, { pointerId: e.pointerId, pointerType });
+    });
+    annotateInkBtn.addEventListener('click', (e) => {
+      if (this.suppressAnnotateClick) {
+        this.suppressAnnotateClick = false;
+        return;
+      }
+      const ev = e as MouseEvent;
+      handleAnnotate('ink', { x: Number(ev.clientX), y: Number(ev.clientY) }, null);
+    });
+    this.menuAnnotateInkBtn = annotateInkBtn;
+
     menu.appendChild(copyBtn);
     menu.appendChild(replyBtn);
     menu.appendChild(addToContextBtn);
+    menu.appendChild(annotateTextBtn);
+    menu.appendChild(annotateInkBtn);
     this.host.appendChild(menu);
 
     const stopMenuPointer = (e: Event) => e.stopPropagation();
@@ -667,17 +961,26 @@ export class TextLod2Overlay {
     }
   }
 
-  openMenu(opts: { anchorRect: DOMRect; text: string }): void {
+  openMenu(opts: { anchorRect: DOMRect; text: string; range?: Range | null }): void {
     const t = (opts.text ?? '').trim();
     if (!t) {
       this.closeMenu();
       return;
     }
     this.menuText = t;
+    this.menuRange = (() => {
+      const r = opts.range ?? null;
+      if (!r) return null;
+      try {
+        return r.cloneRange();
+      } catch {
+        return null;
+      }
+    })();
 
     const rect = opts.anchorRect;
-    const estW = 210;
-    const estH = 120;
+    const estW = 250;
+    const estH = 260;
     const margin = 8;
     let top = rect.top - estH - margin;
     if (top < margin) top = rect.bottom + margin;
@@ -696,6 +999,7 @@ export class TextLod2Overlay {
     if (!this.isMenuOpen()) return;
     this.menu.style.display = 'none';
     this.menuText = null;
+    this.menuRange = null;
     if (!opts?.suppressCallback) this.onRequestCloseSelection?.();
   }
 

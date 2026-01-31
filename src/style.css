@@ -2466,7 +2466,7 @@ body {
 }
 
 .editor--edit .editor__btnGroup {
-  gap: calc(4px * var(--editor-scale, 1));
+  gap: calc(3px * var(--editor-scale, 1));
 }
 
 .editor__btn--splitMain {

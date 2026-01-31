@@ -2691,6 +2691,10 @@ export default function App() {
           e.preventDefault();
           return;
         }
+        if (engineRef.current.cancelTextAnnotationPlacement()) {
+          e.preventDefault();
+          return;
+        }
         if (engineRef.current.cancelSpawnByDraw()) {
           e.preventDefault();
           return;
