@@ -7489,19 +7489,6 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     drawHandle(x1, y1); // se
   }
 
-  private drawScreenHud(): void {
-    const ctx = this.ctx;
-    this.applyScreenTransform();
-    ctx.fillStyle = 'rgba(255,255,255,0.75)';
-    ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
-    ctx.textBaseline = 'bottom';
-    ctx.fillText(
-      `tool: ${this.tool} • ink: pen / Draw tool • erase: Eraser tool • pan: drag background • move: drag node • resize: corners • edit: double-click/Enter • zoom: pinch/ctrl+wheel`,
-      10,
-      this.cssH - 10,
-    );
-  }
-
   draw(): void {
     const nextTextLod2Target = this.computeTextLod2Target();
     this.textLod2Target = nextTextLod2Target;
@@ -7529,7 +7516,6 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.renderTextStreamLod2Target(nextTextStreamLod2Target);
     this.renderTextLod2Target(nextTextLod2Target);
     this.renderPdfTextLod2Target(nextPdfLod2Target);
-    this.drawScreenHud();
     this.emitDebug();
   }
 }
