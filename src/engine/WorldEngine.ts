@@ -840,7 +840,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
   private nodeSeq = 1;
 
-  constructor(opts: { canvas: HTMLCanvasElement; overlayHost?: HTMLElement | null; inputEl?: HTMLElement | null }) {
+  constructor(opts: {
+    canvas: HTMLCanvasElement;
+    overlayHost?: HTMLElement | null;
+    inputEl?: HTMLElement | null;
+    inputController?: { enablePointerCapture?: boolean };
+  }) {
     this.canvas = opts.canvas;
     this.overlayHost = opts.overlayHost ?? this.canvas.parentElement;
     const ctx = this.canvas.getContext('2d', { alpha: false, desynchronized: true });
@@ -879,7 +884,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       onPointerUp: (p, info) => this.handlePointerUp(p, info),
       onPointerCancel: (info) => this.handlePointerCancel(info),
       onTap: (p, info) => this.handleTap(p, info),
-    });
+    }, opts.inputController);
 
     // Initialize hashes for seeded nodes.
     for (const n of this.nodes) {

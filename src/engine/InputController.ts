@@ -46,6 +46,7 @@ export class InputController {
   private readonly el: HTMLElement;
   private readonly camera: Camera;
   private readonly events: InputControllerEvents;
+  private readonly enablePointerCapture: boolean;
 
   private pointers = new Map<number, PointerInfo>();
   private pinch: PinchState | null = null;
@@ -55,10 +56,16 @@ export class InputController {
   private isInteracting = false;
   private wheelIdleTimeout: number | null = null;
 
-  constructor(el: HTMLElement, camera: Camera, events?: InputControllerEvents) {
+  constructor(
+    el: HTMLElement,
+    camera: Camera,
+    events?: InputControllerEvents,
+    opts?: { enablePointerCapture?: boolean },
+  ) {
     this.el = el;
     this.camera = camera;
     this.events = events ?? {};
+    this.enablePointerCapture = opts?.enablePointerCapture !== false;
   }
 
   adoptPointer(opts: {
@@ -186,11 +193,13 @@ export class InputController {
       if (mode === 'draw' || mode === 'text') this.dragBegan.add(ev.pointerId);
     }
 
-    try {
-      const target = ev.target instanceof Element ? (ev.target as any) : null;
-      if (target?.setPointerCapture) target.setPointerCapture(ev.pointerId);
-      else (this.el as any).setPointerCapture?.(ev.pointerId);
-    } catch { }
+    if (this.enablePointerCapture) {
+      try {
+        const target = ev.target instanceof Element ? (ev.target as any) : null;
+        if (target?.setPointerCapture) target.setPointerCapture(ev.pointerId);
+        else (this.el as any).setPointerCapture?.(ev.pointerId);
+      } catch { }
+    }
 
     this.setInteracting(true);
     this.recomputePinchState();
@@ -256,11 +265,13 @@ export class InputController {
     }
     this.capturedPointers.delete(ev.pointerId);
 
-    try {
-      const target = ev.target instanceof Element ? (ev.target as any) : null;
-      if (target?.releasePointerCapture) target.releasePointerCapture(ev.pointerId);
-      else (this.el as any).releasePointerCapture?.(ev.pointerId);
-    } catch { }
+    if (this.enablePointerCapture) {
+      try {
+        const target = ev.target instanceof Element ? (ev.target as any) : null;
+        if (target?.releasePointerCapture) target.releasePointerCapture(ev.pointerId);
+        else (this.el as any).releasePointerCapture?.(ev.pointerId);
+      } catch { }
+    }
 
     this.recomputePinchState();
 
