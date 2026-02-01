@@ -296,6 +296,8 @@ export class TextLod2Overlay {
   private nativePointerId: number | null = null;
   private suppressScrollCallback = false;
   private suppressAnnotateClick = false;
+  private forwardedPenPointerId: number | null = null;
+  private prevTouchAction: string | null = null;
 
   onRequestCloseSelection?: () => void;
   onRequestAction?: (action: TextLod2Action) => void;
@@ -303,6 +305,10 @@ export class TextLod2Overlay {
   onRequestEdit?: (nodeId: string) => boolean;
   onRequestReplyToSelection?: (nodeId: string, selectionText: string) => void;
   onRequestAddToContext?: (nodeId: string, selectionText: string) => void;
+  onRequestPenTextSelectPointerDown?: (nodeId: string, client: { x: number; y: number }, trigger: AnnotatePointerTrigger) => void;
+  onRequestPenTextSelectPointerMove?: (nodeId: string, client: { x: number; y: number }, trigger: AnnotatePointerTrigger) => void;
+  onRequestPenTextSelectPointerUp?: (nodeId: string, client: { x: number; y: number }, trigger: AnnotatePointerTrigger) => void;
+  onRequestPenTextSelectPointerCancel?: (nodeId: string, trigger: AnnotatePointerTrigger) => void;
   onRequestAnnotateTextSelection?: (
     nodeId: string,
     selectionText: string,
@@ -349,7 +355,12 @@ export class TextLod2Overlay {
 
   private readonly onRootPointerDown = (e: PointerEvent) => {
     if (!this.interactive) return;
-    if ((e.pointerType || 'mouse') !== 'mouse') return;
+    const pointerType = (e.pointerType || 'mouse') as string;
+    if (pointerType === 'pen') {
+      this.beginForwardPenSelection(e, pointerType);
+      return;
+    }
+    if (pointerType !== 'mouse') return;
     if (e.button !== 0) return;
     const nodeId = this.visibleNodeId;
     if (nodeId) {
@@ -372,6 +383,108 @@ export class TextLod2Overlay {
       // ignore
     }
   };
+
+  private beginForwardPenSelection(e: PointerEvent, pointerType: string): void {
+    if (!this.interactive) return;
+    if (this.mode !== 'select') return;
+    if (this.forwardedPenPointerId != null) return;
+    const nodeId = this.visibleNodeId;
+    if (!nodeId) return;
+
+    // Prevent native scroll while the pen drag gesture is active.
+    try {
+      this.prevTouchAction = (this.content.style as any).touchAction ?? null;
+      (this.content.style as any).touchAction = 'none';
+    } catch {
+      this.prevTouchAction = null;
+    }
+
+    this.forwardedPenPointerId = e.pointerId;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    try {
+      this.onRequestPenTextSelectPointerDown?.(
+        nodeId,
+        { x: Number(e.clientX), y: Number(e.clientY) },
+        { pointerId: e.pointerId, pointerType },
+      );
+    } catch {
+      // ignore
+    }
+
+    const move = (ev: PointerEvent) => {
+      if (this.forwardedPenPointerId == null || ev.pointerId !== this.forwardedPenPointerId) return;
+      const pt = (ev.pointerType || pointerType) as string;
+      ev.preventDefault();
+      try {
+        this.onRequestPenTextSelectPointerMove?.(
+          nodeId,
+          { x: Number(ev.clientX), y: Number(ev.clientY) },
+          { pointerId: ev.pointerId, pointerType: pt },
+        );
+      } catch {
+        // ignore
+      }
+    };
+
+    const cleanup = () => {
+      this.forwardedPenPointerId = null;
+      try {
+        if (this.prevTouchAction != null) (this.content.style as any).touchAction = this.prevTouchAction;
+        else (this.content.style as any).touchAction = 'pan-x pan-y';
+      } catch {
+        // ignore
+      }
+      this.prevTouchAction = null;
+      try {
+        document.removeEventListener('pointermove', move, true);
+        document.removeEventListener('pointerup', up, true);
+        document.removeEventListener('pointercancel', cancel, true);
+      } catch {
+        // ignore
+      }
+    };
+
+    const up = (ev: PointerEvent) => {
+      if (this.forwardedPenPointerId == null || ev.pointerId !== this.forwardedPenPointerId) return;
+      const pt = (ev.pointerType || pointerType) as string;
+      ev.preventDefault();
+      try {
+        this.onRequestPenTextSelectPointerUp?.(
+          nodeId,
+          { x: Number(ev.clientX), y: Number(ev.clientY) },
+          { pointerId: ev.pointerId, pointerType: pt },
+        );
+      } catch {
+        // ignore
+      } finally {
+        cleanup();
+      }
+    };
+
+    const cancel = (ev: PointerEvent) => {
+      if (this.forwardedPenPointerId == null || ev.pointerId !== this.forwardedPenPointerId) return;
+      const pt = (ev.pointerType || pointerType) as string;
+      ev.preventDefault();
+      try {
+        this.onRequestPenTextSelectPointerCancel?.(nodeId, { pointerId: ev.pointerId, pointerType: pt });
+      } catch {
+        // ignore
+      } finally {
+        cleanup();
+      }
+    };
+
+    try {
+      document.addEventListener('pointermove', move, { capture: true, passive: false } as any);
+      document.addEventListener('pointerup', up, { capture: true, passive: false } as any);
+      document.addEventListener('pointercancel', cancel, { capture: true, passive: false } as any);
+    } catch {
+      // ignore
+    }
+  }
 
   private readonly onRootClick = (e: MouseEvent) => {
     const nodeId = this.visibleNodeId;
@@ -507,6 +620,22 @@ export class TextLod2Overlay {
     onRequestEdit?: (nodeId: string) => boolean;
     onRequestReplyToSelection?: (nodeId: string, selectionText: string) => void;
     onRequestAddToContext?: (nodeId: string, selectionText: string) => void;
+    onRequestPenTextSelectPointerDown?: (
+      nodeId: string,
+      client: { x: number; y: number },
+      trigger: AnnotatePointerTrigger,
+    ) => void;
+    onRequestPenTextSelectPointerMove?: (
+      nodeId: string,
+      client: { x: number; y: number },
+      trigger: AnnotatePointerTrigger,
+    ) => void;
+    onRequestPenTextSelectPointerUp?: (
+      nodeId: string,
+      client: { x: number; y: number },
+      trigger: AnnotatePointerTrigger,
+    ) => void;
+    onRequestPenTextSelectPointerCancel?: (nodeId: string, trigger: AnnotatePointerTrigger) => void;
     onRequestAnnotateTextSelection?: (
       nodeId: string,
       selectionText: string,
@@ -529,6 +658,10 @@ export class TextLod2Overlay {
     this.onRequestEdit = opts.onRequestEdit;
     this.onRequestReplyToSelection = opts.onRequestReplyToSelection;
     this.onRequestAddToContext = opts.onRequestAddToContext;
+    this.onRequestPenTextSelectPointerDown = opts.onRequestPenTextSelectPointerDown;
+    this.onRequestPenTextSelectPointerMove = opts.onRequestPenTextSelectPointerMove;
+    this.onRequestPenTextSelectPointerUp = opts.onRequestPenTextSelectPointerUp;
+    this.onRequestPenTextSelectPointerCancel = opts.onRequestPenTextSelectPointerCancel;
     this.onRequestAnnotateTextSelection = opts.onRequestAnnotateTextSelection;
     this.onRequestAnnotateInkSelection = opts.onRequestAnnotateInkSelection;
 

@@ -3951,6 +3951,18 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           // ignore
         }
       },
+      onRequestPenTextSelectPointerDown: (nodeId, client, trigger) => {
+        this.beginPenTextSelectFromTextOverlay(nodeId, client, trigger);
+      },
+      onRequestPenTextSelectPointerMove: (nodeId, client, trigger) => {
+        this.continuePenTextSelectFromTextOverlay(nodeId, client, trigger);
+      },
+      onRequestPenTextSelectPointerUp: (nodeId, client, trigger) => {
+        this.endPenTextSelectFromTextOverlay(nodeId, client, trigger);
+      },
+      onRequestPenTextSelectPointerCancel: (nodeId, trigger) => {
+        this.cancelPenTextSelectFromTextOverlay(nodeId, trigger);
+      },
       onRequestAnnotateTextSelection: (nodeId, selectionText, client, trigger) => {
         this.beginTextAnnotationPlacement({ kind: 'text', textNodeId: nodeId, selectionText, client, trigger });
       },
@@ -4389,6 +4401,127 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     } catch {
       // ignore
     }
+  }
+
+  private beginPenTextSelectFromTextOverlay(
+    nodeId: string,
+    client: { x: number; y: number },
+    trigger: { pointerId: number; pointerType: string },
+  ): void {
+    if (this.tool !== 'select') return;
+    if (trigger.pointerType !== 'pen') return;
+    if (!nodeId) return;
+    const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === nodeId) ?? null;
+    if (!node) return;
+
+    this.clearTextSelection({ suppressOverlayCallback: true });
+
+    const selectionChanged = this.selectedNodeId !== node.id || this.editingNodeId !== null;
+    this.selectedNodeId = node.id;
+    this.editingNodeId = null;
+    this.bringNodeToFront(node.id);
+
+    this.textSelectNodeId = node.id;
+    this.renderTextLod2Target({ nodeId: node.id, mode: 'select' });
+
+    const anchor = this.caretRangeFromClientPointForLod2(client.x, client.y);
+    const contentEl = this.textLod2?.getContentElement() ?? null;
+
+    if (anchor && contentEl && contentEl.contains(anchor.startContainer)) {
+      try {
+        window.getSelection?.()?.removeAllRanges();
+      } catch {
+        // ignore
+      }
+
+      this.textSelectPointerId = trigger.pointerId;
+      this.textSelectAnchor = anchor;
+      this.textSelectLastClient = { x: client.x, y: client.y };
+      this.textSelectRange = null;
+
+      this.activeGesture = { kind: 'text-select', pointerId: trigger.pointerId, nodeId: node.id };
+      this.suppressTapPointerIds.add(trigger.pointerId);
+      this.requestRender();
+      if (selectionChanged) this.emitUiState();
+      return;
+    }
+
+    // Failed to map the pen point into DOM text; keep node selection but abort text selection.
+    this.clearTextSelection({ suppressOverlayCallback: true });
+    this.requestRender();
+    if (selectionChanged) this.emitUiState();
+  }
+
+  private continuePenTextSelectFromTextOverlay(
+    nodeId: string,
+    client: { x: number; y: number },
+    trigger: { pointerId: number; pointerType: string },
+  ): void {
+    if (trigger.pointerType !== 'pen') return;
+    const g = this.activeGesture;
+    if (!g || g.kind !== 'text-select' || g.pointerId !== trigger.pointerId) return;
+    if (g.nodeId !== nodeId) return;
+    this.textSelectLastClient = { x: client.x, y: client.y };
+    this.schedulePenSelectionUpdate();
+  }
+
+  private endPenTextSelectFromTextOverlay(
+    nodeId: string,
+    client: { x: number; y: number },
+    trigger: { pointerId: number; pointerType: string },
+  ): void {
+    if (trigger.pointerType !== 'pen') return;
+    const g = this.activeGesture;
+    if (!g || g.kind !== 'text-select' || g.pointerId !== trigger.pointerId) return;
+    if (g.nodeId !== nodeId) return;
+
+    this.textSelectLastClient = { x: client.x, y: client.y };
+    if (this.textSelectRaf != null) {
+      try {
+        cancelAnimationFrame(this.textSelectRaf);
+      } catch { }
+      this.textSelectRaf = null;
+    }
+    this.updatePenSelectionFromLastPoint();
+
+    this.activeGesture = null;
+    this.suppressTapPointerIds.delete(trigger.pointerId);
+
+    // End the drag gesture but keep the selection alive while the menu is open.
+    this.textSelectPointerId = null;
+    this.textSelectAnchor = null;
+    this.textSelectLastClient = null;
+
+    const overlay = this.textLod2;
+    const range = this.textSelectRange;
+    const text = range ? extractTextFromRange(range) : '';
+    if (overlay && range && text) {
+      const rect = (() => {
+        try {
+          const rects = Array.from(range.getClientRects());
+          return (rects[rects.length - 1] ?? range.getBoundingClientRect()) || null;
+        } catch {
+          return null;
+        }
+      })();
+      if (rect) {
+        overlay.openMenu({ anchorRect: rect, text, range });
+      } else {
+        this.clearTextSelection({ suppressOverlayCallback: true });
+      }
+    } else {
+      this.clearTextSelection({ suppressOverlayCallback: true });
+    }
+
+    this.requestRender();
+  }
+
+  private cancelPenTextSelectFromTextOverlay(nodeId: string, trigger: { pointerId: number; pointerType: string }): void {
+    if (trigger.pointerType !== 'pen') return;
+    const g = this.activeGesture;
+    if (!g || g.kind !== 'text-select' || g.pointerId !== trigger.pointerId) return;
+    if (g.nodeId !== nodeId) return;
+    this.handlePointerCancel({ pointerId: trigger.pointerId, pointerType: trigger.pointerType });
   }
 
   private computeTextLod2Target(): { nodeId: string; mode: TextLod2Mode } | null {
