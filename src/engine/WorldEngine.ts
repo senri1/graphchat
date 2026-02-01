@@ -3952,7 +3952,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         }
       },
       onRequestPenTextSelectPointerDown: (nodeId, client, trigger) => {
-        this.beginPenTextSelectFromTextOverlay(nodeId, client, trigger);
+        return this.beginPenTextSelectFromTextOverlay(nodeId, client, trigger);
       },
       onRequestPenTextSelectPointerMove: (nodeId, client, trigger) => {
         this.continuePenTextSelectFromTextOverlay(nodeId, client, trigger);
@@ -4407,12 +4407,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     nodeId: string,
     client: { x: number; y: number },
     trigger: { pointerId: number; pointerType: string },
-  ): void {
-    if (this.tool !== 'select') return;
-    if (trigger.pointerType !== 'pen') return;
-    if (!nodeId) return;
+  ): boolean {
+    if (this.tool !== 'select') return false;
+    if (trigger.pointerType !== 'pen') return false;
+    if (!nodeId) return false;
     const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === nodeId) ?? null;
-    if (!node) return;
+    if (!node) return false;
 
     this.clearTextSelection({ suppressOverlayCallback: true });
 
@@ -4428,6 +4428,27 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const contentEl = this.textLod2?.getContentElement() ?? null;
 
     if (anchor && contentEl && contentEl.contains(anchor.startContainer)) {
+      const caretNearPoint = (() => {
+        const maxDistPx = 24;
+        try {
+          const rects = Array.from(anchor.getClientRects());
+          const r = (rects[0] ?? anchor.getBoundingClientRect()) || null;
+          if (!r) return false;
+          const dx = client.x < r.left ? r.left - client.x : client.x > r.right ? client.x - r.right : 0;
+          const dy = client.y < r.top ? r.top - client.y : client.y > r.bottom ? client.y - r.bottom : 0;
+          return dx * dx + dy * dy <= maxDistPx * maxDistPx;
+        } catch {
+          return true;
+        }
+      })();
+
+      if (!caretNearPoint) {
+        this.clearTextSelection({ suppressOverlayCallback: true });
+        this.requestRender();
+        if (selectionChanged) this.emitUiState();
+        return false;
+      }
+
       try {
         window.getSelection?.()?.removeAllRanges();
       } catch {
@@ -4443,13 +4464,14 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       this.suppressTapPointerIds.add(trigger.pointerId);
       this.requestRender();
       if (selectionChanged) this.emitUiState();
-      return;
+      return true;
     }
 
     // Failed to map the pen point into DOM text; keep node selection but abort text selection.
     this.clearTextSelection({ suppressOverlayCallback: true });
     this.requestRender();
     if (selectionChanged) this.emitUiState();
+    return false;
   }
 
   private continuePenTextSelectFromTextOverlay(

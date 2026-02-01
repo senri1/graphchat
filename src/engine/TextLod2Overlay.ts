@@ -298,6 +298,9 @@ export class TextLod2Overlay {
   private suppressAnnotateClick = false;
   private forwardedPenPointerId: number | null = null;
   private prevTouchAction: string | null = null;
+  private prevOverflowX: string | null = null;
+  private prevOverflowY: string | null = null;
+  private lockScrollTop: number | null = null;
 
   onRequestCloseSelection?: () => void;
   onRequestAction?: (action: TextLod2Action) => void;
@@ -305,7 +308,7 @@ export class TextLod2Overlay {
   onRequestEdit?: (nodeId: string) => boolean;
   onRequestReplyToSelection?: (nodeId: string, selectionText: string) => void;
   onRequestAddToContext?: (nodeId: string, selectionText: string) => void;
-  onRequestPenTextSelectPointerDown?: (nodeId: string, client: { x: number; y: number }, trigger: AnnotatePointerTrigger) => void;
+  onRequestPenTextSelectPointerDown?: (nodeId: string, client: { x: number; y: number }, trigger: AnnotatePointerTrigger) => boolean;
   onRequestPenTextSelectPointerMove?: (nodeId: string, client: { x: number; y: number }, trigger: AnnotatePointerTrigger) => void;
   onRequestPenTextSelectPointerUp?: (nodeId: string, client: { x: number; y: number }, trigger: AnnotatePointerTrigger) => void;
   onRequestPenTextSelectPointerCancel?: (nodeId: string, trigger: AnnotatePointerTrigger) => void;
@@ -391,6 +394,23 @@ export class TextLod2Overlay {
     const nodeId = this.visibleNodeId;
     if (!nodeId) return;
 
+    let started = false;
+    try {
+      started = Boolean(
+        this.onRequestPenTextSelectPointerDown?.(
+          nodeId,
+          { x: Number(e.clientX), y: Number(e.clientY) },
+          { pointerId: e.pointerId, pointerType },
+        ),
+      );
+    } catch {
+      started = false;
+    }
+    if (!started) return;
+
+    this.forwardedPenPointerId = e.pointerId;
+    this.lockScrollTop = Math.max(0, Number(this.content.scrollTop) || 0);
+
     // Prevent native scroll while the pen drag gesture is active.
     try {
       this.prevTouchAction = (this.content.style as any).touchAction ?? null;
@@ -399,20 +419,17 @@ export class TextLod2Overlay {
       this.prevTouchAction = null;
     }
 
-    this.forwardedPenPointerId = e.pointerId;
-
-    e.preventDefault();
-    e.stopPropagation();
-
     try {
-      this.onRequestPenTextSelectPointerDown?.(
-        nodeId,
-        { x: Number(e.clientX), y: Number(e.clientY) },
-        { pointerId: e.pointerId, pointerType },
-      );
+      this.prevOverflowX = this.content.style.overflowX ?? null;
+      this.prevOverflowY = this.content.style.overflowY ?? null;
+      this.content.style.overflowX = 'hidden';
+      this.content.style.overflowY = 'hidden';
     } catch {
       // ignore
     }
+
+    e.preventDefault();
+    e.stopPropagation();
 
     const move = (ev: PointerEvent) => {
       if (this.forwardedPenPointerId == null || ev.pointerId !== this.forwardedPenPointerId) return;
@@ -431,6 +448,7 @@ export class TextLod2Overlay {
 
     const cleanup = () => {
       this.forwardedPenPointerId = null;
+      this.lockScrollTop = null;
       try {
         if (this.prevTouchAction != null) (this.content.style as any).touchAction = this.prevTouchAction;
         else (this.content.style as any).touchAction = 'pan-x pan-y';
@@ -438,6 +456,16 @@ export class TextLod2Overlay {
         // ignore
       }
       this.prevTouchAction = null;
+      try {
+        if (this.prevOverflowX != null) this.content.style.overflowX = this.prevOverflowX;
+        else this.content.style.overflowX = 'auto';
+        if (this.prevOverflowY != null) this.content.style.overflowY = this.prevOverflowY;
+        else this.content.style.overflowY = 'scroll';
+      } catch {
+        // ignore
+      }
+      this.prevOverflowX = null;
+      this.prevOverflowY = null;
       try {
         document.removeEventListener('pointermove', move, true);
         document.removeEventListener('pointerup', up, true);
@@ -539,6 +567,21 @@ export class TextLod2Overlay {
 
   private readonly onContentScroll = () => {
     if (this.suppressScrollCallback) return;
+    if (this.forwardedPenPointerId != null && this.lockScrollTop != null) {
+      const desired = this.lockScrollTop;
+      const actual = Number(this.content.scrollTop || 0);
+      if (Number.isFinite(actual) && Math.abs(actual - desired) >= 0.5) {
+        this.suppressScrollCallback = true;
+        try {
+          this.content.scrollTop = desired;
+        } catch {
+          // ignore
+        } finally {
+          this.suppressScrollCallback = false;
+        }
+      }
+      return;
+    }
     const nodeId = this.visibleNodeId;
     if (!nodeId) return;
     try {
@@ -624,7 +667,7 @@ export class TextLod2Overlay {
       nodeId: string,
       client: { x: number; y: number },
       trigger: AnnotatePointerTrigger,
-    ) => void;
+    ) => boolean;
     onRequestPenTextSelectPointerMove?: (
       nodeId: string,
       client: { x: number; y: number },
@@ -1012,10 +1055,12 @@ export class TextLod2Overlay {
 
     // Keep layout stable between interactive/non-interactive states; only scrollbar visuals change via CSS.
     this.content.style.paddingRight = '0px';
-    this.content.style.overflowX = 'auto';
-    this.content.style.overflowY = 'scroll';
+    if (this.forwardedPenPointerId == null) {
+      this.content.style.overflowX = 'auto';
+      this.content.style.overflowY = 'scroll';
+    }
 
-    if ((nodeChanged || hashChanged) && Number.isFinite(opts.scrollTop as number)) {
+    if (this.forwardedPenPointerId == null && (nodeChanged || hashChanged) && Number.isFinite(opts.scrollTop as number)) {
       const desired = Math.max(0, Number(opts.scrollTop) || 0);
       this.suppressScrollCallback = true;
       try {
