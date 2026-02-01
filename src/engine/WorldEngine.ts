@@ -3273,7 +3273,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   }
 
   getTextNodeContentScreenRect(nodeId: string): Rect | null {
-    const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === nodeId) ?? null;
+    const node =
+      this.nodes.find((n): n is TextNode | InkNode => (n.kind === 'text' || n.kind === 'ink') && n.id === nodeId) ??
+      null;
     if (!node) return null;
     const content = this.textContentRect(node.rect);
     const tl = this.camera.worldToScreen({ x: content.x, y: content.y });

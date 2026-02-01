@@ -938,10 +938,36 @@ export default function App() {
   const toggleRawViewerForNode = React.useCallback((nodeId: string) => {
     const engine = engineRef.current;
     if (!engine) return;
+    const chatId = activeChatIdRef.current;
     const snapshot = engine.exportChatState();
-    const node =
-      snapshot.nodes.find((n): n is Extract<ChatNode, { kind: 'text' }> => n.kind === 'text' && n.id === nodeId) ?? null;
+    const node = snapshot.nodes.find((n) => n.id === nodeId) ?? null;
     if (!node) return;
+    if (node.kind === 'ink') {
+      const kind: RawViewerState['kind'] = 'request';
+      const title = `Raw request • ${node.title}`;
+      const key = chatId ? `${chatId}/${nodeId}/req` : '';
+
+      setRawViewer((prev) => {
+        if (prev?.nodeId === nodeId) return null;
+        return { nodeId, title, kind, payload: undefined };
+      });
+
+      if (!key) return;
+      void (async () => {
+        try {
+          const loaded = await getPayload(key);
+          setRawViewer((prev) => {
+            if (!prev || prev.nodeId !== nodeId) return prev;
+            return { ...prev, payload: loaded === null ? undefined : cloneRawPayloadForDisplay(loaded) };
+          });
+        } catch {
+          // ignore
+        }
+      })();
+      return;
+    }
+
+    if (node.kind !== 'text') return;
     const kind: RawViewerState['kind'] = node.author === 'user' ? 'request' : 'response';
     const title = `${kind === 'request' ? 'Raw request' : 'Raw response'} • ${node.title}`;
 
@@ -2771,10 +2797,11 @@ export default function App() {
     if (!nodeId || !engine) return false;
     try {
       const snapshot = engine.exportChatState();
-      const node =
-        snapshot.nodes.find((n): n is Extract<ChatNode, { kind: 'text' }> => n.kind === 'text' && n.id === nodeId) ?? null;
+      const node = snapshot.nodes.find((n) => n.id === nodeId) ?? null;
       if (!node) return false;
-      return node.author === 'user' ? node.apiRequest !== undefined : node.apiResponse !== undefined;
+      if (node.kind === 'ink') return true;
+      if (node.kind !== 'text') return false;
+      return node.author === 'user' ? (node as any).apiRequest !== undefined : (node as any).apiResponse !== undefined;
     } catch {
       return false;
     }
