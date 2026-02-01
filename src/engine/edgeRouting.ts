@@ -163,6 +163,63 @@ function orthogonalRoute(ctx: EdgeRouteContext): EdgeRoute | null {
   return pts.length >= 2 ? { kind: 'polyline', points: pts } : null;
 }
 
+function orthogonalDynamicRoute(ctx: EdgeRouteContext): EdgeRoute | null {
+  const pRect = ctx.parent.rect;
+  const cRect = ctx.child.rect;
+  const pCenter = rectCenter(pRect);
+  const cCenter = rectCenter(cRect);
+
+  const start = ctx.anchors?.start
+    ? makeAnchorAtPoint(ctx.anchors.start.side, ctx.anchors.start.point)
+    : (() => {
+        const hit = intersectRectPerimeter(pRect, cCenter);
+        return makeAnchorAtPoint(hit.side, hit.point);
+      })();
+  const end = ctx.anchors?.end
+    ? makeAnchorAtPoint(ctx.anchors.end.side, ctx.anchors.end.point)
+    : ctx.anchors?.start
+      ? (() => {
+          const hit = intersectRectPerimeter(cRect, ctx.anchors!.start!.point);
+          return makeAnchorAtPoint(hit.side, hit.point);
+        })()
+      : (() => {
+          const hit = intersectRectPerimeter(cRect, pCenter);
+          return makeAnchorAtPoint(hit.side, hit.point);
+        })();
+
+  const p0 = start.point;
+  const pEnd = end.point;
+
+  const stub = 26;
+  const startStub: Vec2 = { x: p0.x + start.outward.x * stub, y: p0.y + start.outward.y * stub };
+  const endStub: Vec2 = { x: pEnd.x + end.outward.x * stub, y: pEnd.y + end.outward.y * stub };
+
+  const pts: Vec2[] = [];
+  addPoint(pts, p0);
+  addPoint(pts, startStub);
+
+  const startIsH = start.side === 'left' || start.side === 'right';
+  const endIsH = end.side === 'left' || end.side === 'right';
+
+  if (startIsH && endIsH) {
+    const midX = (startStub.x + endStub.x) * 0.5;
+    addPoint(pts, { x: midX, y: startStub.y });
+    addPoint(pts, { x: midX, y: endStub.y });
+  } else if (!startIsH && !endIsH) {
+    const midY = (startStub.y + endStub.y) * 0.5;
+    addPoint(pts, { x: startStub.x, y: midY });
+    addPoint(pts, { x: endStub.x, y: midY });
+  } else {
+    // L-route.
+    addPoint(pts, { x: endStub.x, y: startStub.y });
+  }
+
+  addPoint(pts, endStub);
+  addPoint(pts, pEnd);
+
+  return pts.length >= 2 ? { kind: 'polyline', points: pts } : null;
+}
+
 function curvedRoute(ctx: EdgeRouteContext): EdgeRoute | null {
   const auto = chooseAutoAnchors(ctx.parent.rect, ctx.child.rect);
   const start = ctx.anchors?.start ? makeAnchorAtPoint(ctx.anchors.start.side, ctx.anchors.start.point) : auto.start;
@@ -271,6 +328,12 @@ const EDGE_ROUTERS = [
     label: 'Orthogonal',
     description: 'Auto-anchors with right-angle routing.',
     route: orthogonalRoute,
+  },
+  {
+    id: 'orthogonal-dynamic',
+    label: 'Orthogonal Dynamic',
+    description: 'Perimeter anchors with right-angle routing.',
+    route: orthogonalDynamicRoute,
   },
   {
     id: 'curved',
