@@ -679,7 +679,7 @@ export default function App() {
     };
   }, []);
   const [composerModelId, setComposerModelId] = useState<string>(() => DEFAULT_MODEL_ID);
-  const [composerWebSearch, setComposerWebSearch] = useState<boolean>(() => false);
+  const [composerWebSearch, setComposerWebSearch] = useState<boolean>(() => true);
 
   const initial = useMemo(() => {
     const chatId = genId('chat');
@@ -701,7 +701,7 @@ export default function App() {
       selectedAttachmentKeys: [],
       headNodeId: null,
       turns: [],
-      llm: { modelId: DEFAULT_MODEL_ID, webSearchEnabled: false },
+      llm: { modelId: DEFAULT_MODEL_ID, webSearchEnabled: true },
       backgroundStorageKey: null,
     });
     return { root, chatId, chatStates, chatMeta };
@@ -727,7 +727,7 @@ export default function App() {
       selectedAttachmentKeys: [],
       headNodeId: null,
       turns: [],
-      llm: { modelId: DEFAULT_MODEL_ID, webSearchEnabled: false },
+      llm: { modelId: DEFAULT_MODEL_ID, webSearchEnabled: true },
       backgroundStorageKey: null,
     };
     chatMetaRef.current.set(chatId, meta);
@@ -3185,7 +3185,7 @@ export default function App() {
       selectedAttachmentKeys: [],
       headNodeId: null,
       turns: [],
-      llm: { modelId: DEFAULT_MODEL_ID, webSearchEnabled: false },
+      llm: { modelId: DEFAULT_MODEL_ID, webSearchEnabled: true },
       backgroundStorageKey: null,
     });
     switchChat(id);
@@ -3567,7 +3567,7 @@ export default function App() {
           selectedAttachmentKeys: [],
           headNodeId: null,
           turns: [],
-          llm: { modelId: DEFAULT_MODEL_ID, webSearchEnabled: false },
+          llm: { modelId: DEFAULT_MODEL_ID, webSearchEnabled: true },
           backgroundStorageKey: null,
         });
         switchChat(id, { saveCurrent: false });
@@ -4899,7 +4899,7 @@ export default function App() {
               selectedAttachmentKeys: [],
               headNodeId: null,
               turns: [],
-              llm: { modelId: DEFAULT_MODEL_ID, webSearchEnabled: false },
+              llm: { modelId: DEFAULT_MODEL_ID, webSearchEnabled: true },
               backgroundStorageKey: null,
             });
 
@@ -4921,7 +4921,7 @@ export default function App() {
             setBackgroundLibrary([]);
             setBackgroundStorageKey(null);
             setComposerModelId(DEFAULT_MODEL_ID);
-            setComposerWebSearch(false);
+            setComposerWebSearch(true);
             setDebugHudVisible(true);
             const nextModelUserSettings = buildModelUserSettings(allModels, null);
             setModelUserSettings(nextModelUserSettings);
