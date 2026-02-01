@@ -181,6 +181,10 @@ const TEXT_NODE_SPAWN_MAX_W_PX = 800;
 const TEXT_NODE_SPAWN_MIN_H_PX = 120;
 const TEXT_NODE_SPAWN_MAX_H_PX = 1200;
 
+// Manual resize bounds for ink nodes (prevents huge in-memory rasters).
+const INK_NODE_MAX_W_PX = 2400;
+const INK_NODE_MAX_H_PX = 1800;
+
 // Layout tuning for Debug → Canonicalize layout.
 // Values match the GraphChatGem "Canonicalize layout" defaults.
 const CANONICALIZE_LAYOUT_NODE_SPACING_X = 1000;
@@ -2125,7 +2129,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const center = this.camera.screenToWorld({ x: this.cssW * 0.5, y: this.cssH * 0.5 });
     const nodeW = 420;
     const nodeH = 280;
-    const explicitRect = this.normalizeSpawnRect(opts?.rect);
+    const explicitRect = this.normalizeSpawnRect(opts?.rect, { maxW: INK_NODE_MAX_W_PX, maxH: INK_NODE_MAX_H_PX });
     const node: InkNode = {
       kind: 'ink',
       id,
@@ -3077,7 +3081,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       }
     }
 
-    const corner = hit && hit.kind === 'text' ? this.hitResizeHandle(world, hit.rect) : null;
+    const corner = hit && (hit.kind === 'text' || hit.kind === 'ink') ? this.hitResizeHandle(world, hit.rect) : null;
     if (corner) this.setCanvasCursor(this.cursorForResizeCorner(corner));
     else this.setCanvasCursor('default');
   }
@@ -4970,7 +4974,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (this.pdfAnnotationPlacement || this.textAnnotationPlacement) return null;
 
     const g = this.activeGesture;
-    if (g?.kind === 'resize') return { nodeId: g.nodeId, mode: 'resize' };
+    if (g?.kind === 'resize') {
+      const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === g.nodeId) ?? null;
+      if (node) return { nodeId: g.nodeId, mode: 'resize' };
+    }
 
     if (this.textSelectNodeId && this.textSelectNodeId !== rawId) return { nodeId: this.textSelectNodeId, mode: 'select' };
 
@@ -5577,11 +5584,30 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       return null;
     }
 
-    const scale = this.chooseInkRasterScale();
+    let scale = this.chooseInkRasterScale();
     const worldW = Math.max(1, contentRect.w);
     const worldH = Math.max(1, contentRect.h);
-    const pxW = Math.max(1, Math.round(worldW * scale));
-    const pxH = Math.max(1, Math.round(worldH * scale));
+
+    let pxW = Math.max(1, Math.round(worldW * scale));
+    let pxH = Math.max(1, Math.round(worldH * scale));
+
+    const MAX_DIM = 4096;
+    const MAX_PIXELS = 6_000_000;
+
+    const scaleByDim = Math.min(1, MAX_DIM / pxW, MAX_DIM / pxH);
+    if (scaleByDim < 1) {
+      scale *= scaleByDim;
+      pxW = Math.max(1, Math.round(worldW * scale));
+      pxH = Math.max(1, Math.round(worldH * scale));
+    }
+
+    const pixels = pxW * pxH;
+    if (pixels > MAX_PIXELS) {
+      const s = Math.sqrt(MAX_PIXELS / pixels);
+      scale *= s;
+      pxW = Math.max(1, Math.round(worldW * scale));
+      pxH = Math.max(1, Math.round(worldH * scale));
+    }
 
     const raster = node.raster;
     const needsRebuild =
@@ -5833,7 +5859,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     };
   }
 
-  private normalizeSpawnRect(r: Rect | null | undefined): Rect | null {
+  private normalizeSpawnRect(r: Rect | null | undefined, opts?: { maxW?: number; maxH?: number }): Rect | null {
     if (!r) return null;
     let x = Number(r.x);
     let y = Number(r.y);
@@ -5851,18 +5877,38 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (w <= 0 || h <= 0) return null;
     if (w < this.minNodeW) w = this.minNodeW;
     if (h < this.minNodeH) h = this.minNodeH;
+
+    const maxWRaw = Number(opts?.maxW);
+    const maxW = Number.isFinite(maxWRaw) ? Math.max(this.minNodeW, maxWRaw) : Infinity;
+    if (w > maxW) w = maxW;
+
+    const maxHRaw = Number(opts?.maxH);
+    const maxH = Number.isFinite(maxHRaw) ? Math.max(this.minNodeH, maxHRaw) : Infinity;
+    if (h > maxH) h = maxH;
+
     return { x, y, w, h };
   }
 
-  private rectFromWorldDrag(startWorld: Vec2, endWorld: Vec2): Rect | null {
+  private rectFromWorldDrag(startWorld: Vec2, endWorld: Vec2, opts?: { maxW?: number; maxH?: number }): Rect | null {
     const sx = Number(startWorld.x);
     const sy = Number(startWorld.y);
     let ex = Number(endWorld.x);
     let ey = Number(endWorld.y);
     if (!Number.isFinite(sx) || !Number.isFinite(sy) || !Number.isFinite(ex) || !Number.isFinite(ey)) return null;
 
-    const dx = ex - sx;
-    const dy = ey - sy;
+    let dx = ex - sx;
+    let dy = ey - sy;
+
+    const maxWRaw = Number(opts?.maxW);
+    const maxW = Number.isFinite(maxWRaw) ? Math.max(this.minNodeW, maxWRaw) : Infinity;
+    if (Number.isFinite(maxW) && Math.abs(dx) > maxW) ex = sx + (dx >= 0 ? maxW : -maxW);
+
+    const maxHRaw = Number(opts?.maxH);
+    const maxH = Number.isFinite(maxHRaw) ? Math.max(this.minNodeH, maxHRaw) : Infinity;
+    if (Number.isFinite(maxH) && Math.abs(dy) > maxH) ey = sy + (dy >= 0 ? maxH : -maxH);
+
+    dx = ex - sx;
+    dy = ey - sy;
 
     if (Math.abs(dx) < this.minNodeW) ex = sx + (dx >= 0 ? this.minNodeW : -this.minNodeW);
     if (Math.abs(dy) < this.minNodeH) ey = sy + (dy >= 0 ? this.minNodeH : -this.minNodeH);
@@ -6340,24 +6386,27 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 	      }
 	    }
 
-	    const corner = hit.kind === 'text' ? this.hitResizeHandle(world, hit.rect, { pointerType: info.pointerType }) : null;
-	    const startRect: Rect = { ...hit.rect };
-	    if (corner) {
-      this.activeGesture = {
-        kind: 'resize',
-        pointerId: info.pointerId,
-        nodeId: hit.id,
-        corner,
-        startWorld: world,
-        startRect,
-      };
-      this.suppressTapPointerIds.add(info.pointerId);
-      this.textResizeHold = null;
-      this.renderTextLod2Target({ nodeId: hit.id, mode: 'resize' });
-    } else {
-      this.activeGesture = {
-        kind: 'drag',
-        pointerId: info.pointerId,
+		    const corner =
+		      hit.kind === 'text' || hit.kind === 'ink'
+		        ? this.hitResizeHandle(world, hit.rect, { pointerType: info.pointerType })
+		        : null;
+		    const startRect: Rect = { ...hit.rect };
+		    if (corner) {
+	      this.activeGesture = {
+	        kind: 'resize',
+	        pointerId: info.pointerId,
+	        nodeId: hit.id,
+	        corner,
+	        startWorld: world,
+	        startRect,
+	      };
+	      this.suppressTapPointerIds.add(info.pointerId);
+	      this.textResizeHold = null;
+	      if (hit.kind === 'text') this.renderTextLod2Target({ nodeId: hit.id, mode: 'resize' });
+	    } else {
+	      this.activeGesture = {
+	        kind: 'drag',
+	        pointerId: info.pointerId,
         nodeId: hit.id,
         startWorld: world,
         startRect,
@@ -6431,10 +6480,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       return;
     }
 
-    if (g.kind === 'pdf-annotation-outline-resize') {
-      const placement = this.pdfAnnotationPlacement;
-      const startRect = g.startRect;
-      if (!placement?.outlineRect) return;
+	    if (g.kind === 'pdf-annotation-outline-resize') {
+	      const placement = this.pdfAnnotationPlacement;
+	      const startRect = g.startRect;
+	      if (!placement?.outlineRect) return;
 
       const world = this.camera.screenToWorld(p);
       const dx = world.x - g.startWorld.x;
@@ -6444,7 +6493,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       const bottom = startRect.y + startRect.h;
 
       let next: Rect;
-      switch (g.corner) {
+	      switch (g.corner) {
         case 'nw': {
           next = { x: startRect.x + dx, y: startRect.y + dy, w: startRect.w - dx, h: startRect.h - dy };
           if (next.w < this.minNodeW) {
@@ -6481,18 +6530,29 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           if (next.h < this.minNodeH) next.h = this.minNodeH;
           break;
         }
-      }
+	      }
 
-      placement.outlineRect = next;
-      placement.hoverWorld = { x: next.x, y: next.y };
-      this.requestRender();
-      return;
-    }
+	      if (placement.kind === 'ink') {
+	        if (next.w > INK_NODE_MAX_W_PX) {
+	          next.w = INK_NODE_MAX_W_PX;
+	          if (g.corner === 'nw' || g.corner === 'sw') next.x = right - next.w;
+	        }
+	        if (next.h > INK_NODE_MAX_H_PX) {
+	          next.h = INK_NODE_MAX_H_PX;
+	          if (g.corner === 'nw' || g.corner === 'ne') next.y = bottom - next.h;
+	        }
+	      }
 
-    if (g.kind === 'text-annotation-outline-resize') {
-      const placement = this.textAnnotationPlacement;
-      const startRect = g.startRect;
-      if (!placement?.outlineRect) return;
+	      placement.outlineRect = next;
+	      placement.hoverWorld = { x: next.x, y: next.y };
+	      this.requestRender();
+	      return;
+	    }
+
+	    if (g.kind === 'text-annotation-outline-resize') {
+	      const placement = this.textAnnotationPlacement;
+	      const startRect = g.startRect;
+	      if (!placement?.outlineRect) return;
 
       const world = this.camera.screenToWorld(p);
       const dx = world.x - g.startWorld.x;
@@ -6502,7 +6562,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       const bottom = startRect.y + startRect.h;
 
       let next: Rect;
-      switch (g.corner) {
+	      switch (g.corner) {
         case 'nw': {
           next = { x: startRect.x + dx, y: startRect.y + dy, w: startRect.w - dx, h: startRect.h - dy };
           if (next.w < this.minNodeW) {
@@ -6539,13 +6599,24 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           if (next.h < this.minNodeH) next.h = this.minNodeH;
           break;
         }
-      }
+	      }
 
-      placement.outlineRect = next;
-      placement.hoverWorld = { x: next.x, y: next.y };
-      this.requestRender();
-      return;
-    }
+	      if (placement.kind === 'ink') {
+	        if (next.w > INK_NODE_MAX_W_PX) {
+	          next.w = INK_NODE_MAX_W_PX;
+	          if (g.corner === 'nw' || g.corner === 'sw') next.x = right - next.w;
+	        }
+	        if (next.h > INK_NODE_MAX_H_PX) {
+	          next.h = INK_NODE_MAX_H_PX;
+	          if (g.corner === 'nw' || g.corner === 'ne') next.y = bottom - next.h;
+	        }
+	      }
+
+	      placement.outlineRect = next;
+	      placement.hoverWorld = { x: next.x, y: next.y };
+	      this.requestRender();
+	      return;
+	    }
 
     if (g.kind === 'ink-world') {
       const world = this.camera.screenToWorld(p);
@@ -6624,7 +6695,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const bottom = g.startRect.y + g.startRect.h;
 
     let next: Rect;
-    switch (g.corner) {
+	    switch (g.corner) {
       case 'nw': {
         next = {
           x: g.startRect.x + dx,
@@ -6681,11 +6752,22 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         if (next.h < this.minNodeH) next.h = this.minNodeH;
         break;
       }
-    }
+	    }
 
-    node.rect = next;
-    this.requestRender();
-  }
+	    if (node.kind === 'ink') {
+	      if (next.w > INK_NODE_MAX_W_PX) {
+	        next.w = INK_NODE_MAX_W_PX;
+	        if (g.corner === 'nw' || g.corner === 'sw') next.x = right - next.w;
+	      }
+	      if (next.h > INK_NODE_MAX_H_PX) {
+	        next.h = INK_NODE_MAX_H_PX;
+	        if (g.corner === 'nw' || g.corner === 'ne') next.y = bottom - next.h;
+	      }
+	    }
+
+	    node.rect = next;
+	    this.requestRender();
+	  }
 
   private handlePointerUp(p: Vec2, info: { pointerType: string; pointerId: number; wasDrag: boolean }): void {
     const g = this.activeGesture;
@@ -6832,7 +6914,11 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       this.suppressTapPointerIds.delete(info.pointerId);
 
       const world = this.camera.screenToWorld(p);
-      const rect = this.rectFromWorldDrag(g.startWorld, world);
+      const rect = this.rectFromWorldDrag(
+        g.startWorld,
+        world,
+        g.spawn.kind === 'ink' ? { maxW: INK_NODE_MAX_W_PX, maxH: INK_NODE_MAX_H_PX } : undefined,
+      );
       if (!rect) {
         if (g.hasDrag) this.requestRender();
         return;
@@ -8127,33 +8213,36 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
             ctx.restore();
           }
         }
-      } else if (node.kind === 'ink') {
-        const contentRect = this.textContentRect(node.rect);
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(contentRect.x, contentRect.y, contentRect.w, contentRect.h);
-        ctx.clip();
+	      } else if (node.kind === 'ink') {
+	        const contentRect = this.textContentRect(node.rect);
+	        ctx.save();
+	        ctx.beginPath();
+	        ctx.rect(contentRect.x, contentRect.y, contentRect.w, contentRect.h);
+	        ctx.clip();
 
-        ctx.fillStyle = this.glassNodesEnabled ? 'rgba(0,0,0,0.12)' : 'rgba(0,0,0,0.22)';
-        ctx.fillRect(contentRect.x, contentRect.y, contentRect.w, contentRect.h);
+	        ctx.fillStyle = this.glassNodesEnabled ? 'rgba(0,0,0,0.12)' : 'rgba(0,0,0,0.22)';
+	        ctx.fillRect(contentRect.x, contentRect.y, contentRect.w, contentRect.h);
 
-        const raster = this.ensureInkNodeRaster(node, contentRect);
-        if (raster) {
-          try {
-            ctx.drawImage(raster.canvas, contentRect.x, contentRect.y, contentRect.w, contentRect.h);
-          } catch {
-            // ignore; fall back to vectors
-          }
-        }
+	        const g = this.activeGesture;
+	        const isResizing = g?.kind === 'resize' && g.nodeId === node.id;
+	        const raster = isResizing ? node.raster : this.ensureInkNodeRaster(node, contentRect);
+	        if (raster) {
+	          try {
+	            const drawW = isResizing ? raster.worldW : contentRect.w;
+	            const drawH = isResizing ? raster.worldH : contentRect.h;
+	            ctx.drawImage(raster.canvas, contentRect.x, contentRect.y, drawW, drawH);
+	          } catch {
+	            // ignore; fall back to vectors
+	          }
+	        }
 
         if (!raster && node.strokes.length > 0) {
           for (const s of node.strokes) this.drawInkStroke(ctx, s, { offsetX: contentRect.x, offsetY: contentRect.y });
         }
 
-        const g = this.activeGesture;
-        if (g && g.kind === 'ink-node' && g.nodeId === node.id) {
-          this.drawInkStroke(ctx, g.stroke, { offsetX: contentRect.x, offsetY: contentRect.y });
-        }
+	        if (g && g.kind === 'ink-node' && g.nodeId === node.id) {
+	          this.drawInkStroke(ctx, g.stroke, { offsetX: contentRect.x, offsetY: contentRect.y });
+	        }
 
         if (node.strokes.length === 0) {
           ctx.fillStyle = 'rgba(255,255,255,0.50)';
@@ -8504,7 +8593,11 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const g = this.activeGesture;
     if (!g || g.kind !== 'spawn-by-draw' || !g.hasDrag) return;
 
-    const rect = this.rectFromWorldDrag(g.startWorld, g.currentWorld);
+    const rect = this.rectFromWorldDrag(
+      g.startWorld,
+      g.currentWorld,
+      g.spawn.kind === 'ink' ? { maxW: INK_NODE_MAX_W_PX, maxH: INK_NODE_MAX_H_PX } : undefined,
+    );
     if (!rect) return;
 
     const ctx = this.ctx;
