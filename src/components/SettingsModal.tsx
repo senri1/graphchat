@@ -73,6 +73,7 @@ type Props = {
   onChangeSpawnCount: (next: number) => void;
   onSpawnNodes: () => void;
   onClearStressNodes: () => void;
+  onAutoResizeAllTextNodes: () => void;
 
   onRequestImportChat: () => void;
   onExportAllChats: () => void;
@@ -909,6 +910,22 @@ export default function SettingsModal(props: Props) {
                         onClick={props.onToggleSpawnInkNodeByDraw}
                       >
                         {props.spawnInkNodeByDraw ? 'On' : 'Off'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="settingsCard">
+                  <div className="settingsRow">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Auto-resize</div>
+                      <div className="settingsRow__desc">
+                        Resize all text nodes in this chat to fit their content (clamped to the spawn min/max).
+                      </div>
+                    </div>
+                    <div className="settingsRow__actions">
+                      <button className="settingsBtn" type="button" onClick={props.onAutoResizeAllTextNodes}>
+                        Auto-resize
                       </button>
                     </div>
                   </div>

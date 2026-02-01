@@ -4834,17 +4834,21 @@ export default function App() {
             const next = Number.isFinite(raw) ? Math.max(1, Math.min(500, Math.round(raw))) : 50;
             setStressSpawnCount(next);
           }}
-          onSpawnNodes={() => engineRef.current?.spawnLatexStressTest(Math.max(1, Math.min(500, stressSpawnCount)))}
-	          onClearStressNodes={() => {
-	            engineRef.current?.clearStressNodes();
-	            attachmentsGcDirtyRef.current = true;
-	            schedulePersistSoon();
-	          }}
-	          onRequestImportChat={() => {
-	            setSettingsOpen(false);
-	            importInputRef.current?.click();
-	          }}
-	          onExportAllChats={() => {
+	          onSpawnNodes={() => engineRef.current?.spawnLatexStressTest(Math.max(1, Math.min(500, stressSpawnCount)))}
+		          onClearStressNodes={() => {
+		            engineRef.current?.clearStressNodes();
+		            attachmentsGcDirtyRef.current = true;
+		            schedulePersistSoon();
+		          }}
+              onAutoResizeAllTextNodes={() => {
+                engineRef.current?.autoResizeAllTextNodes();
+                schedulePersistSoon();
+              }}
+		          onRequestImportChat={() => {
+		            setSettingsOpen(false);
+		            importInputRef.current?.click();
+		          }}
+		          onExportAllChats={() => {
 	            requestExportAllChats({ closeSettingsOnConfirm: true });
 	          }}
 	          onResetToDefaults={() => {

@@ -1298,6 +1298,27 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.emitUiState();
   }
 
+  autoResizeAllTextNodes(): void {
+    if (this.nodes.length === 0) return;
+
+    let anyResized = false;
+    for (const node of this.nodes) {
+      if (node.kind !== 'text') continue;
+
+      const cx = node.rect.x + node.rect.w * 0.5;
+      const cy = node.rect.y + node.rect.h * 0.5;
+
+      const changed = this.applySpawnAutoSizeToTextNode(node, { mode: 'set_exact' });
+      if (!changed) continue;
+
+      node.rect.x = cx - node.rect.w * 0.5;
+      node.rect.y = cy - node.rect.h * 0.5;
+      anyResized = true;
+    }
+
+    if (anyResized) this.requestRender();
+  }
+
   setTool(tool: Tool): void {
     const next: Tool = tool === 'draw' ? 'draw' : tool === 'erase' ? 'erase' : 'select';
     if (this.tool === next) return;
