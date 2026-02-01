@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import type { CanonicalizeLayoutAlgorithm } from '../engine/WorldEngine';
 import type { BackgroundLibraryItem } from '../model/backgrounds';
 import { FONT_FAMILY_OPTIONS, type FontFamilyKey } from '../ui/typography';
 import { useAttachmentObjectUrls } from '../ui/useAttachmentObjectUrls';
@@ -74,6 +75,9 @@ type Props = {
   onSpawnNodes: () => void;
   onClearStressNodes: () => void;
   onAutoResizeAllTextNodes: () => void;
+  canonicalizeLayoutAlgorithm: CanonicalizeLayoutAlgorithm;
+  onChangeCanonicalizeLayoutAlgorithm: (next: CanonicalizeLayoutAlgorithm) => void;
+  onCanonicalizeLayout: () => void;
 
   onRequestImportChat: () => void;
   onExportAllChats: () => void;
@@ -910,6 +914,31 @@ export default function SettingsModal(props: Props) {
                         onClick={props.onToggleSpawnInkNodeByDraw}
                       >
                         {props.spawnInkNodeByDraw ? 'On' : 'Off'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="settingsCard">
+                  <div className="settingsRow">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Canonicalize layout</div>
+                      <div className="settingsRow__desc">Apply a deterministic tree layout to this chat.</div>
+                    </div>
+                    <div className="settingsRow__actions">
+                      <select
+                        className="settingsSelect"
+                        value={props.canonicalizeLayoutAlgorithm}
+                        onChange={(e) =>
+                          props.onChangeCanonicalizeLayoutAlgorithm(e.currentTarget.value as CanonicalizeLayoutAlgorithm)
+                        }
+                        aria-label="Canonicalize layout algorithm"
+                      >
+                        <option value="layered">Layered</option>
+                        <option value="reingold-tilford">Reingold-Tilford</option>
+                      </select>
+                      <button className="settingsBtn settingsBtn--primary" type="button" onClick={props.onCanonicalizeLayout}>
+                        Apply
                       </button>
                     </div>
                   </div>

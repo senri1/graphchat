@@ -37,6 +37,8 @@ export type WorldEngineDebug = {
 
 export type GlassBlurBackend = 'webgl' | 'canvas';
 
+export type CanonicalizeLayoutAlgorithm = 'layered' | 'reingold-tilford';
+
 function fnv1a32(input: string): number {
   let h = 0x811c9dc5;
   for (let i = 0; i < input.length; i++) {
@@ -178,6 +180,16 @@ const TEXT_NODE_SPAWN_MIN_W_PX = 260;
 const TEXT_NODE_SPAWN_MAX_W_PX = 800;
 const TEXT_NODE_SPAWN_MIN_H_PX = 120;
 const TEXT_NODE_SPAWN_MAX_H_PX = 1200;
+
+// Layout tuning for Debug → Canonicalize layout.
+// Values match the GraphChatGem "Canonicalize layout" defaults.
+const CANONICALIZE_LAYOUT_NODE_SPACING_X = 1000;
+const CANONICALIZE_LAYOUT_NODE_SPACING_Y = 235;
+const CANONICALIZE_LAYOUT_NODE_HEIGHT_ESTIMATE = 160;
+const CANONICALIZE_LAYOUT_PARENT_CHILD_GAP_Y = Math.max(
+  0,
+  CANONICALIZE_LAYOUT_NODE_SPACING_Y - CANONICALIZE_LAYOUT_NODE_HEIGHT_ESTIMATE,
+);
 
 type ReasoningSummaryBlock = { type: 'summary_text'; text: string };
 
@@ -1317,6 +1329,391 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     }
 
     if (anyResized) this.requestRender();
+  }
+
+  canonicalizeLayout(algorithm: CanonicalizeLayoutAlgorithm): void {
+    const alg: CanonicalizeLayoutAlgorithm = algorithm === 'reingold-tilford' ? 'reingold-tilford' : 'layered';
+    if (this.nodes.length === 0) return;
+
+    const byId = new Map<string, ChatNode>();
+    const childrenById = new Map<string, string[]>();
+
+    for (const node of this.nodes) {
+      byId.set(node.id, node);
+      childrenById.set(node.id, []);
+    }
+
+    for (const node of this.nodes) {
+      const parentId = node.parentId;
+      if (!parentId) continue;
+      const children = childrenById.get(parentId);
+      if (children) children.push(node.id);
+    }
+
+    const visited = new Set<string>();
+    const groups: Array<{ ids: string[]; minX: number; minY: number; maxX: number; maxY: number }> = [];
+
+    for (const node of this.nodes) {
+      const id = node.id;
+      if (visited.has(id)) continue;
+
+      const queue: string[] = [id];
+      const groupIds: string[] = [];
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+
+      for (let qi = 0; qi < queue.length; qi++) {
+        const curId = queue[qi]!;
+        if (visited.has(curId)) continue;
+        const cur = byId.get(curId);
+        if (!cur) continue;
+
+        visited.add(curId);
+        groupIds.push(curId);
+
+        const r = cur.rect;
+        minX = Math.min(minX, r.x);
+        minY = Math.min(minY, r.y);
+        maxX = Math.max(maxX, r.x + r.w);
+        maxY = Math.max(maxY, r.y + r.h);
+
+        const parentId = cur.parentId;
+        if (parentId && byId.has(parentId)) queue.push(parentId);
+
+        const children = childrenById.get(curId);
+        if (children && children.length) {
+          for (const cid of children) queue.push(cid);
+        }
+      }
+
+      if (groupIds.length) groups.push({ ids: groupIds, minX, minY, maxX, maxY });
+    }
+
+    if (groups.length === 0) return;
+
+    const commit = (nid: string, x: number, y: number) => {
+      const n = byId.get(nid);
+      if (!n) return;
+      n.rect.x = x;
+      n.rect.y = y;
+    };
+
+    for (const g of groups) {
+      const groupSet = new Set(g.ids);
+      const rootCandidates = g.ids.filter((nid) => {
+        const n = byId.get(nid);
+        if (!n) return false;
+        const pid = n.parentId;
+        return !pid || !groupSet.has(pid);
+      });
+      const rootId = rootCandidates[0] ?? g.ids[0];
+
+      const baseTop = g.minY;
+      const baseLeft = g.minX;
+      const parentChildGapY = CANONICALIZE_LAYOUT_PARENT_CHILD_GAP_Y;
+
+      if (alg === 'layered') {
+        const nodeWidth = new Map<string, number>();
+        const nodeHeight = new Map<string, number>();
+        const subtreeWidth = new Map<string, number>();
+
+        const measure = (nid: string): number => {
+          const n = byId.get(nid);
+          if (!n) return 0;
+
+          const w = Math.max(1, n.rect.w);
+          const h = Math.max(1, n.rect.h);
+          nodeWidth.set(nid, w);
+          nodeHeight.set(nid, h);
+
+          const children = (childrenById.get(nid) ?? []).filter((cid) => groupSet.has(cid));
+          if (children.length === 0) {
+            subtreeWidth.set(nid, w);
+            return w;
+          }
+
+          let totalChildren = 0;
+          for (const cid of children) totalChildren += measure(cid);
+          const spacing = CANONICALIZE_LAYOUT_NODE_SPACING_X * (children.length - 1);
+          const total = Math.max(w, totalChildren + spacing);
+          subtreeWidth.set(nid, total);
+          return total;
+        };
+
+        measure(rootId);
+
+        const place = (nid: string, left: number, y: number) => {
+          const n = byId.get(nid);
+          if (!n) return;
+
+          const w = nodeWidth.get(nid) ?? Math.max(1, n.rect.w);
+          const h = nodeHeight.get(nid) ?? Math.max(1, n.rect.h);
+          const W = subtreeWidth.get(nid) ?? w;
+
+          const x = left + (W - w) / 2;
+          commit(nid, x, y);
+
+          const children = (childrenById.get(nid) ?? []).filter((cid) => groupSet.has(cid));
+          if (children.length === 0) return;
+
+          const childWidths = children.map((cid) => subtreeWidth.get(cid) ?? 0);
+          const childrenSpan =
+            childWidths.reduce((a, b) => a + b, 0) + CANONICALIZE_LAYOUT_NODE_SPACING_X * (children.length - 1);
+          let childLeft = left + (W - childrenSpan) / 2;
+          const childY = y + h + parentChildGapY;
+
+          for (let i = 0; i < children.length; i++) {
+            const cid = children[i]!;
+            const cw = subtreeWidth.get(cid) ?? 0;
+            place(cid, childLeft, childY);
+            childLeft += cw + CANONICALIZE_LAYOUT_NODE_SPACING_X;
+          }
+        };
+
+        place(rootId, baseLeft, baseTop);
+        continue;
+      }
+
+      // Reingold-Tilford tidy tree drawing (Buchheim et al.)
+      const nodeWidth = new Map<string, number>();
+      const nodeHeight = new Map<string, number>();
+
+      const measured = new Set<string>();
+      const measure = (nid: string) => {
+        if (measured.has(nid)) return;
+        measured.add(nid);
+        const n = byId.get(nid);
+        if (!n) return;
+        nodeWidth.set(nid, Math.max(1, n.rect.w));
+        nodeHeight.set(nid, Math.max(1, n.rect.h));
+        const children = (childrenById.get(nid) ?? []).filter((cid) => groupSet.has(cid));
+        for (const cid of children) measure(cid);
+      };
+
+      measure(rootId);
+
+      type LayoutNode = {
+        id: string;
+        width: number;
+        parent: LayoutNode | null;
+        children: LayoutNode[];
+        prelim: number;
+        mod: number;
+        shift: number;
+        change: number;
+        thread: LayoutNode | null;
+        ancestor: LayoutNode;
+        number: number;
+      };
+
+      const built = new Set<string>();
+      const build = (nid: string, parent: LayoutNode | null, number: number): LayoutNode => {
+        const width = nodeWidth.get(nid) ?? Math.max(1, byId.get(nid)?.rect.w ?? 1);
+        const v: LayoutNode = {
+          id: nid,
+          width,
+          parent,
+          children: [],
+          prelim: 0,
+          mod: 0,
+          shift: 0,
+          change: 0,
+          thread: null,
+          ancestor: null as any,
+          number,
+        };
+        v.ancestor = v;
+        if (built.has(nid)) return v;
+        built.add(nid);
+        const children = (childrenById.get(nid) ?? []).filter((cid) => groupSet.has(cid));
+        v.children = children.map((cid, idx) => build(cid, v, idx + 1));
+        return v;
+      };
+
+      const leftSibling = (v: LayoutNode): LayoutNode | null => {
+        if (!v.parent) return null;
+        if (v.number <= 1) return null;
+        return v.parent.children[v.number - 2] ?? null;
+      };
+
+      const leftMostSibling = (v: LayoutNode): LayoutNode | null => {
+        if (!v.parent || v.parent.children.length === 0) return null;
+        return v.parent.children[0];
+      };
+
+      const nextLeft = (v: LayoutNode): LayoutNode | null => {
+        if (v.children.length > 0) return v.children[0]!;
+        return v.thread;
+      };
+
+      const nextRight = (v: LayoutNode): LayoutNode | null => {
+        if (v.children.length > 0) return v.children[v.children.length - 1]!;
+        return v.thread;
+      };
+
+      const distance = (a: LayoutNode, b: LayoutNode) =>
+        (a.width + b.width) / 2 + CANONICALIZE_LAYOUT_NODE_SPACING_X;
+
+      const moveSubtree = (wl: LayoutNode, wr: LayoutNode, shift: number) => {
+        const subtrees = wr.number - wl.number;
+        if (subtrees <= 0) return;
+        wr.change -= shift / subtrees;
+        wr.shift += shift;
+        wl.change += shift / subtrees;
+        wr.prelim += shift;
+        wr.mod += shift;
+      };
+
+      const executeShifts = (v: LayoutNode) => {
+        let shift = 0;
+        let change = 0;
+        for (let i = v.children.length - 1; i >= 0; i--) {
+          const w = v.children[i]!;
+          w.prelim += shift;
+          w.mod += shift;
+          change += w.change;
+          shift += w.shift + change;
+        }
+      };
+
+      const ancestor = (vil: LayoutNode, v: LayoutNode, defaultAncestor: LayoutNode): LayoutNode => {
+        if (vil.ancestor.parent === v.parent) return vil.ancestor;
+        return defaultAncestor;
+      };
+
+      const apportion = (v: LayoutNode, defaultAncestor: LayoutNode): LayoutNode => {
+        const w = leftSibling(v);
+        if (!w) return defaultAncestor;
+
+        let vir: LayoutNode = v;
+        let vor: LayoutNode = v;
+        let vil: LayoutNode = w;
+        let vol: LayoutNode = leftMostSibling(v) ?? v;
+
+        let sir = vir.mod;
+        let sor = vor.mod;
+        let sil = vil.mod;
+        let sol = vol.mod;
+
+        while (true) {
+          const vilNext = nextRight(vil);
+          const virNext = nextLeft(vir);
+          if (!vilNext || !virNext) break;
+
+          const volNext = nextLeft(vol);
+          const vorNext = nextRight(vor);
+          if (!volNext || !vorNext) break;
+
+          vil = vilNext;
+          vir = virNext;
+          vol = volNext;
+          vor = vorNext;
+          vor.ancestor = v;
+
+          const shift = (vil.prelim + sil) - (vir.prelim + sir) + distance(vil, vir);
+          if (shift > 0) {
+            const a = ancestor(vil, v, defaultAncestor);
+            moveSubtree(a, v, shift);
+            sir += shift;
+            sor += shift;
+          }
+
+          sil += vil.mod;
+          sir += vir.mod;
+          sol += vol.mod;
+          sor += vor.mod;
+        }
+
+        const vilNext = nextRight(vil);
+        const vorNext = nextRight(vor);
+        if (vilNext && !vorNext) {
+          vor.thread = vilNext;
+          vor.mod += sil - sor;
+        }
+
+        const virNext = nextLeft(vir);
+        const volNext = nextLeft(vol);
+        if (virNext && !volNext) {
+          vol.thread = virNext;
+          vol.mod += sir - sol;
+          defaultAncestor = v;
+        }
+
+        return defaultAncestor;
+      };
+
+      const firstWalk = (v: LayoutNode) => {
+        if (v.children.length === 0) {
+          const w = leftSibling(v);
+          v.prelim = w ? w.prelim + distance(v, w) : 0;
+          return;
+        }
+
+        let defaultAncestor = v.children[0]!;
+        for (const w of v.children) {
+          firstWalk(w);
+          defaultAncestor = apportion(w, defaultAncestor);
+        }
+
+        executeShifts(v);
+
+        const first = v.children[0]!;
+        const last = v.children[v.children.length - 1]!;
+        const mid = (first.prelim + last.prelim) / 2;
+        const w = leftSibling(v);
+        if (w) {
+          v.prelim = w.prelim + distance(v, w);
+          v.mod = v.prelim - mid;
+        } else {
+          v.prelim = mid;
+        }
+      };
+
+      const xCenterById = new Map<string, number>();
+      const secondWalk = (v: LayoutNode, m: number) => {
+        xCenterById.set(v.id, v.prelim + m);
+        for (const w of v.children) secondWalk(w, m + v.mod);
+      };
+
+      const root = build(rootId, null, 1);
+      firstWalk(root);
+      secondWalk(root, 0);
+
+      let minLeft = Infinity;
+      for (const [nid, xCenter] of xCenterById) {
+        const w = nodeWidth.get(nid) ?? Math.max(1, byId.get(nid)?.rect.w ?? 1);
+        minLeft = Math.min(minLeft, xCenter - w / 2);
+      }
+
+      const shiftX = baseLeft - (Number.isFinite(minLeft) ? minLeft : 0);
+
+      const yById = new Map<string, number>();
+      const placedY = new Set<string>();
+      const assignY = (nid: string, y: number) => {
+        if (placedY.has(nid)) return;
+        placedY.add(nid);
+        yById.set(nid, y);
+        const n = byId.get(nid);
+        if (!n) return;
+        const h = nodeHeight.get(nid) ?? Math.max(1, n.rect.h);
+        const children = (childrenById.get(nid) ?? []).filter((cid) => groupSet.has(cid));
+        const childY = y + h + parentChildGapY;
+        for (const cid of children) assignY(cid, childY);
+      };
+
+      assignY(rootId, baseTop);
+      for (const [nid, xCenter] of xCenterById) {
+        const n = byId.get(nid);
+        if (!n) continue;
+        const w = nodeWidth.get(nid) ?? Math.max(1, n.rect.w);
+        const y = yById.get(nid) ?? baseTop;
+        commit(nid, xCenter - w / 2 + shiftX, y);
+      }
+    }
+
+    this.requestRender();
   }
 
   setTool(tool: Tool): void {

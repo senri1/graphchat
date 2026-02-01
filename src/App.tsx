@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import {
   WorldEngine,
   createEmptyChatState,
+  type CanonicalizeLayoutAlgorithm,
   type GlassBlurBackend,
   type WorldEngineChatState,
   type WorldEngineDebug,
@@ -587,6 +588,7 @@ export default function App() {
   const [spawnInkNodeByDraw, setSpawnInkNodeByDraw] = useState(false);
   const spawnInkNodeByDrawRef = useRef<boolean>(spawnInkNodeByDraw);
   const [stressSpawnCount, setStressSpawnCount] = useState<number>(50);
+  const [canonicalizeLayoutAlgorithm, setCanonicalizeLayoutAlgorithm] = useState<CanonicalizeLayoutAlgorithm>('layered');
   const [backgroundLibrary, setBackgroundLibrary] = useState<BackgroundLibraryItem[]>(() => []);
   const [backgroundStorageKey, setBackgroundStorageKey] = useState<string | null>(() => null);
   const [pendingImportArchive, setPendingImportArchive] = useState<ArchiveV1 | ArchiveV2 | null>(null);
@@ -4842,6 +4844,12 @@ export default function App() {
 		          }}
               onAutoResizeAllTextNodes={() => {
                 engineRef.current?.autoResizeAllTextNodes();
+                schedulePersistSoon();
+              }}
+              canonicalizeLayoutAlgorithm={canonicalizeLayoutAlgorithm}
+              onChangeCanonicalizeLayoutAlgorithm={setCanonicalizeLayoutAlgorithm}
+              onCanonicalizeLayout={() => {
+                engineRef.current?.canonicalizeLayout(canonicalizeLayoutAlgorithm);
                 schedulePersistSoon();
               }}
 		          onRequestImportChat={() => {
