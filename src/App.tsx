@@ -544,6 +544,11 @@ export default function App() {
       sidebarFontSizePx: number;
       spawnEditNodeByDraw: boolean;
       spawnInkNodeByDraw: boolean;
+      inkSendCropEnabled: boolean;
+      inkSendCropPaddingPx: number;
+      inkSendDownscaleEnabled: boolean;
+      inkSendMaxPixels: number;
+      inkSendMaxDimPx: number;
     };
     chatStates: Map<string, WorldEngineChatState>;
     chatMeta: Map<string, ChatRuntimeMeta>;
@@ -587,6 +592,16 @@ export default function App() {
   const spawnEditNodeByDrawRef = useRef<boolean>(spawnEditNodeByDraw);
   const [spawnInkNodeByDraw, setSpawnInkNodeByDraw] = useState(false);
   const spawnInkNodeByDrawRef = useRef<boolean>(spawnInkNodeByDraw);
+  const [inkSendCropEnabled, setInkSendCropEnabled] = useState(true);
+  const inkSendCropEnabledRef = useRef<boolean>(inkSendCropEnabled);
+  const [inkSendCropPaddingPx, setInkSendCropPaddingPx] = useState<number>(24);
+  const inkSendCropPaddingPxRef = useRef<number>(inkSendCropPaddingPx);
+  const [inkSendDownscaleEnabled, setInkSendDownscaleEnabled] = useState(true);
+  const inkSendDownscaleEnabledRef = useRef<boolean>(inkSendDownscaleEnabled);
+  const [inkSendMaxPixels, setInkSendMaxPixels] = useState<number>(6_000_000);
+  const inkSendMaxPixelsRef = useRef<number>(inkSendMaxPixels);
+  const [inkSendMaxDimPx, setInkSendMaxDimPx] = useState<number>(4096);
+  const inkSendMaxDimPxRef = useRef<number>(inkSendMaxDimPx);
   const [stressSpawnCount, setStressSpawnCount] = useState<number>(50);
   const [canonicalizeLayoutAlgorithm, setCanonicalizeLayoutAlgorithm] = useState<CanonicalizeLayoutAlgorithm>('layered');
   const [backgroundLibrary, setBackgroundLibrary] = useState<BackgroundLibraryItem[]>(() => []);
@@ -766,6 +781,26 @@ export default function App() {
   useEffect(() => {
     spawnInkNodeByDrawRef.current = spawnInkNodeByDraw;
   }, [spawnInkNodeByDraw]);
+
+  useEffect(() => {
+    inkSendCropEnabledRef.current = inkSendCropEnabled;
+  }, [inkSendCropEnabled]);
+
+  useEffect(() => {
+    inkSendCropPaddingPxRef.current = inkSendCropPaddingPx;
+  }, [inkSendCropPaddingPx]);
+
+  useEffect(() => {
+    inkSendDownscaleEnabledRef.current = inkSendDownscaleEnabled;
+  }, [inkSendDownscaleEnabled]);
+
+  useEffect(() => {
+    inkSendMaxPixelsRef.current = inkSendMaxPixels;
+  }, [inkSendMaxPixels]);
+
+  useEffect(() => {
+    inkSendMaxDimPxRef.current = inkSendMaxDimPx;
+  }, [inkSendMaxDimPx]);
 
   useEffect(() => {
     edgeRouterIdRef.current = edgeRouterId;
@@ -1006,6 +1041,11 @@ export default function App() {
               sidebarFontSizePx: Math.round(clampNumber(sidebarFontSizePxRef.current, 8, 24, DEFAULT_SIDEBAR_FONT_SIZE_PX)),
               spawnEditNodeByDraw: Boolean(spawnEditNodeByDrawRef.current),
               spawnInkNodeByDraw: Boolean(spawnInkNodeByDrawRef.current),
+              inkSendCropEnabled: Boolean(inkSendCropEnabledRef.current),
+              inkSendCropPaddingPx: Math.round(clampNumber(inkSendCropPaddingPxRef.current, 0, 200, 24)),
+              inkSendDownscaleEnabled: Boolean(inkSendDownscaleEnabledRef.current),
+              inkSendMaxPixels: Math.round(clampNumber(inkSendMaxPixelsRef.current, 100_000, 40_000_000, 6_000_000)),
+              inkSendMaxDimPx: Math.round(clampNumber(inkSendMaxDimPxRef.current, 256, 8192, 4096)),
             },
           });
         } catch {
@@ -2862,6 +2902,16 @@ export default function App() {
     spawnInkNodeByDrawRef.current = Boolean(visual.spawnInkNodeByDraw);
     setSpawnEditNodeByDraw(spawnEditNodeByDrawRef.current);
     setSpawnInkNodeByDraw(spawnInkNodeByDrawRef.current);
+    inkSendCropEnabledRef.current = Boolean(visual.inkSendCropEnabled);
+    inkSendCropPaddingPxRef.current = clampNumber(visual.inkSendCropPaddingPx, 0, 200, 24);
+    inkSendDownscaleEnabledRef.current = Boolean(visual.inkSendDownscaleEnabled);
+    inkSendMaxPixelsRef.current = clampNumber(visual.inkSendMaxPixels, 100_000, 40_000_000, 6_000_000);
+    inkSendMaxDimPxRef.current = clampNumber(visual.inkSendMaxDimPx, 256, 8192, 4096);
+    setInkSendCropEnabled(inkSendCropEnabledRef.current);
+    setInkSendCropPaddingPx(inkSendCropPaddingPxRef.current);
+    setInkSendDownscaleEnabled(inkSendDownscaleEnabledRef.current);
+    setInkSendMaxPixels(inkSendMaxPixelsRef.current);
+    setInkSendMaxDimPx(inkSendMaxDimPxRef.current);
 
     bootedRef.current = true;
     setActiveChatId(resolvedActive);
@@ -3141,6 +3191,15 @@ export default function App() {
         ),
         spawnEditNodeByDraw: Boolean((visualSrc as any)?.spawnEditNodeByDraw),
         spawnInkNodeByDraw: Boolean((visualSrc as any)?.spawnInkNodeByDraw),
+        inkSendCropEnabled:
+          typeof (visualSrc as any)?.inkSendCropEnabled === 'boolean' ? Boolean((visualSrc as any).inkSendCropEnabled) : true,
+        inkSendCropPaddingPx: clampNumber((visualSrc as any)?.inkSendCropPaddingPx, 0, 200, 24),
+        inkSendDownscaleEnabled:
+          typeof (visualSrc as any)?.inkSendDownscaleEnabled === 'boolean'
+            ? Boolean((visualSrc as any).inkSendDownscaleEnabled)
+            : true,
+        inkSendMaxPixels: clampNumber((visualSrc as any)?.inkSendMaxPixels, 100_000, 40_000_000, 6_000_000),
+        inkSendMaxDimPx: clampNumber((visualSrc as any)?.inkSendMaxDimPx, 256, 8192, 4096),
       };
 
       const modelUserSettings = buildModelUserSettings(allModels, ws.llm?.modelUserSettings);
@@ -3797,6 +3856,13 @@ export default function App() {
       const settings: GeminiChatSettings = {
         modelId: selectedModelId,
         webSearchEnabled: composerWebSearch,
+        inkExport: {
+          cropEnabled: inkSendCropEnabledRef.current,
+          cropPaddingPx: inkSendCropPaddingPxRef.current,
+          downscaleEnabled: inkSendDownscaleEnabledRef.current,
+          maxPixels: inkSendMaxPixelsRef.current,
+          maxDimPx: inkSendMaxDimPxRef.current,
+        },
       };
       startGeminiGeneration({
         chatId,
@@ -3813,6 +3879,13 @@ export default function App() {
         reasoningSummary: modelSettings?.reasoningSummary,
         stream: modelSettings?.streaming,
         background: modelSettings?.background,
+        inkExport: {
+          cropEnabled: inkSendCropEnabledRef.current,
+          cropPaddingPx: inkSendCropPaddingPxRef.current,
+          downscaleEnabled: inkSendDownscaleEnabledRef.current,
+          maxPixels: inkSendMaxPixelsRef.current,
+          maxDimPx: inkSendMaxDimPxRef.current,
+        },
       };
       startOpenAIGeneration({
         chatId,
@@ -3852,10 +3925,105 @@ export default function App() {
     })();
 
     const preSnapshot = engine.exportChatState();
-    const userNode =
-      preSnapshot.nodes.find((n): n is Extract<ChatNode, { kind: 'text' }> => n.kind === 'text' && n.id === userNodeId) ??
-      null;
-    if (!userNode) return;
+    const leafNode = preSnapshot.nodes.find((n) => n.id === userNodeId) ?? null;
+    if (!leafNode) return;
+
+    if (leafNode.kind === 'ink') {
+      const strokes = Array.isArray((leafNode as any).strokes) ? ((leafNode as any).strokes as any[]) : [];
+      if (strokes.length === 0) {
+        showToast('Nothing to send: ink node is empty.', 'error');
+        return;
+      }
+
+      const modelInfo = getModelInfo(selectedModelId);
+      if (modelInfo && modelInfo.supportsImageInput === false) {
+        showToast('Selected model does not support image input.', 'error');
+        return;
+      }
+
+      const res = engine.spawnAssistantTurn({
+        userNodeId,
+        assistantTitle,
+        assistantModelId: selectedModelId,
+      });
+      if (!res) return;
+
+      meta.turns.push({
+        id: genId('turn'),
+        createdAt: Date.now(),
+        userNodeId,
+        assistantNodeId: res.assistantNodeId,
+        attachmentNodeIds: [],
+      });
+      meta.headNodeId = res.assistantNodeId;
+      meta.replyTo = null;
+      meta.contextSelections = [];
+      meta.draftAttachments = [];
+      meta.selectedAttachmentKeys = [];
+      if (args.clearComposerText !== false) meta.draft = '';
+      draftAttachmentDedupeRef.current.delete(chatId);
+      lastAddAttachmentFilesRef.current = { sig: '', at: 0 };
+      setReplySelection(null);
+      setContextSelections([]);
+      setReplyContextAttachments([]);
+      setReplySelectedAttachmentKeys([]);
+      if (args.clearComposerText !== false) setComposerDraft('');
+      setComposerDraftAttachments([]);
+
+      const snapshot = engine.exportChatState();
+      chatStatesRef.current.set(chatId, snapshot);
+
+      const provider = getModelInfo(selectedModelId)?.provider ?? 'openai';
+      if (provider === 'gemini') {
+        const settings: GeminiChatSettings = {
+          modelId: selectedModelId,
+          webSearchEnabled: composerWebSearch,
+          inkExport: {
+            cropEnabled: inkSendCropEnabledRef.current,
+            cropPaddingPx: inkSendCropPaddingPxRef.current,
+            downscaleEnabled: inkSendDownscaleEnabledRef.current,
+            maxPixels: inkSendMaxPixelsRef.current,
+            maxDimPx: inkSendMaxDimPxRef.current,
+          },
+        };
+        startGeminiGeneration({
+          chatId,
+          userNodeId,
+          assistantNodeId: res.assistantNodeId,
+          settings,
+        });
+      } else {
+        const modelSettings =
+          modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
+        const settings: OpenAIChatSettings = {
+          modelId: selectedModelId,
+          verbosity: modelSettings?.verbosity,
+          webSearchEnabled: composerWebSearch,
+          reasoningSummary: modelSettings?.reasoningSummary,
+          stream: modelSettings?.streaming,
+          background: modelSettings?.background,
+          inkExport: {
+            cropEnabled: inkSendCropEnabledRef.current,
+            cropPaddingPx: inkSendCropPaddingPxRef.current,
+            downscaleEnabled: inkSendDownscaleEnabledRef.current,
+            maxPixels: inkSendMaxPixelsRef.current,
+            maxDimPx: inkSendMaxDimPxRef.current,
+          },
+        };
+        startOpenAIGeneration({
+          chatId,
+          userNodeId,
+          assistantNodeId: res.assistantNodeId,
+          settings,
+        });
+      }
+
+      schedulePersistSoon();
+      return;
+    }
+
+    if (leafNode.kind !== 'text') return;
+    const userNode = leafNode;
 
     const userText = typeof userNode.content === 'string' ? userNode.content : String((userNode as any).content ?? '');
     const contextAttachmentKeys = collectContextAttachments(preSnapshot.nodes, userNodeId).map((it) => it.key);
@@ -3957,6 +4125,13 @@ export default function App() {
       const settings: GeminiChatSettings = {
         modelId: selectedModelId,
         webSearchEnabled: composerWebSearch,
+        inkExport: {
+          cropEnabled: inkSendCropEnabledRef.current,
+          cropPaddingPx: inkSendCropPaddingPxRef.current,
+          downscaleEnabled: inkSendDownscaleEnabledRef.current,
+          maxPixels: inkSendMaxPixelsRef.current,
+          maxDimPx: inkSendMaxDimPxRef.current,
+        },
       };
       startGeminiGeneration({
         chatId,
@@ -3974,6 +4149,13 @@ export default function App() {
         reasoningSummary: modelSettings?.reasoningSummary,
         stream: modelSettings?.streaming,
         background: modelSettings?.background,
+        inkExport: {
+          cropEnabled: inkSendCropEnabledRef.current,
+          cropPaddingPx: inkSendCropPaddingPxRef.current,
+          downscaleEnabled: inkSendDownscaleEnabledRef.current,
+          maxPixels: inkSendMaxPixelsRef.current,
+          maxDimPx: inkSendMaxDimPxRef.current,
+        },
       };
       startOpenAIGeneration({
         chatId,
@@ -4829,6 +5011,41 @@ export default function App() {
             spawnInkNodeByDrawRef.current = next;
             setSpawnInkNodeByDraw(next);
             engineRef.current?.setSpawnInkNodeByDrawEnabled(next);
+            schedulePersistSoon();
+          }}
+          inkSendCropEnabled={inkSendCropEnabled}
+          onToggleInkSendCropEnabled={() => {
+            const next = !inkSendCropEnabledRef.current;
+            inkSendCropEnabledRef.current = next;
+            setInkSendCropEnabled(next);
+            schedulePersistSoon();
+          }}
+          inkSendCropPaddingPx={inkSendCropPaddingPx}
+          onChangeInkSendCropPaddingPx={(raw) => {
+            const next = Math.round(clampNumber(raw, 0, 200, 24));
+            inkSendCropPaddingPxRef.current = next;
+            setInkSendCropPaddingPx(next);
+            schedulePersistSoon();
+          }}
+          inkSendDownscaleEnabled={inkSendDownscaleEnabled}
+          onToggleInkSendDownscaleEnabled={() => {
+            const next = !inkSendDownscaleEnabledRef.current;
+            inkSendDownscaleEnabledRef.current = next;
+            setInkSendDownscaleEnabled(next);
+            schedulePersistSoon();
+          }}
+          inkSendMaxPixels={inkSendMaxPixels}
+          onChangeInkSendMaxPixels={(raw) => {
+            const next = Math.round(clampNumber(raw, 100_000, 40_000_000, 6_000_000));
+            inkSendMaxPixelsRef.current = next;
+            setInkSendMaxPixels(next);
+            schedulePersistSoon();
+          }}
+          inkSendMaxDimPx={inkSendMaxDimPx}
+          onChangeInkSendMaxDimPx={(raw) => {
+            const next = Math.round(clampNumber(raw, 256, 8192, 4096));
+            inkSendMaxDimPxRef.current = next;
+            setInkSendMaxDimPx(next);
             schedulePersistSoon();
           }}
           spawnCount={stressSpawnCount}

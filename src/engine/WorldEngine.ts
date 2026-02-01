@@ -2281,7 +2281,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const assistantTitle = typeof args.assistantTitle === 'string' ? args.assistantTitle : '';
     const assistantModelId = typeof args.assistantModelId === 'string' ? args.assistantModelId : null;
 
-    const userNode = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === userNodeId) ?? null;
+    const userNode =
+      this.nodes.find((n): n is TextNode | InkNode => (n.kind === 'text' || n.kind === 'ink') && n.id === userNodeId) ??
+      null;
     if (!userNode) return null;
 
     const now = Date.now().toString(36);
@@ -2953,7 +2955,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           world.y <= replyBtn.y + replyBtn.h;
         if (inReply) {
           nextHeaderHover = { nodeId: hit.id, kind: 'reply' };
-        } else if (hit.kind === 'text' && hit.isEditNode) {
+        } else if ((hit.kind === 'text' && hit.isEditNode) || hit.kind === 'ink') {
           const mainBtn = this.sendButtonMainRect(hit.rect);
           const arrowBtn = this.sendButtonArrowRect(hit.rect);
           const inMain =
@@ -3054,7 +3056,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         return;
       }
 
-      if (hit.kind === 'text' && hit.isEditNode) {
+      if ((hit.kind === 'text' && hit.isEditNode) || hit.kind === 'ink') {
         const sendBtn = this.sendButtonRect(hit.rect);
         const inSend =
           world.x >= sendBtn.x &&
@@ -3289,8 +3291,11 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   }
 
   getNodeSendButtonScreenRect(nodeId: string): Rect | null {
-    const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === nodeId) ?? null;
-    if (!node || !node.isEditNode) return null;
+    const node =
+      this.nodes.find((n): n is TextNode | InkNode => (n.kind === 'text' || n.kind === 'ink') && n.id === nodeId) ??
+      null;
+    if (!node) return null;
+    if (node.kind === 'text' && !node.isEditNode) return null;
     const btn = this.sendButtonRect(node.rect);
     const tl = this.camera.worldToScreen({ x: btn.x, y: btn.y });
     const br = this.camera.worldToScreen({ x: btn.x + btn.w, y: btn.y + btn.h });
@@ -3298,8 +3303,11 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   }
 
   getNodeSendButtonArrowScreenRect(nodeId: string): Rect | null {
-    const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === nodeId) ?? null;
-    if (!node || !node.isEditNode) return null;
+    const node =
+      this.nodes.find((n): n is TextNode | InkNode => (n.kind === 'text' || n.kind === 'ink') && n.id === nodeId) ??
+      null;
+    if (!node) return null;
+    if (node.kind === 'text' && !node.isEditNode) return null;
     const btn = this.sendButtonArrowRect(node.rect);
     const tl = this.camera.worldToScreen({ x: btn.x, y: btn.y });
     const br = this.camera.worldToScreen({ x: btn.x + btn.w, y: btn.y + btn.h });
@@ -7322,7 +7330,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         return;
       }
 
-      if (hit.kind === 'text' && hit.isEditNode) {
+      if ((hit.kind === 'text' && hit.isEditNode) || hit.kind === 'ink') {
         const mainBtn = this.sendButtonMainRect(hit.rect);
         const arrowBtn = this.sendButtonArrowRect(hit.rect);
         const inMain =
@@ -8083,7 +8091,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       if (node.kind === 'text' && this.canCancelNode(node)) this.drawStopButton(node, { hovered: hoverStop });
       this.drawMenuButton(node.rect, { active: isSelected, hovered: hoverMenu });
       this.drawReplyButton(node.rect, { active: isSelected, hovered: hoverReply });
-      if (node.kind === 'text' && node.isEditNode) {
+      if ((node.kind === 'text' && node.isEditNode) || node.kind === 'ink') {
         this.drawSendButton(node.rect, {
           active: isSelected,
           hovered: hoverSend || hoverSendMenu,

@@ -1,6 +1,7 @@
 import systemInstructions from './SystemInstructions.md?raw';
 import type { ChatAttachment, ChatNode } from '../model/chat';
 import { DEFAULT_MODEL_ID, getModelInfo } from './registry';
+import { inkNodeToPngBase64, type InkExportOptions } from './inkExport';
 import { getAttachment as getStoredAttachment } from '../storage/attachments';
 import { getPayload, putPayload } from '../storage/payloads';
 import { GoogleGenAI } from '@google/genai';
@@ -20,6 +21,7 @@ export type BuiltGeminiContext = {
 export type GeminiChatSettings = {
   modelId: string;
   webSearchEnabled?: boolean;
+  inkExport?: InkExportOptions;
 };
 
 function base64ToBlob(b64: string, mimeType: string): Blob {
@@ -203,6 +205,7 @@ async function buildGeminiHistory(args: {
   nodes: ChatNode[];
   leafUserNodeId: string;
   ai: any | null;
+  inkExport?: InkExportOptions;
 }): Promise<GeminiMessage[]> {
   const byId = new Map<string, ChatNode>();
   for (const n of args.nodes) byId.set(n.id, n);
@@ -273,6 +276,39 @@ async function buildGeminiHistory(args: {
         history.push({
           role: 'user',
           parts: [{ text: '[Attachment omitted: failed to upload file to Gemini Files API.]' }],
+        });
+      }
+      continue;
+    }
+
+    if (n.kind === 'ink') {
+      const exported = await inkNodeToPngBase64(n, args.inkExport);
+      if (!exported) {
+        if (n.id === args.leafUserNodeId) throw new Error('Failed to rasterize ink node for sending.');
+        continue;
+      }
+
+      if (!args.ai) {
+        history.push({
+          role: 'user',
+          parts: [{ text: '[Attachment omitted: Gemini API client unavailable when building request.]' }],
+        });
+        continue;
+      }
+
+      try {
+        const blob = base64ToBlob(exported.base64, exported.mimeType);
+        const meta = await ensureGeminiFile({
+          ai: args.ai,
+          blob,
+          mimeType: exported.mimeType,
+          filename: `ink-${n.id}.png`,
+        });
+        history.push({ role: 'user', parts: [{ fileData: { fileUri: meta.uri, mimeType: meta.mimeType } }] });
+      } catch {
+        history.push({
+          role: 'user',
+          parts: [{ text: '[Attachment omitted: failed to upload image to Gemini Files API.]' }],
         });
       }
       continue;
@@ -351,7 +387,12 @@ export async function buildGeminiContext(args: {
     }
   }
 
-  const history = await buildGeminiHistory({ nodes: args.nodes ?? [], leafUserNodeId: args.leafUserNodeId, ai });
+  const history = await buildGeminiHistory({
+    nodes: args.nodes ?? [],
+    leafUserNodeId: args.leafUserNodeId,
+    ai,
+    inkExport: args.settings.inkExport,
+  });
   const request: any = {
     model: apiModel,
     contents: history,

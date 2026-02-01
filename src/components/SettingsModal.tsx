@@ -70,6 +70,16 @@ type Props = {
   onToggleSpawnEditNodeByDraw: () => void;
   spawnInkNodeByDraw: boolean;
   onToggleSpawnInkNodeByDraw: () => void;
+  inkSendCropEnabled: boolean;
+  onToggleInkSendCropEnabled: () => void;
+  inkSendCropPaddingPx: number;
+  onChangeInkSendCropPaddingPx: (next: number) => void;
+  inkSendDownscaleEnabled: boolean;
+  onToggleInkSendDownscaleEnabled: () => void;
+  inkSendMaxPixels: number;
+  onChangeInkSendMaxPixels: (next: number) => void;
+  inkSendMaxDimPx: number;
+  onChangeInkSendMaxDimPx: (next: number) => void;
   spawnCount: number;
   onChangeSpawnCount: (next: number) => void;
   onSpawnNodes: () => void;
@@ -916,6 +926,90 @@ export default function SettingsModal(props: Props) {
                         {props.spawnInkNodeByDraw ? 'On' : 'Off'}
                       </button>
                     </div>
+                  </div>
+                </div>
+
+                <div className="settingsCard">
+                  <div className="settingsRow">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Ink send crop</div>
+                      <div className="settingsRow__desc">Crop empty margins around strokes when sending ink nodes.</div>
+                    </div>
+                    <div className="settingsRow__actions">
+                      <button
+                        className={`settingsToggle ${props.inkSendCropEnabled ? 'settingsToggle--on' : ''}`}
+                        type="button"
+                        aria-pressed={props.inkSendCropEnabled}
+                        onClick={props.onToggleInkSendCropEnabled}
+                      >
+                        {props.inkSendCropEnabled ? 'On' : 'Off'}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="settingsSlider">
+                    <div className="settingsSlider__labelRow">
+                      <span>Crop padding</span>
+                      <span>{Math.round(props.inkSendCropPaddingPx)}px</span>
+                    </div>
+                    <input
+                      className="settingsSlider__range"
+                      type="range"
+                      min={0}
+                      max={200}
+                      step={4}
+                      value={Math.round(props.inkSendCropPaddingPx)}
+                      onChange={(e) => props.onChangeInkSendCropPaddingPx(Number(e.currentTarget.value))}
+                    />
+                  </div>
+
+                  <div className="settingsRow">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Ink send scaling</div>
+                      <div className="settingsRow__desc">When off, the image will not be downscaled and may fail if it exceeds the limits below.</div>
+                    </div>
+                    <div className="settingsRow__actions">
+                      <button
+                        className={`settingsToggle ${props.inkSendDownscaleEnabled ? 'settingsToggle--on' : ''}`}
+                        type="button"
+                        aria-pressed={props.inkSendDownscaleEnabled}
+                        onClick={props.onToggleInkSendDownscaleEnabled}
+                      >
+                        {props.inkSendDownscaleEnabled ? 'On' : 'Off'}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="settingsSlider">
+                    <div className="settingsSlider__labelRow">
+                      <span>Max pixels</span>
+                      <span>{Math.round(props.inkSendMaxPixels).toLocaleString()}</span>
+                    </div>
+                    <input
+                      className="settingsSlider__range"
+                      type="range"
+                      min={200000}
+                      max={24000000}
+                      step={250000}
+                      value={Math.round(props.inkSendMaxPixels)}
+                      onChange={(e) => props.onChangeInkSendMaxPixels(Number(e.currentTarget.value))}
+                    />
+                  </div>
+
+                  <div className="settingsSlider">
+                    <div className="settingsSlider__labelRow">
+                      <span>Max dimension</span>
+                      <span>{Math.round(props.inkSendMaxDimPx)}px</span>
+                    </div>
+                    <input
+                      className="settingsSlider__range"
+                      type="range"
+                      min={512}
+                      max={8192}
+                      step={256}
+                      value={Math.round(props.inkSendMaxDimPx)}
+                      onChange={(e) => props.onChangeInkSendMaxDimPx(Number(e.currentTarget.value))}
+                    />
                   </div>
                 </div>
 

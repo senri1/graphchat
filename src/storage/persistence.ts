@@ -38,6 +38,11 @@ export type PersistedWorkspaceSnapshot = {
     sidebarFontSizePx?: number;
     spawnEditNodeByDraw?: boolean;
     spawnInkNodeByDraw?: boolean;
+    inkSendCropEnabled?: boolean;
+    inkSendCropPaddingPx?: number;
+    inkSendDownscaleEnabled?: boolean;
+    inkSendMaxPixels?: number;
+    inkSendMaxDimPx?: number;
   };
   updatedAt: number;
 };

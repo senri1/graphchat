@@ -1,6 +1,7 @@
 import systemInstructions from './SystemInstructions.md?raw';
 import type { ChatAttachment, ChatNode } from '../model/chat';
 import { DEFAULT_MODEL_ID, getModelInfo, type TextVerbosity } from './registry';
+import { inkNodeToPngBase64, type InkExportOptions } from './inkExport';
 import { blobToDataUrl, getAttachment as getStoredAttachment } from '../storage/attachments';
 import { getPayload } from '../storage/payloads';
 
@@ -11,6 +12,7 @@ export type OpenAIChatSettings = {
   reasoningSummary?: 'auto' | 'detailed' | 'off';
   stream?: boolean;
   background?: boolean;
+  inkExport?: InkExportOptions;
 };
 
 async function attachmentToOpenAIContent(att: any): Promise<any | null> {
@@ -90,7 +92,11 @@ function buildUserTurnText(node: Extract<ChatNode, { kind: 'text' }>): string {
   return lines.join('\n');
 }
 
-async function buildOpenAIInputFromChatNodes(nodes: ChatNode[], leafUserNodeId: string): Promise<any[]> {
+async function buildOpenAIInputFromChatNodes(
+  nodes: ChatNode[],
+  leafUserNodeId: string,
+  opts?: { inkExport?: InkExportOptions },
+): Promise<any[]> {
   const byId = new Map<string, ChatNode>();
   for (const n of nodes) byId.set(n.id, n);
 
@@ -128,6 +134,17 @@ async function buildOpenAIInputFromChatNodes(nodes: ChatNode[], leafUserNodeId: 
         storageKey,
         ...(name ? { name } : {}),
       };
+      const part = await attachmentToOpenAIContent(att);
+      if (part) input.push({ role: 'user', content: [part] });
+      continue;
+    }
+    if (n.kind === 'ink') {
+      const exported = await inkNodeToPngBase64(n, opts?.inkExport);
+      if (!exported) {
+        if (n.id === leafUserNodeId) throw new Error('Failed to rasterize ink node for sending.');
+        continue;
+      }
+      const att: ChatAttachment = { kind: 'image', mimeType: 'image/png', data: exported.base64, detail: 'auto' };
       const part = await attachmentToOpenAIContent(att);
       if (part) input.push({ role: 'user', content: [part] });
       continue;
@@ -195,7 +212,7 @@ export async function buildOpenAIResponseRequest(args: {
   const modelId = args.settings.modelId || DEFAULT_MODEL_ID;
   const info = getModelInfo(modelId);
   const apiModel = info?.apiModel || modelId;
-  const input = await buildOpenAIInputFromChatNodes(args.nodes, args.leafUserNodeId);
+  const input = await buildOpenAIInputFromChatNodes(args.nodes, args.leafUserNodeId, { inkExport: args.settings.inkExport });
 
   const body: any = {
     model: apiModel,
