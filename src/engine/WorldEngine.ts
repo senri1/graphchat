@@ -175,9 +175,9 @@ const TEXT_NODE_SEND_BUTTON_SPLIT_GAP_PX = 3;
 
 // Spawn + streaming auto-grow bounds (manual resizing can exceed these).
 const TEXT_NODE_SPAWN_MIN_W_PX = 260;
-const TEXT_NODE_SPAWN_MAX_W_PX = 640;
+const TEXT_NODE_SPAWN_MAX_W_PX = 800;
 const TEXT_NODE_SPAWN_MIN_H_PX = 120;
-const TEXT_NODE_SPAWN_MAX_H_PX = 420;
+const TEXT_NODE_SPAWN_MAX_H_PX = 1200;
 
 type ReasoningSummaryBlock = { type: 'summary_text'; text: string };
 
