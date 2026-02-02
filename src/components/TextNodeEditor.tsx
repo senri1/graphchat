@@ -1,6 +1,7 @@
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import MarkdownMath from './MarkdownMath';
+import { renderMarkdownMathInline } from '../markdown/renderMarkdownMath';
 import type { Rect } from '../engine/types';
 import type { ModelInfo } from '../llm/registry';
 
@@ -440,11 +441,10 @@ export default function TextNodeEditor(props: Props) {
     const ctx = Array.isArray(preface.contexts) ? preface.contexts.map((t) => String(t ?? '').trim()).filter(Boolean) : [];
     if (!replyTo && ctx.length === 0) return null;
 
-    const stripStrong = (text: string): string => String(text ?? '').replace(/\*\*(.+?)\*\*/g, '$1');
     const summarizeFirstLine = (text: string): string => {
       const t = String(text ?? '');
       const firstLine = t.split('\n')[0] ?? '';
-      return stripStrong(firstLine);
+      return firstLine.trimEnd();
     };
 
     const containerStyle: React.CSSProperties = {
@@ -458,26 +458,75 @@ export default function TextNodeEditor(props: Props) {
     };
 
     return (
-      <div style={containerStyle}>
+      <div style={containerStyle} className="mdx">
         {replyTo ? (
-          <div style={{ margin: `0 0 calc(6px * var(--editor-scale, 1))` }}>
-            <span style={{ opacity: 0.75 }}>Replying to:</span>{' '}
-            <span style={{ fontStyle: 'italic', whiteSpace: 'pre-wrap' }}>{replyTo}</span>
+          <div style={{ margin: `0 0 calc(10px * var(--editor-scale, 1))` }}>
+            <div style={{ opacity: 0.75, margin: `0 0 calc(4px * var(--editor-scale, 1))` }}>Replying to:</div>
+            <MarkdownMath source={replyTo} className="gc-preface__mdx" />
           </div>
         ) : null}
 
         {ctx.map((text, i) => {
           const collapsed = Boolean(collapsedPrefaceContexts?.[i]);
           const chevron = collapsed ? '▸' : '▾';
-          const display = collapsed ? summarizeFirstLine(text) : text;
-          const textStyle: React.CSSProperties = collapsed
-            ? { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }
-            : { whiteSpace: 'pre-wrap' };
           const rowAlign = collapsed ? 'center' : 'flex-start';
           const chevronMarginTop = collapsed ? '0' : '0.15em';
-          const bodyStyle: React.CSSProperties = collapsed
-            ? { flex: 1, minWidth: 0, display: 'flex', alignItems: 'center' }
-            : { flex: 1, minWidth: 0 };
+
+          if (collapsed) {
+            const summaryText = summarizeFirstLine(text);
+            const summaryHtml = renderMarkdownMathInline(summaryText).replace(/<br\s*\/?\s*>/gi, ' ');
+            return (
+              <div
+                key={i}
+                style={{
+                  display: 'flex',
+                  alignItems: rowAlign,
+                  gap: `calc(6px * var(--editor-scale, 1))`,
+                  margin: `0 0 calc(6px * var(--editor-scale, 1))`,
+                }}
+              >
+                <span
+                  aria-hidden="true"
+                  onClick={() => {
+                    setCollapsedPrefaceContexts((prev) => {
+                      const next = { ...(prev ?? {}) };
+                      if (next[i]) delete next[i];
+                      else next[i] = true;
+                      return next;
+                    });
+                    try {
+                      onTogglePrefaceContext?.(i);
+                    } catch {
+                      // ignore
+                    }
+                  }}
+                  style={{
+                    width: '1em',
+                    flex: '0 0 1em',
+                    marginTop: chevronMarginTop,
+                    display: 'inline-flex',
+                    justifyContent: 'center',
+                    color: 'rgba(255,255,255,0.55)',
+                    cursor: 'pointer',
+                    userSelect: 'none',
+                  }}
+                >
+                  {chevron}
+                </span>
+                <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center' }}>
+                  <span style={{ opacity: 0.75, flex: '0 0 auto', marginRight: `calc(6px * var(--editor-scale, 1))` }}>
+                    Context {i + 1}:
+                  </span>
+                  <span
+                    className="gc-preface__inline"
+                    style={{ flex: 1, minWidth: 0, display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                    dangerouslySetInnerHTML={{ __html: summaryHtml }}
+                  />
+                </div>
+              </div>
+            );
+          }
+
           return (
             <div
               key={i}
@@ -485,7 +534,7 @@ export default function TextNodeEditor(props: Props) {
                 display: 'flex',
                 alignItems: rowAlign,
                 gap: `calc(6px * var(--editor-scale, 1))`,
-                margin: `0 0 calc(6px * var(--editor-scale, 1))`,
+                margin: `0 0 calc(10px * var(--editor-scale, 1))`,
               }}
             >
               <span
@@ -516,11 +565,9 @@ export default function TextNodeEditor(props: Props) {
               >
                 {chevron}
               </span>
-              <div style={bodyStyle}>
-                <span style={{ opacity: 0.75, flex: '0 0 auto', marginRight: `calc(6px * var(--editor-scale, 1))` }}>
-                  Context {i + 1}:
-                </span>
-                <span style={{ fontStyle: 'italic', ...textStyle, flex: 1, minWidth: 0 }}>{display}</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ opacity: 0.75, margin: `0 0 calc(4px * var(--editor-scale, 1))` }}>Context {i + 1}:</div>
+                <MarkdownMath source={text} className="gc-preface__mdx" />
               </div>
             </div>
           );

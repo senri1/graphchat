@@ -133,6 +133,7 @@ md.use(footnote);
 
 const RENDER_CACHE_MAX = 250;
 const renderCache = new Map<string, string>();
+const renderInlineCache = new Map<string, string>();
 
 export function renderMarkdownMath(input: string): string {
   const key = input ?? '';
@@ -151,6 +152,26 @@ export function renderMarkdownMath(input: string): string {
   if (renderCache.size > RENDER_CACHE_MAX) {
     const firstKey = renderCache.keys().next().value as string | undefined;
     if (firstKey !== undefined) renderCache.delete(firstKey);
+  }
+  return out;
+}
+
+export function renderMarkdownMathInline(input: string): string {
+  const key = input ?? '';
+  const cached = renderInlineCache.get(key);
+  if (cached !== undefined) return cached;
+
+  let out: string;
+  try {
+    out = md.renderInline(key);
+  } catch {
+    out = key.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+  }
+
+  renderInlineCache.set(key, out);
+  if (renderInlineCache.size > RENDER_CACHE_MAX) {
+    const firstKey = renderInlineCache.keys().next().value as string | undefined;
+    if (firstKey !== undefined) renderInlineCache.delete(firstKey);
   }
   return out;
 }

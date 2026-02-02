@@ -3,7 +3,7 @@ import { Camera } from './Camera';
 import { InputController, type PointerCaptureMode } from './InputController';
 import { rectsIntersect, type Rect, type Vec2 } from './types';
 import { rasterizeHtmlToImage, type TextHitZone } from './raster/textRaster';
-import { renderMarkdownMath } from '../markdown/renderMarkdownMath';
+import { renderMarkdownMath, renderMarkdownMathInline } from '../markdown/renderMarkdownMath';
 import { normalizeMathDelimitersFromCopyTex } from '../markdown/mathDelimiters';
 import { TextLod2Overlay, type HighlightRect, type TextLod2Action, type TextLod2Mode } from './TextLod2Overlay';
 import { PdfTextLod2Overlay, type HighlightRect as PdfHighlightRect, type PdfSelectionStartAnchor } from './PdfTextLod2Overlay';
@@ -4159,39 +4159,49 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
             'border-radius:12px;background:rgba(0,0,0,0.18);font-size:0.85em;color:rgba(255,255,255,0.88);">',
         );
         if (replyTo) {
-          parts.push(
-            '<div style="margin:0 0 6px;">' +
-              '<span style="opacity:0.75;">Replying to:</span> ' +
-              '<span style="font-style:italic;white-space:pre-wrap;">' +
-              escapeHtml(replyTo) +
-              '</span>' +
-              '</div>',
-          );
+          parts.push('<div style="margin:0 0 10px;">');
+          parts.push('<div style="opacity:0.75;margin:0 0 4px;">Replying to:</div>');
+          parts.push(`<div class="gc-preface__mdx">${renderMarkdownMath(replyTo)}</div>`);
+          parts.push('</div>');
         }
         for (let i = 0; i < ctx.length; i += 1) {
           const collapsed = Boolean(node.collapsedPrefaceContexts?.[i]);
           const chevron = collapsed ? '▸' : '▾';
-          const display = collapsed ? summarizeFirstLine(ctx[i]) : ctx[i];
-          const textStyle = collapsed
-            ? 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'
-            : 'white-space:pre-wrap;';
           const rowAlign = collapsed ? 'center' : 'flex-start';
           const chevronMarginTop = collapsed ? '0' : '0.15em';
-          const bodyStyle = collapsed
-            ? 'flex:1;min-width:0;display:flex;align-items:center;'
-            : 'flex:1;min-width:0;';
+
+          if (collapsed) {
+            const summaryText = (String(ctx[i] ?? '').split('\n')[0] ?? '').trimEnd();
+            const summaryHtml = renderMarkdownMathInline(summaryText).replace(/<br\s*\/?\s*>/gi, ' ');
+            parts.push(
+              `<div style="display:flex;align-items:${rowAlign};gap:6px;margin:0 0 6px;">` +
+                `<span data-gcv1-preface-context-toggle="${i}" aria-hidden="true" ` +
+                `style="width:1em;flex:0 0 1em;margin-top:${chevronMarginTop};display:inline-flex;justify-content:center;` +
+                'color:rgba(255,255,255,0.55);cursor:pointer;user-select:none;">' +
+                chevron +
+                '</span>' +
+                `<div style="flex:1;min-width:0;display:flex;align-items:center;">` +
+                `<span style="opacity:0.75;flex:0 0 auto;margin-right:6px;">Context ${i + 1}:</span>` +
+                `<span class="gc-preface__inline" style="flex:1;min-width:0;display:block;` +
+                'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' +
+                summaryHtml +
+                '</span>' +
+                '</div>' +
+                '</div>',
+            );
+            continue;
+          }
+
           parts.push(
-            `<div style="display:flex;align-items:${rowAlign};gap:6px;margin:0 0 6px;">` +
+            `<div style="display:flex;align-items:${rowAlign};gap:6px;margin:0 0 10px;">` +
               `<span data-gcv1-preface-context-toggle="${i}" aria-hidden="true" ` +
               `style="width:1em;flex:0 0 1em;margin-top:${chevronMarginTop};display:inline-flex;justify-content:center;` +
               'color:rgba(255,255,255,0.55);cursor:pointer;user-select:none;">' +
               chevron +
               '</span>' +
-              `<div style="${bodyStyle}">` +
-              `<span style="opacity:0.75;flex:0 0 auto;margin-right:6px;">Context ${i + 1}:</span>` +
-              `<span style="font-style:italic;${textStyle}flex:1;min-width:0;">` +
-              escapeHtml(display) +
-              '</span>' +
+              `<div style="flex:1;min-width:0;">` +
+              `<div style="opacity:0.75;margin:0 0 4px;">Context ${i + 1}:</div>` +
+              `<div class="gc-preface__mdx">${renderMarkdownMath(ctx[i])}</div>` +
               '</div>' +
               '</div>',
           );

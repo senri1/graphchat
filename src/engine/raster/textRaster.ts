@@ -51,6 +51,16 @@ const MDX_CSS = `
 }
 .mdx pre code { background: transparent; padding: 0; }
 .mdx a { color: #93c5fd; text-decoration: underline; }
+
+.gc-preface__mdx > :first-child { margin-top: 0; }
+.gc-preface__mdx > :last-child { margin-bottom: 0; }
+.gc-preface__mdx, .gc-preface__inline { font-style: italic; }
+.gc-preface__mdx pre,
+.gc-preface__inline pre,
+.gc-preface__mdx code,
+.gc-preface__inline code,
+.gc-preface__mdx .katex,
+.gc-preface__inline .katex { font-style: normal; }
 `.trim();
 
 type KaTeXCssParts = { rules: string; fontFaces: string };
