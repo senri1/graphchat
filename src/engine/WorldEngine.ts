@@ -651,6 +651,8 @@ export class WorldEngine {
   private textScrollGutterPx: number | null = null;
   private textMeasureRoot: HTMLDivElement | null = null;
   private readonly inkPrefaceMeasureCacheByNodeId = new Map<string, { baseSig: string; fullHeightPx: number }>();
+  private inkPrefaceResizeHold: { nodeId: string; key: string; expiresAt: number } | null = null;
+  private readonly lastInkPrefaceRasterKeyByNodeId = new Map<string, string>();
   private textStreamingAutoResizeRaf: number | null = null;
   private readonly textStreamingAutoResizeNodeIds = new Set<string>();
 
@@ -1066,6 +1068,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.selectedNodeId = null;
     this.activeGesture = null;
     this.textResizeHold = null;
+    this.inkPrefaceResizeHold = null;
+    this.lastInkPrefaceRasterKeyByNodeId.clear();
     this.textLod2HtmlCache = null;
     this.textStreamLod2HtmlCache = null;
     this.hoverTextNodeId = null;
@@ -2554,6 +2558,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.inkPrefaceRasterCache.clear();
     this.bestInkPrefaceRasterKeyBySig.clear();
     this.inkPrefaceRasterCacheBytes = 0;
+    this.inkPrefaceResizeHold = null;
+    this.lastInkPrefaceRasterKeyByNodeId.clear();
   }
 
   private evictOldTextRasters(): void {
@@ -6192,16 +6198,26 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return { key: best.key, image: entry.image, hitZones: entry.hitZones };
   }
 
-  private getBestInkPrefaceRaster(sig: string): { key: string; image: CanvasImageSource; hitZones?: TextHitZone[] } | null {
+  private getInkPrefaceRasterByKey(
+    key: string,
+  ): { key: string; image: CanvasImageSource; width: number; height: number; hitZones?: TextHitZone[] } | null {
+    const entry = this.inkPrefaceRasterCache.get(key);
+    if (!entry) return null;
+    this.touchInkPrefaceRaster(key);
+    return { key, image: entry.image, width: entry.width, height: entry.height, hitZones: entry.hitZones };
+  }
+
+  private getBestInkPrefaceRaster(
+    sig: string,
+  ): { key: string; image: CanvasImageSource; width: number; height: number; hitZones?: TextHitZone[] } | null {
     const best = this.bestInkPrefaceRasterKeyBySig.get(sig);
     if (!best) return null;
-    const entry = this.inkPrefaceRasterCache.get(best.key);
-    if (!entry) {
+    const raster = this.getInkPrefaceRasterByKey(best.key);
+    if (!raster) {
       this.bestInkPrefaceRasterKeyBySig.delete(sig);
       return null;
     }
-    this.touchInkPrefaceRaster(best.key);
-    return { key: best.key, image: entry.image, hitZones: entry.hitZones };
+    return raster;
   }
 
   private updateTextRastersForViewport(): void {
@@ -7742,6 +7758,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 	        const sig = this.textRasterSigForNode(node, contentRect).sig;
 	        this.textResizeHold = { nodeId: node.id, sig, expiresAt: performance.now() + 2200 };
 	      }
+
+        const inkNode = this.nodes.find((n): n is InkNode => n.id === g.nodeId && n.kind === 'ink') ?? null;
+        if (inkNode) {
+          const key = this.lastInkPrefaceRasterKeyByNodeId.get(inkNode.id) ?? '';
+          if (key) this.inkPrefaceResizeHold = { nodeId: inkNode.id, key, expiresAt: performance.now() + 2200 };
+        }
 	    }
 
     this.activeGesture = null;
@@ -8856,40 +8878,64 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 		        ctx.fillRect(inkRect.x, inkRect.y, inkRect.w, inkRect.h);
 
           if (prefaceLayout && prefaceLayout.prefaceRect.h > 0.5) {
-            const preface = this.getBestInkPrefaceRaster(prefaceLayout.sig);
-            if (preface) {
+            const prefaceRect = prefaceLayout.prefaceRect;
+            const now = performance.now();
+            if (this.inkPrefaceResizeHold && now > this.inkPrefaceResizeHold.expiresAt) this.inkPrefaceResizeHold = null;
+
+            const holdKey =
+              this.inkPrefaceResizeHold && this.inkPrefaceResizeHold.nodeId === node.id ? this.inkPrefaceResizeHold.key : null;
+            const isResizingThisNode = this.activeGesture?.kind === 'resize' && this.activeGesture.nodeId === node.id;
+
+            const drawPrefaceRaster = (raster: {
+              image: CanvasImageSource;
+              width: number;
+              height: number;
+            }) => {
+              const scale = raster.width > 0 ? prefaceRect.w / raster.width : 1;
+              const s = Number.isFinite(scale) && scale > 0 ? scale : 1;
+              const drawH = raster.height * s;
+              let saved = false;
               try {
-                ctx.drawImage(
-                  preface.image,
-                  prefaceLayout.prefaceRect.x,
-                  prefaceLayout.prefaceRect.y,
-                  prefaceLayout.prefaceRect.w,
-                  prefaceLayout.prefaceRect.h,
-                );
+                ctx.save();
+                saved = true;
+                ctx.beginPath();
+                ctx.rect(prefaceRect.x, prefaceRect.y, prefaceRect.w, prefaceRect.h);
+                ctx.clip();
+                ctx.drawImage(raster.image, prefaceRect.x, prefaceRect.y, prefaceRect.w, drawH);
               } catch {
                 // ignore
+              } finally {
+                if (saved) ctx.restore();
               }
+            };
+
+            const preface = this.getBestInkPrefaceRaster(prefaceLayout.sig);
+            if (preface) {
+              this.lastInkPrefaceRasterKeyByNodeId.set(node.id, preface.key);
+              if (this.inkPrefaceResizeHold?.nodeId === node.id) this.inkPrefaceResizeHold = null;
+              drawPrefaceRaster(preface);
             } else {
-              const z = Math.max(0.01, this.camera.zoom || 1);
-              ctx.fillStyle = 'rgba(255,255,255,0.06)';
-              ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-              ctx.lineWidth = 1 / z;
-              ctx.fillRect(
-                prefaceLayout.prefaceRect.x,
-                prefaceLayout.prefaceRect.y,
-                prefaceLayout.prefaceRect.w,
-                prefaceLayout.prefaceRect.h,
-              );
-              ctx.strokeRect(
-                prefaceLayout.prefaceRect.x,
-                prefaceLayout.prefaceRect.y,
-                prefaceLayout.prefaceRect.w,
-                prefaceLayout.prefaceRect.h,
-              );
-              ctx.fillStyle = 'rgba(255,255,255,0.55)';
-              ctx.font = `${12 / z}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
-              ctx.textBaseline = 'top';
-              ctx.fillText('Rendering context…', prefaceLayout.prefaceRect.x + 12, prefaceLayout.prefaceRect.y + 10);
+              const fallbackKey = (holdKey || (isResizingThisNode ? this.lastInkPrefaceRasterKeyByNodeId.get(node.id) : null)) ?? null;
+              const fallback = fallbackKey ? this.getInkPrefaceRasterByKey(fallbackKey) : null;
+              if (fallback) {
+                this.lastInkPrefaceRasterKeyByNodeId.set(node.id, fallback.key);
+                drawPrefaceRaster(fallback);
+              } else {
+                if (fallbackKey && this.lastInkPrefaceRasterKeyByNodeId.get(node.id) === fallbackKey) {
+                  this.lastInkPrefaceRasterKeyByNodeId.delete(node.id);
+                }
+                if (fallbackKey && holdKey === fallbackKey) this.inkPrefaceResizeHold = null;
+                const z = Math.max(0.01, this.camera.zoom || 1);
+                ctx.fillStyle = 'rgba(255,255,255,0.06)';
+                ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+                ctx.lineWidth = 1 / z;
+                ctx.fillRect(prefaceRect.x, prefaceRect.y, prefaceRect.w, prefaceRect.h);
+                ctx.strokeRect(prefaceRect.x, prefaceRect.y, prefaceRect.w, prefaceRect.h);
+                ctx.fillStyle = 'rgba(255,255,255,0.55)';
+                ctx.font = `${12 / z}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
+                ctx.textBaseline = 'top';
+                ctx.fillText('Rendering context…', prefaceRect.x + 12, prefaceRect.y + 10);
+              }
             }
           }
 
