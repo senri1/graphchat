@@ -3757,6 +3757,12 @@ export default function App() {
 
     const composerContextTexts = (contextSelections ?? []).map((t) => String(t ?? '').trim()).filter(Boolean);
 
+    const selectionReplyTo =
+      replySelection && typeof replySelection.text === 'string' ? replySelection.text.trim() : '';
+    const extraReplyTo =
+      args.extraUserPreface && typeof args.extraUserPreface.replyTo === 'string' ? args.extraUserPreface.replyTo.trim() : '';
+    const replyTo = extraReplyTo || selectionReplyTo;
+
     const nodeContextTexts = Array.isArray(args.extraUserPreface?.contexts)
       ? args.extraUserPreface!.contexts!.map((t) => String(t ?? '').trim()).filter(Boolean)
       : [];
@@ -3772,7 +3778,7 @@ export default function App() {
       }
       return out;
     })();
-    const hasPreface = contextTexts.length > 0;
+    const hasPreface = Boolean(replyTo || contextTexts.length > 0);
 
     if (!raw.trim() && composerDraftAttachments.length === 0 && !hasPreface) return;
 
@@ -3817,6 +3823,7 @@ export default function App() {
 
     const userPreface = hasPreface
       ? {
+          ...(replyTo ? { replyTo } : {}),
           ...(contextTexts.length ? { contexts: contextTexts } : {}),
         }
       : undefined;
@@ -3834,7 +3841,9 @@ export default function App() {
     const ctxTargetId = String(contextTargetEditNodeIdRef.current ?? '').trim();
     if (ctxTargetId && composerContextTexts.length > 0) {
       try {
-        const existing = engine.getTextNodeUserPreface(ctxTargetId)?.contexts ?? [];
+        const existingPreface = engine.getTextNodeUserPreface(ctxTargetId);
+        const existingReplyTo = existingPreface?.replyTo ?? '';
+        const existing = existingPreface?.contexts ?? [];
         const merged = (() => {
           const seen = new Set<string>();
           const out: string[] = [];
@@ -3847,7 +3856,18 @@ export default function App() {
           }
           return out;
         })();
-        engine.setTextNodeUserPreface(ctxTargetId, merged.length ? { contexts: merged } : null, { collapseNewContexts: true });
+        engine.setTextNodeUserPreface(
+          ctxTargetId,
+          merged.length
+            ? {
+                ...(existingReplyTo ? { replyTo: existingReplyTo } : {}),
+                contexts: merged,
+              }
+            : existingReplyTo
+              ? { replyTo: existingReplyTo }
+              : null,
+          { collapseNewContexts: true },
+        );
       } catch {
         // ignore
       }
@@ -4088,6 +4108,7 @@ export default function App() {
     const contextAttachmentKeys = collectContextAttachments(preSnapshot.nodes, userNodeId).map((it) => it.key);
     const contextPdfKeys = contextAttachmentKeys.filter((k) => k.startsWith('pdf:'));
 
+    const replyTo = typeof userNode.userPreface?.replyTo === 'string' ? userNode.userPreface.replyTo.trim() : '';
     const nodeContextTexts = Array.isArray(userNode.userPreface?.contexts)
       ? userNode.userPreface!.contexts!.map((t) => String(t ?? '').trim()).filter(Boolean)
       : [];
@@ -4103,13 +4124,22 @@ export default function App() {
       }
       return out;
     })();
-    const hasPreface = contextTexts.length > 0;
+    const hasPreface = Boolean(replyTo || contextTexts.length > 0);
 
     if (!userText.trim() && composerDraftAttachments.length === 0 && !hasPreface) return;
 
     // Persist the composed context back onto the edit node so the sent message matches what the node shows.
     try {
-      engine.setTextNodeUserPreface(userNodeId, hasPreface ? { contexts: contextTexts } : null, { collapseNewContexts: true });
+      engine.setTextNodeUserPreface(
+        userNodeId,
+        hasPreface
+          ? {
+              ...(replyTo ? { replyTo } : {}),
+              ...(contextTexts.length ? { contexts: contextTexts } : {}),
+            }
+          : null,
+        { collapseNewContexts: true },
+      );
     } catch {
       // ignore
     }
@@ -4148,6 +4178,7 @@ export default function App() {
 
     const userPreface = hasPreface
       ? {
+          ...(replyTo ? { replyTo } : {}),
           ...(contextTexts.length ? { contexts: contextTexts } : {}),
         }
       : undefined;
