@@ -8,6 +8,9 @@ import { GoogleGenAI } from '@google/genai';
 
 export type GeminiFileMeta = { name: string; uri: string; mimeType: string };
 
+const INK_NODE_IMAGE_PREFACE =
+  'The contents of this message are in the provided image.';
+
 export type GeminiMessage = {
   role: 'user' | 'model';
   parts: any[];
@@ -210,15 +213,6 @@ async function buildGeminiHistory(args: {
   const byId = new Map<string, ChatNode>();
   for (const n of args.nodes) byId.set(n.id, n);
 
-  const leafSelection = (() => {
-    const leaf = byId.get(args.leafUserNodeId) ?? null;
-    const selected =
-      leaf && leaf.kind === 'text' && Array.isArray((leaf as any)?.selectedAttachmentKeys)
-        ? ((leaf as any).selectedAttachmentKeys as string[])
-        : [];
-    return new Set<string>(selected);
-  })();
-
   const chain: ChatNode[] = [];
   let cur: ChatNode | null = byId.get(args.leafUserNodeId) ?? null;
   while (cur) {
@@ -228,6 +222,26 @@ async function buildGeminiHistory(args: {
     cur = byId.get(parentId) ?? null;
   }
   chain.reverse();
+
+  const leafSelection = (() => {
+    const leaf = byId.get(args.leafUserNodeId) ?? null;
+    const selected =
+      leaf && leaf.kind === 'text' && Array.isArray((leaf as any)?.selectedAttachmentKeys)
+        ? ((leaf as any).selectedAttachmentKeys as string[])
+        : [];
+    const set = new Set<string>(selected);
+
+    // Ink nodes don't currently have a per-send attachment selector, but if the ink
+    // node is anchored under a PDF we still want the PDF file included in the request.
+    if (leaf?.kind === 'ink') {
+      for (const n of chain) {
+        if (n.kind !== 'pdf') continue;
+        set.add(`pdf:${n.id}`);
+      }
+    }
+
+    return set;
+  })();
 
   const history: GeminiMessage[] = [];
   for (const n of chain) {
@@ -304,7 +318,13 @@ async function buildGeminiHistory(args: {
           mimeType: exported.mimeType,
           filename: `ink-${n.id}.png`,
         });
-        history.push({ role: 'user', parts: [{ fileData: { fileUri: meta.uri, mimeType: meta.mimeType } }] });
+        history.push({
+          role: 'user',
+          parts: [
+            { text: INK_NODE_IMAGE_PREFACE },
+            { fileData: { fileUri: meta.uri, mimeType: meta.mimeType } },
+          ],
+        });
       } catch {
         history.push({
           role: 'user',

@@ -15,6 +15,9 @@ export type OpenAIChatSettings = {
   inkExport?: InkExportOptions;
 };
 
+const INK_NODE_IMAGE_PREFACE =
+  'The contents of this message are in the provided image.';
+
 async function attachmentToOpenAIContent(att: any): Promise<any | null> {
   if (!att) return null;
 
@@ -100,15 +103,6 @@ async function buildOpenAIInputFromChatNodes(
   const byId = new Map<string, ChatNode>();
   for (const n of nodes) byId.set(n.id, n);
 
-  const leafSelection = (() => {
-    const leaf = byId.get(leafUserNodeId) ?? null;
-    const selected =
-      leaf && leaf.kind === 'text' && Array.isArray((leaf as any)?.selectedAttachmentKeys)
-        ? ((leaf as any).selectedAttachmentKeys as string[])
-        : [];
-    return new Set<string>(selected);
-  })();
-
   const chain: ChatNode[] = [];
   let cur: ChatNode | null = byId.get(leafUserNodeId) ?? null;
   while (cur) {
@@ -118,6 +112,26 @@ async function buildOpenAIInputFromChatNodes(
     cur = byId.get(parentId) ?? null;
   }
   chain.reverse();
+
+  const leafSelection = (() => {
+    const leaf = byId.get(leafUserNodeId) ?? null;
+    const selected =
+      leaf && leaf.kind === 'text' && Array.isArray((leaf as any)?.selectedAttachmentKeys)
+        ? ((leaf as any).selectedAttachmentKeys as string[])
+        : [];
+    const set = new Set<string>(selected);
+
+    // Ink nodes don't currently have a per-send attachment selector, but if the ink
+    // node is anchored under a PDF we still want the PDF file included in the request.
+    if (leaf?.kind === 'ink') {
+      for (const n of chain) {
+        if (n.kind !== 'pdf') continue;
+        set.add(`pdf:${n.id}`);
+      }
+    }
+
+    return set;
+  })();
 
   const input: any[] = [];
 
@@ -146,7 +160,15 @@ async function buildOpenAIInputFromChatNodes(
       }
       const att: ChatAttachment = { kind: 'image', mimeType: 'image/png', data: exported.base64, detail: 'auto' };
       const part = await attachmentToOpenAIContent(att);
-      if (part) input.push({ role: 'user', content: [part] });
+      if (part) {
+        input.push({
+          role: 'user',
+          content: [
+            { type: 'input_text', text: INK_NODE_IMAGE_PREFACE },
+            part,
+          ],
+        });
+      }
       continue;
     }
     if (n.kind !== 'text') continue;
