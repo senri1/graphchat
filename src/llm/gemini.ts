@@ -204,6 +204,20 @@ function buildUserTurnText(node: Extract<ChatNode, { kind: 'text' }>): string {
   return lines.join('\n');
 }
 
+function buildInkTurnText(node: Extract<ChatNode, { kind: 'ink' }>): string {
+  const lines: string[] = [];
+  const replyTo = (node.userPreface?.replyTo ?? '').trim();
+  if (replyTo) lines.push(`Replying to: ${replyTo}`);
+
+  const ctxRaw = Array.isArray(node.userPreface?.contexts) ? node.userPreface!.contexts! : [];
+  const ctx = ctxRaw.map((t) => String(t ?? '').trim()).filter(Boolean);
+  for (let i = 0; i < ctx.length; i += 1) lines.push(`Context ${i + 1}: ${ctx[i]}`);
+
+  if (lines.length) lines.push('');
+  lines.push(INK_NODE_IMAGE_PREFACE);
+  return lines.join('\n');
+}
+
 async function buildGeminiHistory(args: {
   nodes: ChatNode[];
   leafUserNodeId: string;
@@ -318,10 +332,11 @@ async function buildGeminiHistory(args: {
           mimeType: exported.mimeType,
           filename: `ink-${n.id}.png`,
         });
+        const prefaceText = buildInkTurnText(n);
         history.push({
           role: 'user',
           parts: [
-            { text: INK_NODE_IMAGE_PREFACE },
+            { text: prefaceText },
             { fileData: { fileUri: meta.uri, mimeType: meta.mimeType } },
           ],
         });

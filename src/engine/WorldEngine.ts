@@ -339,6 +339,8 @@ type PdfNode = DemoNodeBase & {
 type InkNode = DemoNodeBase & {
   kind: 'ink';
   rect: Rect;
+  userPreface?: { replyTo?: string; contexts?: string[] };
+  collapsedPrefaceContexts?: Record<number, boolean>;
   strokes: InkStroke[];
   raster: InkRaster | null;
 };
@@ -354,6 +356,16 @@ type TextRasterJob = {
   height: number;
   html: string;
   scrollY: number;
+};
+
+type InkPrefaceRasterJob = {
+  nodeId: string;
+  key: string;
+  sig: string;
+  rasterScale: number;
+  width: number;
+  height: number;
+  html: string;
 };
 
 export type PdfPageMeta = {
@@ -638,6 +650,7 @@ export class WorldEngine {
   private nodeTextLineHeight = 1.55;
   private textScrollGutterPx: number | null = null;
   private textMeasureRoot: HTMLDivElement | null = null;
+  private readonly inkPrefaceMeasureCacheByNodeId = new Map<string, { baseSig: string; fullHeightPx: number }>();
   private textStreamingAutoResizeRaf: number | null = null;
   private readonly textStreamingAutoResizeNodeIds = new Set<string>();
 
@@ -676,6 +689,10 @@ export class WorldEngine {
   private textRasterRunning = false;
   private textRasterGeneration = 0;
 
+  private readonly inkPrefaceRasterQueueByNodeId = new Map<string, InkPrefaceRasterJob>();
+  private inkPrefaceRasterRunning = false;
+  private inkPrefaceRasterGeneration = 0;
+
   private readonly attachmentThumbDataUrlByKey = new Map<
     string,
     { key: string; dataUrl: string; rev: number; size: number }
@@ -705,6 +722,25 @@ export class WorldEngine {
   private readonly bestTextRasterKeyBySig = new Map<string, { key: string; rasterScale: number }>();
   private readonly textRasterCacheMaxEntries = 2500;
   private readonly textRasterCacheMaxBytes = 256 * 1024 * 1024;
+
+  private readonly inkPrefaceRasterCache = new Map<
+    string,
+    {
+      key: string;
+      sig: string;
+      rasterScale: number;
+      width: number;
+      height: number;
+      image: CanvasImageSource;
+      bitmapBytesEstimate: number;
+      hitZones?: TextHitZone[];
+      readyAt: number;
+    }
+  >();
+  private inkPrefaceRasterCacheBytes = 0;
+  private readonly bestInkPrefaceRasterKeyBySig = new Map<string, { key: string; rasterScale: number }>();
+  private readonly inkPrefaceRasterCacheMaxEntries = 900;
+  private readonly inkPrefaceRasterCacheMaxBytes = 48 * 1024 * 1024;
 
   private pdfTokenSeq = 1;
   private readonly pdfStateByNodeId = new Map<string, PdfNodeState>();
@@ -919,6 +955,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         this.requestRender();
         if (!v) {
           this.kickTextRasterQueue();
+          this.kickInkPrefaceRasterQueue();
           this.kickPdfPageRenderQueue();
         }
         this.emitDebug({ force: true });
@@ -993,6 +1030,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         parentId: n.parentId,
         ...(n.parentAnchor ? { parentAnchor: { ...n.parentAnchor } } : {}),
         rect: { ...n.rect },
+        ...(n.userPreface ? { userPreface: n.userPreface } : {}),
+        ...(n.collapsedPrefaceContexts ? { collapsedPrefaceContexts: n.collapsedPrefaceContexts } : {}),
         strokes: n.strokes.map((s) => ({
           width: s.width,
           color: s.color,
@@ -1048,6 +1087,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     // Cancel queued work from the previous chat.
     this.textRasterGeneration += 1;
     this.textRasterQueueByNodeId.clear();
+    this.inkPrefaceRasterGeneration += 1;
+    this.inkPrefaceRasterQueueByNodeId.clear();
+    this.inkPrefaceMeasureCacheByNodeId.clear();
+    this.clearInkPrefaceRasters();
     this.pdfPageRenderQueue.clear();
 
     // Replace runtime PDF state map (docs/metas) for the new chat.
@@ -1221,6 +1264,29 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         });
         continue;
       }
+      const userPreface = (() => {
+        const raw = (n as any)?.userPreface;
+        if (!raw || typeof raw !== 'object') return undefined;
+        const replyTo = typeof (raw as any)?.replyTo === 'string' ? String((raw as any).replyTo).trim() : '';
+        const ctxRaw = Array.isArray((raw as any)?.contexts) ? ((raw as any).contexts as any[]) : [];
+        const contexts = ctxRaw.map((t) => String(t ?? '').trim()).filter(Boolean);
+        if (!replyTo && contexts.length === 0) return undefined;
+        return {
+          ...(replyTo ? { replyTo } : {}),
+          ...(contexts.length ? { contexts } : {}),
+        };
+      })();
+      const collapsedPrefaceContexts = (() => {
+        const raw = (n as any)?.collapsedPrefaceContexts;
+        if (!raw || typeof raw !== 'object') return undefined;
+        const out: Record<number, boolean> = {};
+        for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+          const idx = Number(k);
+          if (!Number.isFinite(idx)) continue;
+          if (v) out[idx] = true;
+        }
+        return Object.keys(out).length ? out : undefined;
+      })();
       this.nodes.push({
         kind: 'ink',
         id: n.id,
@@ -1228,6 +1294,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         ...(parentAnchor ? { parentAnchor } : {}),
         rect: { ...n.rect },
         title: n.title,
+        ...(userPreface ? { userPreface } : {}),
+        collapsedPrefaceContexts,
         strokes: (n.strokes ?? []).map((s) => ({
           width: s.width,
           color: s.color,
@@ -2479,6 +2547,15 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.textRasterCacheBytes = 0;
   }
 
+  private clearInkPrefaceRasters(): void {
+    if (this.inkPrefaceRasterCache.size > 0) {
+      for (const entry of this.inkPrefaceRasterCache.values()) this.closeImage(entry.image);
+    }
+    this.inkPrefaceRasterCache.clear();
+    this.bestInkPrefaceRasterKeyBySig.clear();
+    this.inkPrefaceRasterCacheBytes = 0;
+  }
+
   private evictOldTextRasters(): void {
     while (
       this.textRasterCache.size > this.textRasterCacheMaxEntries ||
@@ -2492,6 +2569,22 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         this.closeImage(entry.image);
       }
       this.textRasterCache.delete(oldestKey);
+    }
+  }
+
+  private evictOldInkPrefaceRasters(): void {
+    while (
+      this.inkPrefaceRasterCache.size > this.inkPrefaceRasterCacheMaxEntries ||
+      this.inkPrefaceRasterCacheBytes > this.inkPrefaceRasterCacheMaxBytes
+    ) {
+      const oldestKey = this.inkPrefaceRasterCache.keys().next().value as string | undefined;
+      if (!oldestKey) return;
+      const entry = this.inkPrefaceRasterCache.get(oldestKey);
+      if (entry) {
+        this.inkPrefaceRasterCacheBytes -= entry.bitmapBytesEstimate || 0;
+        this.closeImage(entry.image);
+      }
+      this.inkPrefaceRasterCache.delete(oldestKey);
     }
   }
 
@@ -2522,12 +2615,27 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.textRasterCache.set(key, entry);
   }
 
+  private touchInkPrefaceRaster(key: string): void {
+    const entry = this.inkPrefaceRasterCache.get(key);
+    if (!entry) return;
+    this.inkPrefaceRasterCache.delete(key);
+    this.inkPrefaceRasterCache.set(key, entry);
+  }
+
   private enqueueTextRaster(job: TextRasterJob): void {
     if (!job.nodeId || !job.key) return;
     if (this.textRasterCache.has(job.key)) return;
     const prev = this.textRasterQueueByNodeId.get(job.nodeId);
     if (prev && prev.key === job.key) return;
     this.textRasterQueueByNodeId.set(job.nodeId, job);
+  }
+
+  private enqueueInkPrefaceRaster(job: InkPrefaceRasterJob): void {
+    if (!job.nodeId || !job.key) return;
+    if (this.inkPrefaceRasterCache.has(job.key)) return;
+    const prev = this.inkPrefaceRasterQueueByNodeId.get(job.nodeId);
+    if (prev && prev.key === job.key) return;
+    this.inkPrefaceRasterQueueByNodeId.set(job.nodeId, job);
   }
 
   private enqueuePdfPageRender(job: PdfPageRenderJob): void {
@@ -2542,6 +2650,13 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (this.interacting) return;
     if (this.textRasterQueueByNodeId.size === 0) return;
     void this.runTextRasterQueue();
+  }
+
+  private kickInkPrefaceRasterQueue(): void {
+    if (this.inkPrefaceRasterRunning) return;
+    if (this.interacting) return;
+    if (this.inkPrefaceRasterQueueByNodeId.size === 0) return;
+    void this.runInkPrefaceRasterQueue();
   }
 
   private kickPdfPageRenderQueue(): void {
@@ -2643,6 +2758,96 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       if (!this.interacting && this.textRasterQueueByNodeId.size > 0) {
         // If work remains, schedule another burst.
         this.kickTextRasterQueue();
+      }
+    }
+  }
+
+  private async runInkPrefaceRasterQueue(): Promise<void> {
+    if (this.inkPrefaceRasterRunning) return;
+    this.inkPrefaceRasterRunning = true;
+    const gen = this.inkPrefaceRasterGeneration;
+
+    try {
+      while (this.inkPrefaceRasterQueueByNodeId.size > 0) {
+        if (this.interacting) return;
+        if (this.inkPrefaceRasterGeneration !== gen) return;
+
+        const next = this.inkPrefaceRasterQueueByNodeId.entries().next();
+        if (next.done) return;
+        const [nodeId, job] = next.value;
+        this.inkPrefaceRasterQueueByNodeId.delete(nodeId);
+
+        if (this.inkPrefaceRasterCache.has(job.key)) continue;
+
+        try {
+          const stillWanted = (() => {
+            const node = this.nodes.find((n): n is InkNode => n.kind === 'ink' && n.id === job.nodeId) ?? null;
+            if (!node) return false;
+            const contentRect = this.textContentRect(node.rect);
+            const layout = this.inkPrefaceLayoutForNode(node, contentRect);
+            return layout?.sig === job.sig;
+          })();
+          if (!stillWanted) continue;
+
+          const res = await rasterizeHtmlToImage(job.html, {
+            width: job.width,
+            height: job.height,
+            rasterScale: job.rasterScale,
+            fontFamily: this.nodeTextFontFamily,
+            fontSizePx: this.nodeTextFontSizePx,
+            lineHeight: this.nodeTextLineHeight,
+            color: this.nodeTextColor,
+            scrollY: 0,
+            scrollGutterPx: 0,
+          });
+          if (this.inkPrefaceRasterGeneration !== gen) {
+            this.closeImage(res.image);
+            return;
+          }
+
+          const stillCurrent = (() => {
+            const node = this.nodes.find((n): n is InkNode => n.kind === 'ink' && n.id === job.nodeId) ?? null;
+            if (!node) return false;
+            const contentRect = this.textContentRect(node.rect);
+            const layout = this.inkPrefaceLayoutForNode(node, contentRect);
+            return layout?.sig === job.sig;
+          })();
+          if (!stillCurrent) {
+            this.closeImage(res.image);
+            continue;
+          }
+
+          const readyAt = performance.now();
+          this.inkPrefaceRasterCache.set(job.key, {
+            key: job.key,
+            sig: job.sig,
+            rasterScale: job.rasterScale,
+            width: job.width,
+            height: job.height,
+            image: res.image,
+            bitmapBytesEstimate: res.bitmapBytesEstimate,
+            hitZones: res.hitZones,
+            readyAt,
+          });
+          this.inkPrefaceRasterCacheBytes += res.bitmapBytesEstimate || 0;
+
+          const prevBest = this.bestInkPrefaceRasterKeyBySig.get(job.sig);
+          if (!prevBest || job.rasterScale >= prevBest.rasterScale) {
+            this.bestInkPrefaceRasterKeyBySig.set(job.sig, { key: job.key, rasterScale: job.rasterScale });
+          }
+
+          this.evictOldInkPrefaceRasters();
+          this.requestRender();
+        } catch {
+          // ignore; fall back to placeholder
+        }
+
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      }
+    } finally {
+      this.inkPrefaceRasterRunning = false;
+      if (!this.interacting && this.inkPrefaceRasterQueueByNodeId.size > 0) {
+        this.kickInkPrefaceRasterQueue();
       }
     }
   }
@@ -3142,6 +3347,20 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return { replyTo, contexts, collapsedPrefaceContexts: { ...(node.collapsedPrefaceContexts ?? {}) } };
   }
 
+  getInkNodeUserPreface(nodeId: string): { replyTo: string; contexts: string[]; collapsedPrefaceContexts: Record<number, boolean> } | null {
+    const id = typeof nodeId === 'string' ? nodeId : String(nodeId ?? '');
+    if (!id) return null;
+    const node = this.nodes.find((n): n is InkNode => n.kind === 'ink' && n.id === id) ?? null;
+    if (!node) return null;
+
+    const replyTo = (node.userPreface?.replyTo ?? '').trim();
+    const ctxRaw = Array.isArray(node.userPreface?.contexts) ? node.userPreface!.contexts! : [];
+    const contexts = ctxRaw.map((t) => String(t ?? '').trim()).filter(Boolean);
+    if (!replyTo && contexts.length === 0) return null;
+
+    return { replyTo, contexts, collapsedPrefaceContexts: { ...(node.collapsedPrefaceContexts ?? {}) } };
+  }
+
   setTextNodeUserPreface(
     nodeId: string,
     userPreface: { replyTo?: string; contexts?: string[] } | null | undefined,
@@ -3202,6 +3421,71 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const contentRect = this.textContentRect(node.rect);
     const sig = this.textRasterSigForNode(node, contentRect).sig;
     this.textResizeHold = { nodeId: node.id, sig, expiresAt: performance.now() + 2200 };
+    this.requestRender();
+    try {
+      this.onRequestPersist?.();
+    } catch {
+      // ignore
+    }
+  }
+
+  setInkNodeUserPreface(
+    nodeId: string,
+    userPreface: { replyTo?: string; contexts?: string[] } | null | undefined,
+    opts?: { collapseNewContexts?: boolean },
+  ): void {
+    const id = typeof nodeId === 'string' ? nodeId : String(nodeId ?? '');
+    if (!id) return;
+    const node = this.nodes.find((n): n is InkNode => n.kind === 'ink' && n.id === id) ?? null;
+    if (!node) return;
+
+    const prevReplyTo = (node.userPreface?.replyTo ?? '').trim();
+    const prevCtxRaw = Array.isArray(node.userPreface?.contexts) ? node.userPreface!.contexts! : [];
+    const prevContexts = prevCtxRaw.map((t) => String(t ?? '').trim()).filter(Boolean);
+
+    const nextReplyTo = typeof userPreface?.replyTo === 'string' ? userPreface.replyTo.trim() : '';
+    const nextCtxRaw = Array.isArray(userPreface?.contexts) ? userPreface.contexts : [];
+    const nextContexts = nextCtxRaw.map((t) => String(t ?? '').trim()).filter(Boolean);
+
+    const nextNormalized =
+      nextReplyTo || nextContexts.length > 0
+        ? {
+            ...(nextReplyTo ? { replyTo: nextReplyTo } : {}),
+            ...(nextContexts.length ? { contexts: nextContexts } : {}),
+          }
+        : undefined;
+
+    const unchanged =
+      prevReplyTo === nextReplyTo &&
+      prevContexts.length === nextContexts.length &&
+      prevContexts.every((t, i) => t === nextContexts[i]);
+    if (unchanged) return;
+
+    node.userPreface = nextNormalized;
+
+    const prevCollapsed = node.collapsedPrefaceContexts ?? {};
+    let nextCollapsed: Record<number, boolean> = prevCollapsed;
+    const prevLen = prevContexts.length;
+    const nextLen = nextContexts.length;
+    if (opts?.collapseNewContexts && nextLen > prevLen) {
+      nextCollapsed = { ...prevCollapsed };
+      for (let i = prevLen; i < nextLen; i += 1) nextCollapsed[i] = true;
+    }
+    if (Object.keys(nextCollapsed).length > 0) {
+      const filtered: Record<number, boolean> = {};
+      for (const [k, v] of Object.entries(nextCollapsed)) {
+        const idx = Number(k);
+        if (!Number.isFinite(idx)) continue;
+        if (idx < 0 || idx >= nextLen) continue;
+        if (v) filtered[idx] = true;
+      }
+      node.collapsedPrefaceContexts = Object.keys(filtered).length ? filtered : undefined;
+    } else {
+      node.collapsedPrefaceContexts = undefined;
+    }
+
+    if (!nextNormalized) this.inkPrefaceMeasureCacheByNodeId.delete(node.id);
+    this.inkPrefaceRasterGeneration += 1;
     this.requestRender();
     try {
       this.onRequestPersist?.();
@@ -3619,6 +3903,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     // Clean up any node-specific resources.
     if (node.kind === 'pdf') this.disposePdfNode(id);
     this.textRasterQueueByNodeId.delete(id);
+    this.inkPrefaceRasterQueueByNodeId.delete(id);
+    this.inkPrefaceMeasureCacheByNodeId.delete(id);
 
     // Remove from list.
     this.nodes.splice(idx, 1);
@@ -3761,6 +4047,48 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       return { w, h };
     } catch {
       return { w: maxW, h: minH };
+    } finally {
+      try {
+        root.innerHTML = '';
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  private measureInkPrefaceHeightPx(html: string, widthPx: number): number {
+    const width = Math.max(1, Math.round(widthPx));
+
+    const root = this.ensureTextMeasureRoot();
+    if (!root) return 0;
+
+    try {
+      root.innerHTML = '';
+      const el = document.createElement('div');
+      el.className = 'mdx';
+      el.style.display = 'inline-block';
+      el.style.boxSizing = 'border-box';
+      el.style.width = `${width}px`;
+      el.style.padding = '0';
+      el.style.margin = '0';
+      el.style.overflow = 'hidden';
+      el.style.overflowWrap = 'break-word';
+      (el.style as any).wordWrap = 'break-word';
+
+      const style = this.nodeTextStyle();
+      el.style.color = style.color;
+      el.style.fontFamily = style.fontFamily;
+      el.style.fontSize = `${Math.max(1, Math.round(style.fontSizePx))}px`;
+      el.style.lineHeight = `${Math.max(0.1, style.lineHeight)}`;
+
+      el.innerHTML = html ?? '';
+      root.appendChild(el);
+
+      const r = el.getBoundingClientRect();
+      const h = Math.max(0, Math.ceil(r.height || 0));
+      return h;
+    } catch {
+      return 0;
     } finally {
       try {
         root.innerHTML = '';
@@ -4272,6 +4600,106 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return parts.join('');
   }
 
+  private renderInkNodePrefaceHtml(node: InkNode): string | null {
+    const replyTo = (node.userPreface?.replyTo ?? '').trim();
+    const ctxRaw = Array.isArray(node.userPreface?.contexts) ? node.userPreface!.contexts! : [];
+    const ctx = ctxRaw.map((t) => String(t ?? '').trim()).filter(Boolean);
+    if (!replyTo && ctx.length === 0) return null;
+
+    const parts: string[] = [];
+    parts.push(
+      '<div style="padding:8px 10px;border:1px solid rgba(255,255,255,0.12);' +
+        'border-radius:12px;background:rgba(0,0,0,0.18);font-size:0.85em;color:rgba(255,255,255,0.88);">',
+    );
+
+    if (replyTo) {
+      parts.push('<div style="margin:0 0 10px;">');
+      parts.push('<div style="opacity:0.75;margin:0 0 4px;">Replying to:</div>');
+      parts.push(`<div class="gc-preface__mdx">${renderMarkdownMath(replyTo)}</div>`);
+      parts.push('</div>');
+    }
+
+    for (let i = 0; i < ctx.length; i += 1) {
+      const collapsed = Boolean(node.collapsedPrefaceContexts?.[i]);
+      const chevron = collapsed ? '▸' : '▾';
+      const rowAlign = collapsed ? 'center' : 'flex-start';
+      const chevronMarginTop = collapsed ? '0' : '0.15em';
+
+      if (collapsed) {
+        const summaryText = (String(ctx[i] ?? '').split('\n')[0] ?? '').trimEnd();
+        const summaryHtml = renderMarkdownMathInline(summaryText).replace(/<br\s*\/?\s*>/gi, ' ');
+        parts.push(
+          `<div style="display:flex;align-items:${rowAlign};gap:6px;margin:0 0 6px;">` +
+            `<span data-gcv1-preface-context-toggle="${i}" aria-hidden="true" ` +
+            `style="width:1em;flex:0 0 1em;margin-top:${chevronMarginTop};display:inline-flex;justify-content:center;` +
+            'color:rgba(255,255,255,0.55);cursor:pointer;user-select:none;">' +
+            chevron +
+            '</span>' +
+            `<div style="flex:1;min-width:0;display:flex;align-items:center;">` +
+            `<span style="opacity:0.75;flex:0 0 auto;margin-right:6px;">Context ${i + 1}:</span>` +
+            `<span class="gc-preface__inline" style="flex:1;min-width:0;display:block;` +
+            'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' +
+            summaryHtml +
+            '</span>' +
+            '</div>' +
+            '</div>',
+        );
+        continue;
+      }
+
+      parts.push(
+        `<div style="display:flex;align-items:${rowAlign};gap:6px;margin:0 0 10px;">` +
+          `<span data-gcv1-preface-context-toggle="${i}" aria-hidden="true" ` +
+          `style="width:1em;flex:0 0 1em;margin-top:${chevronMarginTop};display:inline-flex;justify-content:center;` +
+          'color:rgba(255,255,255,0.55);cursor:pointer;user-select:none;">' +
+          chevron +
+          '</span>' +
+          `<div style="flex:1;min-width:0;">` +
+          `<div style="opacity:0.75;margin:0 0 4px;">Context ${i + 1}:</div>` +
+          `<div class="gc-preface__mdx">${renderMarkdownMath(ctx[i])}</div>` +
+          '</div>' +
+          '</div>',
+      );
+    }
+
+    parts.push('</div>');
+    return parts.join('');
+  }
+
+  private inkPrefaceLayoutForNode(
+    node: InkNode,
+    contentRect: Rect,
+    opts?: { gapPx?: number },
+  ): { sig: string; html: string; prefaceRect: Rect; inkRect: Rect } | null {
+    const html = this.renderInkNodePrefaceHtml(node);
+    if (!html) {
+      this.inkPrefaceMeasureCacheByNodeId.delete(node.id);
+      return null;
+    }
+
+    const widthKey = Math.max(1, Math.round(contentRect.w));
+    const fontSizeKey = Math.max(1, Math.round(this.nodeTextFontSizePx));
+    const lineHeightKey = Math.max(0.1, this.nodeTextLineHeight);
+    const baseSig = `inkpref:${fingerprintText(html)}|w${widthKey}|fs${fontSizeKey}|lh${lineHeightKey}`;
+
+    const cached = this.inkPrefaceMeasureCacheByNodeId.get(node.id);
+    const fullHeightPx =
+      cached && cached.baseSig === baseSig ? cached.fullHeightPx : this.measureInkPrefaceHeightPx(html, widthKey);
+    if (!cached || cached.baseSig !== baseSig) {
+      this.inkPrefaceMeasureCacheByNodeId.set(node.id, { baseSig, fullHeightPx });
+    }
+
+    const prefaceHeight = clamp(fullHeightPx, 0, contentRect.h);
+    const sig = `${baseSig}|h${Math.round(prefaceHeight)}`;
+
+    const gapPx = Math.max(0, Math.round(Number(opts?.gapPx) || 6));
+    const inkY = contentRect.y + prefaceHeight + (prefaceHeight > 0.5 ? gapPx : 0);
+    const inkH = Math.max(0, contentRect.h - (inkY - contentRect.y));
+    const prefaceRect: Rect = { x: contentRect.x, y: contentRect.y, w: contentRect.w, h: prefaceHeight };
+    const inkRect: Rect = { x: contentRect.x, y: inkY, w: contentRect.w, h: inkH };
+    return { sig, html, prefaceRect, inkRect };
+  }
+
   private updateTextLod2HitZonesFromOverlay(nodeId: string, displayHash: string, overlay: TextLod2Overlay): void {
     try {
       const z = Math.max(0.001, overlay.getZoom() || 1);
@@ -4354,6 +4782,33 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     })();
 
     if (!zones || zones.length === 0) return null;
+    for (const z of zones) {
+      if (
+        localX >= z.left &&
+        localX <= z.left + z.width &&
+        localY >= z.top &&
+        localY <= z.top + z.height
+      ) {
+        return z;
+      }
+    }
+    return null;
+  }
+
+  private getInkNodeHitZoneAtWorld(node: InkNode, world: Vec2): TextHitZone | null {
+    const contentRect = this.textContentRect(node.rect);
+    const layout = this.inkPrefaceLayoutForNode(node, contentRect);
+    if (!layout) return null;
+
+    const prefaceRect = layout.prefaceRect;
+    const localX = world.x - prefaceRect.x;
+    const localY = world.y - prefaceRect.y;
+    if (localX < 0 || localY < 0 || localX > prefaceRect.w || localY > prefaceRect.h) return null;
+
+    const best = this.getBestInkPrefaceRaster(layout.sig);
+    const zones = best?.hitZones ?? null;
+    if (!zones || zones.length === 0) return null;
+
     for (const z of zones) {
       if (
         localX >= z.left &&
@@ -4762,6 +5217,11 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       this.recomputeTextNodeDisplayHash(node);
       this.textRasterGeneration += 1;
     }
+    if (node.kind === 'ink') {
+      node.userPreface = { contexts: [placement.selectionText] };
+      node.collapsedPrefaceContexts = { 0: true };
+      this.inkPrefaceRasterGeneration += 1;
+    }
 
     this.requestRender();
   }
@@ -4784,6 +5244,11 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       node.collapsedPrefaceContexts = { 0: true };
       this.recomputeTextNodeDisplayHash(node);
       this.textRasterGeneration += 1;
+    }
+    if (node.kind === 'ink') {
+      node.userPreface = { contexts: [placement.selectionText] };
+      node.collapsedPrefaceContexts = { 0: true };
+      this.inkPrefaceRasterGeneration += 1;
     }
 
     this.requestRender();
@@ -5727,6 +6192,18 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return { key: best.key, image: entry.image, hitZones: entry.hitZones };
   }
 
+  private getBestInkPrefaceRaster(sig: string): { key: string; image: CanvasImageSource; hitZones?: TextHitZone[] } | null {
+    const best = this.bestInkPrefaceRasterKeyBySig.get(sig);
+    if (!best) return null;
+    const entry = this.inkPrefaceRasterCache.get(best.key);
+    if (!entry) {
+      this.bestInkPrefaceRasterKeyBySig.delete(sig);
+      return null;
+    }
+    this.touchInkPrefaceRaster(best.key);
+    return { key: best.key, image: entry.image, hitZones: entry.hitZones };
+  }
+
   private updateTextRastersForViewport(): void {
     const view = this.worldViewportRect({ overscan: 320 });
     const desiredScale = this.chooseTextRasterScale();
@@ -5772,6 +6249,51 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     }
 
     this.kickTextRasterQueue();
+  }
+
+  private updateInkPrefaceRastersForViewport(): void {
+    const view = this.worldViewportRect({ overscan: 320 });
+    const desiredScale = this.chooseTextRasterScale();
+    const desiredNodeIds = new Set<string>();
+
+    for (const n of this.nodes) {
+      if (n.kind !== 'ink') continue;
+      if (!rectsIntersect(n.rect, view)) continue;
+
+      const contentRect = this.textContentRect(n.rect);
+      const layout = this.inkPrefaceLayoutForNode(n, contentRect);
+      if (!layout) continue;
+      if (layout.prefaceRect.h <= 0.5) continue;
+
+      const best = this.bestInkPrefaceRasterKeyBySig.get(layout.sig);
+      const hasBest = !!best && this.inkPrefaceRasterCache.has(best.key);
+      if (hasBest && best!.rasterScale >= desiredScale) continue;
+
+      const key = `${layout.sig}|s${desiredScale}`;
+      if (this.inkPrefaceRasterCache.has(key)) {
+        this.bestInkPrefaceRasterKeyBySig.set(layout.sig, { key, rasterScale: desiredScale });
+        continue;
+      }
+
+      desiredNodeIds.add(n.id);
+      this.enqueueInkPrefaceRaster({
+        nodeId: n.id,
+        key,
+        sig: layout.sig,
+        rasterScale: desiredScale,
+        width: contentRect.w,
+        height: layout.prefaceRect.h,
+        html: layout.html,
+      });
+    }
+
+    if (this.inkPrefaceRasterQueueByNodeId.size > 0) {
+      for (const nodeId of this.inkPrefaceRasterQueueByNodeId.keys()) {
+        if (!desiredNodeIds.has(nodeId)) this.inkPrefaceRasterQueueByNodeId.delete(nodeId);
+      }
+    }
+
+    this.kickInkPrefaceRasterQueue();
   }
 
   private updatePdfPageRendersForViewport(): void {
@@ -6252,6 +6774,28 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           world.y >= contentRect.y &&
           world.y <= contentRect.y + contentRect.h;
         if (inContent) {
+          const layout = this.inkPrefaceLayoutForNode(inkNode, contentRect);
+          if (layout && world.y < layout.inkRect.y) {
+            const zone = this.getInkNodeHitZoneAtWorld(inkNode, world);
+            if (zone?.kind === 'preface_context_toggle') {
+              const selectionChanged = this.selectedNodeId !== inkNode.id || this.editingNodeId !== null;
+              this.selectedNodeId = inkNode.id;
+              this.editingNodeId = null;
+              this.bringNodeToFront(inkNode.id);
+              this.requestRender();
+              if (selectionChanged) this.emitUiState();
+              return 'node';
+            }
+
+            const selectionChanged = this.selectedNodeId !== inkNode.id || this.editingNodeId !== null;
+            this.selectedNodeId = inkNode.id;
+            this.editingNodeId = null;
+            this.bringNodeToFront(inkNode.id);
+            this.requestRender();
+            if (selectionChanged) this.emitUiState();
+            return 'node';
+          }
+
           const local: InkPoint = {
             x: clamp(world.x - contentRect.x, 0, contentRect.w),
             y: clamp(world.y - contentRect.y, 0, contentRect.h),
@@ -6295,6 +6839,28 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           world.y >= contentRect.y &&
           world.y <= contentRect.y + contentRect.h;
         if (inContent) {
+          const layout = this.inkPrefaceLayoutForNode(inkNode, contentRect);
+          if (layout && world.y < layout.inkRect.y) {
+            const zone = this.getInkNodeHitZoneAtWorld(inkNode, world);
+            if (zone?.kind === 'preface_context_toggle') {
+              const selectionChanged = this.selectedNodeId !== inkNode.id || this.editingNodeId !== null;
+              this.selectedNodeId = inkNode.id;
+              this.editingNodeId = null;
+              this.bringNodeToFront(inkNode.id);
+              this.requestRender();
+              if (selectionChanged) this.emitUiState();
+              return 'node';
+            }
+
+            const selectionChanged = this.selectedNodeId !== inkNode.id || this.editingNodeId !== null;
+            this.selectedNodeId = inkNode.id;
+            this.editingNodeId = null;
+            this.bringNodeToFront(inkNode.id);
+            this.requestRender();
+            if (selectionChanged) this.emitUiState();
+            return 'node';
+          }
+
           const local: InkPoint = {
             x: clamp(world.x - contentRect.x, 0, contentRect.w),
             y: clamp(world.y - contentRect.y, 0, contentRect.h),
@@ -6405,6 +6971,15 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 	        return 'node';
 	      }
 	    }
+
+      if (hit.kind === 'ink') {
+        const zone = this.getInkNodeHitZoneAtWorld(hit, world);
+        if (zone?.kind === 'preface_context_toggle') {
+          this.requestRender();
+          if (selectionChanged) this.emitUiState();
+          return 'node';
+        }
+      }
 
 		    const corner =
 		      hit.kind === 'text' || hit.kind === 'ink'
@@ -7297,6 +7872,41 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
             const contentRect = this.textContentRect(hit.rect);
             const sig = this.textRasterSigForNode(hit, contentRect).sig;
             this.textResizeHold = { nodeId: hit.id, sig, expiresAt: performance.now() + 2200 };
+            this.requestRender();
+            if (selectionChanged) this.emitUiState();
+            try {
+              this.onRequestPersist?.();
+            } catch {
+              // ignore
+            }
+            return;
+          }
+
+          if (selectionChanged) {
+            this.requestRender();
+            this.emitUiState();
+          }
+          return;
+        }
+      }
+
+      if (hit.kind === 'ink') {
+        const zone = this.getInkNodeHitZoneAtWorld(hit, world);
+        if (zone?.kind === 'preface_context_toggle') {
+          const selectionChanged = this.selectedNodeId !== hit.id || this.editingNodeId !== null;
+          this.selectedNodeId = hit.id;
+          this.editingNodeId = null;
+          this.bringNodeToFront(hit.id);
+
+          const idx = Number(zone.contextIndex);
+          if (Number.isFinite(idx)) {
+            const prev = hit.collapsedPrefaceContexts ?? {};
+            const next: Record<number, boolean> = { ...prev };
+            if (next[idx]) delete next[idx];
+            else next[idx] = true;
+            hit.collapsedPrefaceContexts = Object.keys(next).length ? next : undefined;
+
+            this.inkPrefaceRasterGeneration += 1;
             this.requestRender();
             if (selectionChanged) this.emitUiState();
             try {
@@ -8233,15 +8843,60 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
             ctx.restore();
           }
         }
-	      } else if (node.kind === 'ink') {
-	        const contentRect = this.textContentRect(node.rect);
-	        ctx.save();
-	        ctx.beginPath();
-	        ctx.rect(contentRect.x, contentRect.y, contentRect.w, contentRect.h);
-	        ctx.clip();
+		      } else if (node.kind === 'ink') {
+		        const contentRect = this.textContentRect(node.rect);
+	          const prefaceLayout = this.inkPrefaceLayoutForNode(node, contentRect);
+	          const inkRect = prefaceLayout?.inkRect ?? contentRect;
+		        ctx.save();
+		        ctx.beginPath();
+		        ctx.rect(contentRect.x, contentRect.y, contentRect.w, contentRect.h);
+		        ctx.clip();
+	
+		        ctx.fillStyle = this.glassNodesEnabled ? 'rgba(0,0,0,0.12)' : 'rgba(0,0,0,0.22)';
+		        ctx.fillRect(inkRect.x, inkRect.y, inkRect.w, inkRect.h);
 
-	        ctx.fillStyle = this.glassNodesEnabled ? 'rgba(0,0,0,0.12)' : 'rgba(0,0,0,0.22)';
-	        ctx.fillRect(contentRect.x, contentRect.y, contentRect.w, contentRect.h);
+          if (prefaceLayout && prefaceLayout.prefaceRect.h > 0.5) {
+            const preface = this.getBestInkPrefaceRaster(prefaceLayout.sig);
+            if (preface) {
+              try {
+                ctx.drawImage(
+                  preface.image,
+                  prefaceLayout.prefaceRect.x,
+                  prefaceLayout.prefaceRect.y,
+                  prefaceLayout.prefaceRect.w,
+                  prefaceLayout.prefaceRect.h,
+                );
+              } catch {
+                // ignore
+              }
+            } else {
+              const z = Math.max(0.01, this.camera.zoom || 1);
+              ctx.fillStyle = 'rgba(255,255,255,0.06)';
+              ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+              ctx.lineWidth = 1 / z;
+              ctx.fillRect(
+                prefaceLayout.prefaceRect.x,
+                prefaceLayout.prefaceRect.y,
+                prefaceLayout.prefaceRect.w,
+                prefaceLayout.prefaceRect.h,
+              );
+              ctx.strokeRect(
+                prefaceLayout.prefaceRect.x,
+                prefaceLayout.prefaceRect.y,
+                prefaceLayout.prefaceRect.w,
+                prefaceLayout.prefaceRect.h,
+              );
+              ctx.fillStyle = 'rgba(255,255,255,0.55)';
+              ctx.font = `${12 / z}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
+              ctx.textBaseline = 'top';
+              ctx.fillText('Rendering context…', prefaceLayout.prefaceRect.x + 12, prefaceLayout.prefaceRect.y + 10);
+            }
+          }
+
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(inkRect.x, inkRect.y, inkRect.w, inkRect.h);
+          ctx.clip();
 
 	        const g = this.activeGesture;
 	        const isResizing = g?.kind === 'resize' && g.nodeId === node.id;
@@ -8268,10 +8923,11 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           ctx.fillStyle = 'rgba(255,255,255,0.50)';
           ctx.font = `${14 / (this.camera.zoom || 1)}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
           ctx.textBaseline = 'top';
-          ctx.fillText('Draw with a pen, or switch to Draw tool.', contentRect.x + 14, contentRect.y + 14);
+          if (inkRect.h > 0.5) ctx.fillText('Draw with a pen, or switch to Draw tool.', inkRect.x + 14, inkRect.y + 14);
         }
 
-        ctx.restore();
+          ctx.restore();
+	        ctx.restore();
       }
 
       // Resize handles are intentionally hidden; cursor changes near corners indicate resizability.
@@ -8696,6 +9352,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.drawGrid();
     this.drawParentArrows();
     this.updateTextRastersForViewport();
+    this.updateInkPrefaceRastersForViewport();
     this.updatePdfPageRendersForViewport();
     this.drawDemoNodes();
     this.drawWorldInk();

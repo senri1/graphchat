@@ -109,5 +109,10 @@ export type ChatNode =
       parentId: string | null;
       parentAnchor?: { kind: 'pdf-selection'; pageNumber: number; yPct: number } | null;
       rect: Rect;
+      userPreface?: {
+        replyTo?: string;
+        contexts?: string[];
+      };
+      collapsedPrefaceContexts?: Record<number, boolean>;
       strokes: InkStroke[];
     };

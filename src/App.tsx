@@ -3968,6 +3968,38 @@ export default function App() {
         return;
       }
 
+      // Persist the composed context back onto the ink node so the sent message matches what the node shows.
+      try {
+        const replyTo = typeof (leafNode as any)?.userPreface?.replyTo === 'string' ? String((leafNode as any).userPreface.replyTo).trim() : '';
+        const nodeContextTexts = Array.isArray((leafNode as any)?.userPreface?.contexts)
+          ? ((leafNode as any).userPreface.contexts as any[]).map((t) => String(t ?? '').trim()).filter(Boolean)
+          : [];
+        const mergedContexts = (() => {
+          const seen = new Set<string>();
+          const out: string[] = [];
+          for (const t of [...nodeContextTexts, ...composerContextTexts]) {
+            if (!t) continue;
+            if (seen.has(t)) continue;
+            seen.add(t);
+            out.push(t);
+          }
+          return out;
+        })();
+        const hasPreface = Boolean(replyTo || mergedContexts.length > 0);
+        engine.setInkNodeUserPreface(
+          userNodeId,
+          hasPreface
+            ? {
+                ...(replyTo ? { replyTo } : {}),
+                ...(mergedContexts.length ? { contexts: mergedContexts } : {}),
+              }
+            : null,
+          { collapseNewContexts: true },
+        );
+      } catch {
+        // ignore
+      }
+
       const res = engine.spawnAssistantTurn({
         userNodeId,
         assistantTitle,
