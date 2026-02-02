@@ -11,6 +11,8 @@
     monospace;
   --composer-font-size: 13px;
   --composer-line-height: 1.35;
+  --composer-attachment-strip-max-h: 300px;
+  --composer-attachment-strip-w: 86px;
   --node-font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji",
     "Segoe UI Emoji";
   --node-font-size: 14px;
@@ -1088,6 +1090,7 @@ body {
 .composer__textarea,
 .composer__preview,
 .gc-textLod2__content,
+.composerDock__attachmentStrip,
 .editor__textarea,
 .editor__preview {
   scrollbar-width: thin;
@@ -1099,6 +1102,7 @@ body {
 .composer__textarea::-webkit-scrollbar,
 .composer__preview::-webkit-scrollbar,
 .gc-textLod2__content::-webkit-scrollbar,
+.composerDock__attachmentStrip::-webkit-scrollbar,
 .editor__textarea::-webkit-scrollbar,
 .editor__preview::-webkit-scrollbar {
   width: 10px;
@@ -1110,6 +1114,7 @@ body {
 .composer__textarea::-webkit-scrollbar-track,
 .composer__preview::-webkit-scrollbar-track,
 .gc-textLod2__content::-webkit-scrollbar-track,
+.composerDock__attachmentStrip::-webkit-scrollbar-track,
 .editor__textarea::-webkit-scrollbar-track,
 .editor__preview::-webkit-scrollbar-track {
   background: transparent;
@@ -1120,6 +1125,7 @@ body {
 .composer__textarea::-webkit-scrollbar-thumb,
 .composer__preview::-webkit-scrollbar-thumb,
 .gc-textLod2__content::-webkit-scrollbar-thumb,
+.composerDock__attachmentStrip::-webkit-scrollbar-thumb,
 .editor__textarea::-webkit-scrollbar-thumb,
 .editor__preview::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.32);
@@ -1133,6 +1139,7 @@ body {
 .composer__textarea::-webkit-scrollbar-thumb:hover,
 .composer__preview::-webkit-scrollbar-thumb:hover,
 .gc-textLod2__content::-webkit-scrollbar-thumb:hover,
+.composerDock__attachmentStrip::-webkit-scrollbar-thumb:hover,
 .editor__textarea::-webkit-scrollbar-thumb:hover,
 .editor__preview::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.45);
@@ -1658,7 +1665,7 @@ body {
 }
 
 .composerToggle--withAttachments {
-  left: 74px;
+  left: var(--composer-attachment-strip-w);
 }
 
 .composerToggle:hover {
@@ -1680,7 +1687,9 @@ body {
   align-items: center;
   gap: 6px;
   padding: 6px;
-  width: 74px;
+  width: var(--composer-attachment-strip-w);
+  height: max-content;
+  max-height: var(--composer-attachment-strip-max-h);
   box-sizing: border-box;
   border-radius: 12px;
   background: rgba(0, 0, 0, var(--ui-glass-bg-alpha));
@@ -1692,13 +1701,16 @@ body {
   user-select: none;
   touch-action: auto;
   overflow-y: auto;
+  overflow-x: hidden;
   overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .composerDock__attachmentThumb {
   position: relative;
   width: 60px;
   height: 60px;
+  flex: 0 0 auto;
   box-sizing: border-box;
   border-radius: 10px;
   overflow: hidden;

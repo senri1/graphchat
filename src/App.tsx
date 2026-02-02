@@ -4647,6 +4647,7 @@ export default function App() {
                   if (activeChatIdRef.current === chatId) {
                     setComposerDraftAttachments(meta.draftAttachments.slice());
                   }
+                  schedulePersistSoon();
                 } catch {
                   // ignore
                 } finally {
@@ -4673,6 +4674,7 @@ export default function App() {
             }
             if (storageKey) attachmentsGcDirtyRef.current = true;
             setComposerDraftAttachments(meta.draftAttachments.slice());
+            schedulePersistSoon();
           }}
           contextAttachments={replyContextAttachments}
           selectedContextAttachmentKeys={replySelectedAttachmentKeys}

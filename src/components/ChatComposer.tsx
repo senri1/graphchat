@@ -69,6 +69,9 @@ export default function ChatComposer(props: Props) {
   const deferredValue = useDeferredValue(value);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const dockRef = useRef<HTMLDivElement | null>(null);
+  const attachmentStripRef = useRef<HTMLDivElement | null>(null);
+  const attachmentStripPrevCountRef = useRef(0);
+  const attachmentStripPrevScrollHeightRef = useRef(0);
   const [dockReady, setDockReady] = useState(false);
   const [dockDragging, setDockDragging] = useState(false);
   const [internalMinimized, setInternalMinimized] = useState(false);
@@ -93,8 +96,7 @@ export default function ChatComposer(props: Props) {
   const DEFAULT_PANEL_H = 75;
   const MIN_PANEL_H = 50;
   const AUTO_MAX_PANEL_H = 360;
-  const ATTACHMENTS_STRIP_MAX_H = DEFAULT_PANEL_H;
-  const ATTACHMENTS_STRIP_W = 74;
+  const ATTACHMENTS_STRIP_W = 86;
   const ATTACHMENTS_STRIP_GAP = 10;
 
   const [composerWidth, setComposerWidth] = useState<number>(() => {
@@ -355,6 +357,35 @@ export default function ChatComposer(props: Props) {
     };
   }, [draftAttachments]);
 
+  useLayoutEffect(() => {
+    const atts = Array.isArray(draftAttachments) ? draftAttachments : [];
+    const nextCount = atts.length;
+    const el = attachmentStripRef.current;
+
+    if (!el || nextCount === 0) {
+      attachmentStripPrevCountRef.current = nextCount;
+      attachmentStripPrevScrollHeightRef.current = 0;
+      return;
+    }
+
+    const prevCount = attachmentStripPrevCountRef.current;
+    const prevScrollHeight = attachmentStripPrevScrollHeightRef.current;
+    const nextScrollHeight = el.scrollHeight;
+
+    if (nextCount > prevCount && el.scrollTop > 0 && prevScrollHeight > 0) {
+      const delta = nextScrollHeight - prevScrollHeight;
+      if (delta > 0) el.scrollTop += delta;
+    }
+
+    attachmentStripPrevCountRef.current = nextCount;
+    attachmentStripPrevScrollHeightRef.current = nextScrollHeight;
+  }, [draftAttachments]);
+
+  const draftAttachmentViews = useMemo(() => {
+    const atts = Array.isArray(draftAttachments) ? draftAttachments : [];
+    return atts.map((attachment, index) => ({ attachment, index })).reverse();
+  }, [draftAttachments]);
+
   const applyResize = (clientX: number, clientY: number) => {
     const mode = resizeModeRef.current;
 
@@ -582,9 +613,9 @@ export default function ChatComposer(props: Props) {
         onWheel={(e) => e.stopPropagation()}
       >
       {hasDraftAttachments ? (
-        <div className="composerDock__attachmentStrip" style={{ maxHeight: ATTACHMENTS_STRIP_MAX_H }}>
-          {draftAttachments.map((att, idx) => {
-            const thumbUrl = draftThumbUrls[idx] ?? null;
+        <div className="composerDock__attachmentStrip" ref={attachmentStripRef}>
+          {draftAttachmentViews.map(({ attachment: att, index }) => {
+            const thumbUrl = draftThumbUrls[index] ?? null;
             const isImage = att.kind === 'image';
             const isPdf = att.kind === 'pdf';
             const label = labelForAttachment(att);
@@ -595,7 +626,7 @@ export default function ChatComposer(props: Props) {
               return withoutExt || raw || 'PDF';
             })();
             return (
-              <div className="composerDock__attachmentThumb" key={`${att.kind}-${idx}`} title={label}>
+              <div className="composerDock__attachmentThumb" key={`${att.kind}-${index}`} title={label}>
                 {isImage && thumbUrl ? (
                   <img className="composerDock__attachmentThumbImg" src={thumbUrl} alt={att.name?.trim() || 'Attachment'} />
                 ) : isPdf ? (
@@ -616,7 +647,7 @@ export default function ChatComposer(props: Props) {
                   <button
                     className="composerDock__attachmentThumbRemove"
                     type="button"
-                    onClick={() => onRemoveDraftAttachment(idx)}
+                    onClick={() => onRemoveDraftAttachment(index)}
                     disabled={disabled}
                     aria-label="Remove attachment"
                   >
