@@ -1758,16 +1758,16 @@ body {
 
 .composerDock__attachmentThumbPdfIcon {
   position: relative;
-  width: 38px;
-  height: 48px;
-  border-radius: 9px;
+  width: 100%;
+  height: 100%;
+  border-radius: 10px;
   border: 1px solid rgba(147, 197, 253, 0.34);
   background: rgba(147, 197, 253, 0.14);
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
-  gap: 5px;
-  padding: 7px 6px 6px;
+  gap: 4px;
+  padding: 6px 6px 6px;
   box-sizing: border-box;
 }
 
@@ -1778,7 +1778,7 @@ body {
   right: -1px;
   width: 14px;
   height: 14px;
-  border-top-right-radius: 9px;
+  border-top-right-radius: 10px;
   background: linear-gradient(135deg, rgba(147, 197, 253, 0.32) 0%, rgba(147, 197, 253, 0.12) 55%, rgba(147, 197, 253, 0.06) 100%);
   clip-path: polygon(0 0, 100% 0, 100% 100%);
   border-left: 1px solid rgba(147, 197, 253, 0.2);
