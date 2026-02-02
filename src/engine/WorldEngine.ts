@@ -170,6 +170,30 @@ function polylineIntersectsCapsule(points: XY[], a: XY, b: XY, radius: number): 
   return false;
 }
 
+function addRoundedRectPath(ctx: CanvasRenderingContext2D, rect: Rect, radius: number): void {
+  const x = Number(rect.x) || 0;
+  const y = Number(rect.y) || 0;
+  const w = Number(rect.w) || 0;
+  const h = Number(rect.h) || 0;
+  const r = Math.min(Math.max(0, Number(radius) || 0), w * 0.5, h * 0.5);
+
+  if (r <= 0.0001 || w <= 0.0001 || h <= 0.0001) {
+    ctx.rect(x, y, w, h);
+    return;
+  }
+
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.arcTo(x + w, y, x + w, y + r, r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+  ctx.lineTo(x + r, y + h);
+  ctx.arcTo(x, y + h, x, y + h - r, r);
+  ctx.lineTo(x, y + r);
+  ctx.arcTo(x, y, x + r, y, r);
+  ctx.closePath();
+}
+
 const TEXT_NODE_PAD_PX = 14;
 const TEXT_NODE_HEADER_H_PX = 44;
 const TEXT_NODE_HEADER_GAP_PX = 8;
@@ -184,6 +208,7 @@ const TEXT_NODE_SPAWN_MAX_H_PX = 1200;
 // Manual resize bounds for ink nodes (prevents huge in-memory rasters).
 const INK_NODE_MAX_W_PX = 2400;
 const INK_NODE_MAX_H_PX = 1800;
+const INK_NODE_INNER_RADIUS_PX = 12;
 
 // Layout tuning for Debug → Canonicalize layout.
 // Values match the GraphChatGem "Canonicalize layout" defaults.
@@ -4614,8 +4639,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     const parts: string[] = [];
     parts.push(
-      '<div style="padding:8px 10px;border:1px solid rgba(255,255,255,0.12);' +
-        'border-radius:12px;background:rgba(0,0,0,0.18);font-size:0.85em;color:rgba(255,255,255,0.88);">',
+      `<div style="padding:8px 10px;border:1px solid rgba(255,255,255,0.12);border-radius:${INK_NODE_INNER_RADIUS_PX}px;` +
+        'background:rgba(0,0,0,0.18);font-size:0.85em;color:rgba(255,255,255,0.88);">',
     );
 
     if (replyTo) {
@@ -8875,7 +8900,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 		        ctx.clip();
 	
 		        ctx.fillStyle = this.glassNodesEnabled ? 'rgba(0,0,0,0.12)' : 'rgba(0,0,0,0.22)';
-		        ctx.fillRect(inkRect.x, inkRect.y, inkRect.w, inkRect.h);
+		        ctx.beginPath();
+		        addRoundedRectPath(ctx, inkRect, INK_NODE_INNER_RADIUS_PX);
+		        ctx.fill();
 
           if (prefaceLayout && prefaceLayout.prefaceRect.h > 0.5) {
             const prefaceRect = prefaceLayout.prefaceRect;
@@ -8941,7 +8968,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
           ctx.save();
           ctx.beginPath();
-          ctx.rect(inkRect.x, inkRect.y, inkRect.w, inkRect.h);
+          addRoundedRectPath(ctx, inkRect, INK_NODE_INNER_RADIUS_PX);
           ctx.clip();
 
 	        const g = this.activeGesture;
