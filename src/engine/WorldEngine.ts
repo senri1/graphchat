@@ -580,6 +580,16 @@ type ActiveTextAnnotationOutlineResizeGesture = {
   startRect: Rect;
 };
 
+type ActiveHeaderPlaceGesture = {
+  kind: 'header-place';
+  pointerId: number;
+  nodeId: string;
+  action: 'send' | 'reply';
+  startWorld: Vec2;
+  currentWorld: Vec2;
+  hasDrag: boolean;
+};
+
 type ActiveGesture =
   | ActiveNodeGesture
   | ActiveInkGesture
@@ -590,7 +600,8 @@ type ActiveGesture =
   | ActivePdfAnnotationPlaceGesture
   | ActivePdfAnnotationOutlineResizeGesture
   | ActiveTextAnnotationPlaceGesture
-  | ActiveTextAnnotationOutlineResizeGesture;
+  | ActiveTextAnnotationOutlineResizeGesture
+  | ActiveHeaderPlaceGesture;
 
 export class WorldEngine {
   private readonly canvas: HTMLCanvasElement;
@@ -638,11 +649,12 @@ export class WorldEngine {
 
   onUiState?: (state: WorldEngineUiState) => void;
   onRequestReply?: (nodeId: string) => void;
+  onRequestReplyMenu?: (nodeId: string) => void;
   onRequestReplyToSelection?: (nodeId: string, selectionText: string) => void;
   onRequestAddToContextSelection?: (nodeId: string, selectionText: string) => void;
   onRequestRaw?: (nodeId: string) => void;
   onRequestNodeMenu?: (nodeId: string) => void;
-  onRequestSendEditNode?: (nodeId: string) => void;
+  onRequestSendEditNode?: (nodeId: string, opts?: { assistantRect?: Rect | null } | null) => void;
   onRequestSendEditNodeModelMenu?: (nodeId: string) => void;
   onRequestCancelGeneration?: (nodeId: string) => void;
   onRequestPersist?: () => void;
@@ -658,6 +670,7 @@ export class WorldEngine {
   private readonly touchUi: boolean;
   private spawnEditNodeByDrawEnabled = false;
   private spawnInkNodeByDrawEnabled = false;
+  private replySpawnKind: 'text' | 'ink' = 'text';
   private pdfAnnotationPlacement: PdfAnnotationPlacement | null = null;
   private textAnnotationPlacement: TextAnnotationPlacement | null = null;
 
@@ -692,7 +705,10 @@ export class WorldEngine {
 
   private hoverTextNodeId: string | null = null;
   private hoverPdfPage: { nodeId: string; token: number; pageNumber: number } | null = null;
-  private hoverNodeHeaderButton: { nodeId: string; kind: 'menu' | 'reply' | 'stop' | 'send' | 'send_menu' } | null = null;
+  private hoverNodeHeaderButton: {
+    nodeId: string;
+    kind: 'menu' | 'reply' | 'reply_menu' | 'stop' | 'send' | 'send_menu';
+  } | null = null;
 
   private pdfTextLod2: PdfTextLod2Overlay | null = null;
   private pdfLod2Target: { nodeId: string; token: number; pageNumber: number } | null = null;
@@ -1847,6 +1863,11 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.spawnInkNodeByDrawEnabled = Boolean(enabled);
   }
 
+  setReplySpawnKind(kind: 'text' | 'ink'): void {
+    const next: 'text' | 'ink' = kind === 'ink' ? 'ink' : 'text';
+    this.replySpawnKind = next;
+  }
+
   cancelPdfAnnotationPlacement(): boolean {
     const hadPlacement = this.pdfAnnotationPlacement != null;
     const g = this.activeGesture;
@@ -2507,11 +2528,13 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     userNodeId: string;
     assistantTitle?: string;
     assistantModelId?: string | null;
+    rect?: Rect | null;
   }): { assistantNodeId: string } | null {
     const userNodeId = typeof args.userNodeId === 'string' ? args.userNodeId : String(args.userNodeId ?? '');
     if (!userNodeId) return null;
     const assistantTitle = typeof args.assistantTitle === 'string' ? args.assistantTitle : '';
     const assistantModelId = typeof args.assistantModelId === 'string' ? args.assistantModelId : null;
+    const explicitRect = this.normalizeSpawnRect(args.rect);
 
     const userNode =
       this.nodes.find((n): n is TextNode | InkNode => (n.kind === 'text' || n.kind === 'ink') && n.id === userNodeId) ??
@@ -2526,7 +2549,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       kind: 'text',
       id: assistantNodeId,
       parentId: userNodeId,
-      rect: { x: userNode.rect.x, y: userNode.rect.y + userNode.rect.h + gapY, w: userNode.rect.w, h: TEXT_NODE_SPAWN_MIN_H_PX },
+      rect: explicitRect
+        ? { x: explicitRect.x, y: explicitRect.y, w: explicitRect.w, h: explicitRect.h }
+        : { x: userNode.rect.x, y: userNode.rect.y + userNode.rect.h + gapY, w: userNode.rect.w, h: TEXT_NODE_SPAWN_MIN_H_PX },
       title: assistantTitle.trim() || 'Assistant',
       author: 'assistant',
       content: '',
@@ -2536,13 +2561,17 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       modelId: assistantModelId,
     };
 
-    // Avoid spawning directly on top of existing nodes in the current view.
-    const candidate: Rect = { ...assistantNode.rect };
-    for (let i = 0; i < 60; i += 1) {
-      const overlap = this.nodes.find((n) => rectsIntersect(n.rect, candidate)) ?? null;
-      if (!overlap) break;
-      candidate.y = overlap.rect.y + overlap.rect.h + gapY;
-      assistantNode.rect.y = candidate.y;
+    if (explicitRect) {
+      assistantNode.rect = this.clampRectToView(assistantNode.rect);
+    } else {
+      // Avoid spawning directly on top of existing nodes in the current view.
+      const candidate: Rect = { ...assistantNode.rect };
+      for (let i = 0; i < 60; i += 1) {
+        const overlap = this.nodes.find((n) => rectsIntersect(n.rect, candidate)) ?? null;
+        if (!overlap) break;
+        candidate.y = overlap.rect.y + overlap.rect.h + gapY;
+        assistantNode.rect.y = candidate.y;
+      }
     }
 
     this.recomputeTextNodeDisplayHash(assistantNode);
@@ -3306,7 +3335,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.updateHoverCursor(world, hit);
     let nextTextHover: string | null = null;
     let nextPdfHover: { nodeId: string; token: number; pageNumber: number } | null = null;
-    let nextHeaderHover: { nodeId: string; kind: 'menu' | 'reply' | 'stop' | 'send' | 'send_menu' } | null = null;
+    let nextHeaderHover: { nodeId: string; kind: 'menu' | 'reply' | 'reply_menu' | 'stop' | 'send' | 'send_menu' } | null = null;
 
     if (hit) {
       const menuBtn = this.menuButtonRect(hit.rect);
@@ -3318,14 +3347,20 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       if (inMenu) {
         nextHeaderHover = { nodeId: hit.id, kind: 'menu' };
       } else {
-        const replyBtn = this.replyButtonRect(hit.rect);
-        const inReply =
-          world.x >= replyBtn.x &&
-          world.x <= replyBtn.x + replyBtn.w &&
-          world.y >= replyBtn.y &&
-          world.y <= replyBtn.y + replyBtn.h;
-        if (inReply) {
-          nextHeaderHover = { nodeId: hit.id, kind: 'reply' };
+        const replyMain = this.replyButtonMainRect(hit.rect);
+        const replyArrow = this.replyButtonArrowRect(hit.rect);
+        const inReplyMain =
+          world.x >= replyMain.x &&
+          world.x <= replyMain.x + replyMain.w &&
+          world.y >= replyMain.y &&
+          world.y <= replyMain.y + replyMain.h;
+        const inReplyArrow =
+          world.x >= replyArrow.x &&
+          world.x <= replyArrow.x + replyArrow.w &&
+          world.y >= replyArrow.y &&
+          world.y <= replyArrow.y + replyArrow.h;
+        if (inReplyMain || inReplyArrow) {
+          nextHeaderHover = { nodeId: hit.id, kind: inReplyArrow ? 'reply_menu' : 'reply' };
         } else if ((hit.kind === 'text' && hit.isEditNode) || hit.kind === 'ink') {
           const mainBtn = this.sendButtonMainRect(hit.rect);
           const arrowBtn = this.sendButtonArrowRect(hit.rect);
@@ -3742,6 +3777,15 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const node = this.nodes.find((n) => n.id === nodeId);
     if (!node) return null;
     const btn = this.menuButtonRect(node.rect);
+    const tl = this.camera.worldToScreen({ x: btn.x, y: btn.y });
+    const br = this.camera.worldToScreen({ x: btn.x + btn.w, y: btn.y + btn.h });
+    return { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y };
+  }
+
+  getNodeReplyButtonArrowScreenRect(nodeId: string): Rect | null {
+    const node = this.nodes.find((n) => n.id === nodeId);
+    if (!node) return null;
+    const btn = this.replyButtonArrowRect(node.rect);
     const tl = this.camera.worldToScreen({ x: btn.x, y: btn.y });
     const br = this.camera.worldToScreen({ x: btn.x + btn.w, y: btn.y + btn.h });
     return { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y };
@@ -7224,16 +7268,72 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       return 'node';
     }
 
-    const replyBtn = this.replyButtonRect(hit.rect);
-    const inReply =
-      world.x >= replyBtn.x &&
-      world.x <= replyBtn.x + replyBtn.w &&
-      world.y >= replyBtn.y &&
-      world.y <= replyBtn.y + replyBtn.h;
-    if (inReply) {
+    const replyMainBtn = this.replyButtonMainRect(hit.rect);
+    const replyArrowBtn = this.replyButtonArrowRect(hit.rect);
+    const inReplyMain =
+      world.x >= replyMainBtn.x &&
+      world.x <= replyMainBtn.x + replyMainBtn.w &&
+      world.y >= replyMainBtn.y &&
+      world.y <= replyMainBtn.y + replyMainBtn.h;
+    const inReplyArrow =
+      world.x >= replyArrowBtn.x &&
+      world.x <= replyArrowBtn.x + replyArrowBtn.w &&
+      world.y >= replyArrowBtn.y &&
+      world.y <= replyArrowBtn.y + replyArrowBtn.h;
+    if (inReplyMain) {
+      this.activeGesture = {
+        kind: 'header-place',
+        pointerId: info.pointerId,
+        nodeId: hit.id,
+        action: 'reply',
+        startWorld: world,
+        currentWorld: world,
+        hasDrag: false,
+      };
+      this.suppressTapPointerIds.add(info.pointerId);
       this.requestRender();
       if (selectionChanged) this.emitUiState();
       return 'node';
+    }
+    if (inReplyArrow) {
+      this.requestRender();
+      if (selectionChanged) this.emitUiState();
+      return 'node';
+    }
+
+    if ((hit.kind === 'text' && hit.isEditNode) || hit.kind === 'ink') {
+      const sendMainBtn = this.sendButtonMainRect(hit.rect);
+      const sendArrowBtn = this.sendButtonArrowRect(hit.rect);
+      const inSendMain =
+        world.x >= sendMainBtn.x &&
+        world.x <= sendMainBtn.x + sendMainBtn.w &&
+        world.y >= sendMainBtn.y &&
+        world.y <= sendMainBtn.y + sendMainBtn.h;
+      const inSendArrow =
+        world.x >= sendArrowBtn.x &&
+        world.x <= sendArrowBtn.x + sendArrowBtn.w &&
+        world.y >= sendArrowBtn.y &&
+        world.y <= sendArrowBtn.y + sendArrowBtn.h;
+      if (inSendMain) {
+        this.activeGesture = {
+          kind: 'header-place',
+          pointerId: info.pointerId,
+          nodeId: hit.id,
+          action: 'send',
+          startWorld: world,
+          currentWorld: world,
+          hasDrag: false,
+        };
+        this.suppressTapPointerIds.add(info.pointerId);
+        this.requestRender();
+        if (selectionChanged) this.emitUiState();
+        return 'node';
+      }
+      if (inSendArrow) {
+        this.requestRender();
+        if (selectionChanged) this.emitUiState();
+        return 'node';
+      }
     }
 
 	    if (hit.kind === 'text' && this.canCancelNode(hit)) {
@@ -7362,6 +7462,13 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
       g.hadHover = true;
       placement.hoverWorld = this.camera.screenToWorld(p);
+      this.requestRender();
+      return;
+    }
+
+    if (g.kind === 'header-place') {
+      g.currentWorld = this.camera.screenToWorld(p);
+      g.hasDrag = true;
       this.requestRender();
       return;
     }
@@ -7738,6 +7845,65 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         this.onRequestPersist?.();
       } catch {
         // ignore
+      }
+      if (info.wasDrag) this.suppressTapPointerIds.delete(info.pointerId);
+      return;
+    }
+
+    if (g.kind === 'header-place') {
+      const nodeId = typeof g.nodeId === 'string' ? g.nodeId : String(g.nodeId ?? '');
+      const node = nodeId ? (this.nodes.find((n): n is TextNode | InkNode | PdfNode => n.id === nodeId) ?? null) : null;
+      const action = g.action === 'send' ? 'send' : 'reply';
+      this.activeGesture = null;
+
+      if (!node) {
+        if (info.wasDrag) this.suppressTapPointerIds.delete(info.pointerId);
+        this.requestRender();
+        return;
+      }
+
+      const selectionChanged = this.selectedNodeId !== node.id || this.editingNodeId !== null;
+      this.selectedNodeId = node.id;
+      this.editingNodeId = null;
+      this.bringNodeToFront(node.id);
+
+      const world = this.camera.screenToWorld(p);
+      const inside =
+        world.x >= node.rect.x &&
+        world.x <= node.rect.x + node.rect.w &&
+        world.y >= node.rect.y &&
+        world.y <= node.rect.y + node.rect.h;
+
+      const didDrag = Boolean(info.wasDrag);
+      const shouldPlace = didDrag && !inside;
+
+      if (!shouldPlace) {
+        this.requestRender();
+        if (selectionChanged) this.emitUiState();
+        if (action === 'send') this.onRequestSendEditNode?.(node.id, null);
+        else this.onRequestReply?.(node.id);
+        if (info.wasDrag) this.suppressTapPointerIds.delete(info.pointerId);
+        return;
+      }
+
+      if (action === 'send') {
+        const rect: Rect = { x: world.x, y: world.y, w: node.rect.w, h: TEXT_NODE_SPAWN_MIN_H_PX };
+        this.onRequestSendEditNode?.(node.id, { assistantRect: rect });
+        if (info.wasDrag) this.suppressTapPointerIds.delete(info.pointerId);
+        return;
+      }
+
+      const kind = this.replySpawnKind === 'ink' ? 'ink' : 'text';
+      const rect = kind === 'ink'
+        ? { x: world.x, y: world.y, w: 420, h: 280 }
+        : { x: world.x, y: world.y, w: 460, h: 240 };
+      const createdId =
+        kind === 'ink' ? this.spawnInkNode({ rect }) : this.spawnTextNode({ title: 'User', author: 'user', rect });
+      const created = this.nodes.find((n) => n.id === createdId) ?? null;
+      if (created) {
+        created.parentId = node.id;
+        created.parentAnchor = undefined;
+        if (created.kind === 'ink') created.title = 'User';
       }
       if (info.wasDrag) this.suppressTapPointerIds.delete(info.pointerId);
       return;
@@ -8235,17 +8401,27 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         return;
       }
 
-      const btn = this.replyButtonRect(hit.rect);
-      const inReply =
-        world.x >= btn.x && world.x <= btn.x + btn.w && world.y >= btn.y && world.y <= btn.y + btn.h;
-      if (inReply) {
+      const replyMain = this.replyButtonMainRect(hit.rect);
+      const replyArrow = this.replyButtonArrowRect(hit.rect);
+      const inReplyMain =
+        world.x >= replyMain.x &&
+        world.x <= replyMain.x + replyMain.w &&
+        world.y >= replyMain.y &&
+        world.y <= replyMain.y + replyMain.h;
+      const inReplyArrow =
+        world.x >= replyArrow.x &&
+        world.x <= replyArrow.x + replyArrow.w &&
+        world.y >= replyArrow.y &&
+        world.y <= replyArrow.y + replyArrow.h;
+      if (inReplyMain || inReplyArrow) {
         const changed = this.selectedNodeId !== hit.id || this.editingNodeId !== null;
         this.selectedNodeId = hit.id;
         this.editingNodeId = null;
         this.bringNodeToFront(hit.id);
         this.requestRender();
         if (changed) this.emitUiState();
-        this.onRequestReply?.(hit.id);
+        if (inReplyArrow) this.onRequestReplyMenu?.(hit.id);
+        else this.onRequestReply?.(hit.id);
         return;
       }
 
@@ -8563,7 +8739,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
   private replyButtonRect(nodeRect: Rect): Rect {
     const pad = TEXT_NODE_PAD_PX;
-    const w = 58;
+    const w = 74;
     const h = 22;
     const gap = 8;
 
@@ -8572,6 +8748,18 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const y = menu.y;
     const minX = nodeRect.x + pad;
     return { x: Math.max(minX, x), y, w, h };
+  }
+
+  private replyButtonArrowRect(nodeRect: Rect): Rect {
+    const rect = this.replyButtonRect(nodeRect);
+    const w = 18;
+    return { x: rect.x + rect.w - w, y: rect.y, w, h: rect.h };
+  }
+
+  private replyButtonMainRect(nodeRect: Rect): Rect {
+    const rect = this.replyButtonRect(nodeRect);
+    const arrow = this.replyButtonArrowRect(nodeRect);
+    return { x: rect.x, y: rect.y, w: Math.max(1, arrow.x - TEXT_NODE_SEND_BUTTON_SPLIT_GAP_PX - rect.x), h: rect.h };
   }
 
   private sendButtonRect(nodeRect: Rect): Rect {
@@ -8687,12 +8875,15 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     ctx.restore();
   }
 
-  private drawReplyButton(nodeRect: Rect, opts?: { active?: boolean; hovered?: boolean }): void {
+  private drawReplyButton(nodeRect: Rect, opts?: { active?: boolean; hovered?: boolean; arrowHovered?: boolean }): void {
     const ctx = this.ctx;
     const r = 9;
-    const rect = this.replyButtonRect(nodeRect);
     const active = Boolean(opts?.active);
     const hovered = Boolean(opts?.hovered);
+    const arrowHovered = Boolean(opts?.arrowHovered);
+    const mainHovered = hovered && !arrowHovered;
+    const mainRect = this.replyButtonMainRect(nodeRect);
+    const arrowRect = this.replyButtonArrowRect(nodeRect);
 
     ctx.save();
     if (hovered) {
@@ -8700,13 +8891,6 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       ctx.shadowBlur = 14;
     }
 
-    ctx.fillStyle = active
-      ? hovered
-        ? 'rgba(147,197,253,0.36)'
-        : 'rgba(147,197,253,0.28)'
-      : hovered
-        ? 'rgba(255,255,255,0.08)'
-        : 'rgba(0,0,0,0.22)';
     ctx.strokeStyle = active
       ? hovered
         ? 'rgba(147,197,253,0.85)'
@@ -8716,17 +8900,39 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         : 'rgba(255,255,255,0.14)';
     ctx.lineWidth = 1;
 
-    ctx.beginPath();
-    ctx.moveTo(rect.x + r, rect.y);
-    ctx.lineTo(rect.x + rect.w - r, rect.y);
-    ctx.arcTo(rect.x + rect.w, rect.y, rect.x + rect.w, rect.y + r, r);
-    ctx.lineTo(rect.x + rect.w, rect.y + rect.h - r);
-    ctx.arcTo(rect.x + rect.w, rect.y + rect.h, rect.x + rect.w - r, rect.y + rect.h, r);
-    ctx.lineTo(rect.x + r, rect.y + rect.h);
-    ctx.arcTo(rect.x, rect.y + rect.h, rect.x, rect.y + rect.h - r, r);
-    ctx.lineTo(rect.x, rect.y + r);
-    ctx.arcTo(rect.x, rect.y, rect.x + r, rect.y, r);
-    ctx.closePath();
+    const drawRoundedRect = (rect: Rect) => {
+      ctx.beginPath();
+      ctx.moveTo(rect.x + r, rect.y);
+      ctx.lineTo(rect.x + rect.w - r, rect.y);
+      ctx.arcTo(rect.x + rect.w, rect.y, rect.x + rect.w, rect.y + r, r);
+      ctx.lineTo(rect.x + rect.w, rect.y + rect.h - r);
+      ctx.arcTo(rect.x + rect.w, rect.y + rect.h, rect.x + rect.w - r, rect.y + rect.h, r);
+      ctx.lineTo(rect.x + r, rect.y + rect.h);
+      ctx.arcTo(rect.x, rect.y + rect.h, rect.x, rect.y + rect.h - r, r);
+      ctx.lineTo(rect.x, rect.y + r);
+      ctx.arcTo(rect.x, rect.y, rect.x + r, rect.y, r);
+      ctx.closePath();
+    };
+
+    ctx.fillStyle = active
+      ? mainHovered
+        ? 'rgba(147,197,253,0.38)'
+        : 'rgba(147,197,253,0.28)'
+      : mainHovered
+        ? 'rgba(255,255,255,0.10)'
+        : 'rgba(0,0,0,0.22)';
+    drawRoundedRect(mainRect);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = active
+      ? arrowHovered
+        ? 'rgba(147,197,253,0.38)'
+        : 'rgba(147,197,253,0.28)'
+      : arrowHovered
+        ? 'rgba(255,255,255,0.10)'
+        : 'rgba(0,0,0,0.22)';
+    drawRoundedRect(arrowRect);
     ctx.fill();
     ctx.stroke();
 
@@ -8737,8 +8943,13 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     ctx.textBaseline = 'middle';
     const label = 'Reply';
     const m = ctx.measureText(label);
-    const textX = rect.x + (rect.w - (m.width || 0)) * 0.5;
-    ctx.fillText(label, textX, rect.y + rect.h * 0.5);
+    const textX = mainRect.x + (mainRect.w - (m.width || 0)) * 0.5;
+    ctx.fillText(label, textX, mainRect.y + mainRect.h * 0.5);
+
+    const arrowLabel = '▾';
+    const ma = ctx.measureText(arrowLabel);
+    const arrowX = arrowRect.x + (arrowRect.w - (ma.width || 0)) * 0.5;
+    ctx.fillText(arrowLabel, arrowX, arrowRect.y + arrowRect.h * 0.5);
 
     ctx.restore();
   }
@@ -9003,13 +9214,18 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       const headerHover = this.hoverNodeHeaderButton;
       const hoverMenu = headerHover?.nodeId === node.id && headerHover.kind === 'menu';
       const hoverReply = headerHover?.nodeId === node.id && headerHover.kind === 'reply';
+      const hoverReplyMenu = headerHover?.nodeId === node.id && headerHover.kind === 'reply_menu';
       const hoverStop = headerHover?.nodeId === node.id && headerHover.kind === 'stop';
       const hoverSend = headerHover?.nodeId === node.id && headerHover.kind === 'send';
       const hoverSendMenu = headerHover?.nodeId === node.id && headerHover.kind === 'send_menu';
 
       if (node.kind === 'text' && this.canCancelNode(node)) this.drawStopButton(node, { hovered: hoverStop });
       this.drawMenuButton(node.rect, { active: isSelected, hovered: hoverMenu });
-      this.drawReplyButton(node.rect, { active: isSelected, hovered: hoverReply });
+      this.drawReplyButton(node.rect, {
+        active: isSelected,
+        hovered: hoverReply || hoverReplyMenu,
+        arrowHovered: hoverReplyMenu,
+      });
       if ((node.kind === 'text' && node.isEditNode) || node.kind === 'ink') {
         this.drawSendButton(node.rect, {
           active: isSelected,
@@ -9588,6 +9804,126 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     ctx.restore();
   }
 
+  private drawHeaderPlacementPreview(): void {
+    const g = this.activeGesture;
+    if (!g || g.kind !== 'header-place' || !g.hasDrag) return;
+
+    const endpoint = g.currentWorld;
+    const parent = this.nodes.find((n) => n.id === g.nodeId) ?? null;
+    if (!parent) return;
+
+    const inside =
+      endpoint.x >= parent.rect.x &&
+      endpoint.x <= parent.rect.x + parent.rect.w &&
+      endpoint.y >= parent.rect.y &&
+      endpoint.y <= parent.rect.y + parent.rect.h;
+    if (inside) return;
+
+    const parentCenter: Vec2 = { x: parent.rect.x + parent.rect.w * 0.5, y: parent.rect.y + parent.rect.h * 0.5 };
+    const dx = endpoint.x - parentCenter.x;
+    const dy = endpoint.y - parentCenter.y;
+    const endSide =
+      Math.abs(dx) > Math.abs(dy)
+        ? dx >= 0
+          ? ('left' as const)
+          : ('right' as const)
+        : dy >= 0
+          ? ('top' as const)
+          : ('bottom' as const);
+
+    const z = Math.max(0.01, this.camera.zoom || 1);
+    const arrowHeadLen = 12 / z;
+    const arrowHalfW = 6 / z;
+
+    const ctx = this.ctx;
+    const router = getEdgeRouter(this.edgeRouterId);
+    const routeStyle = {
+      arrowHeadLength: arrowHeadLen,
+      controlPointMin: 40 / z,
+      controlPointMax: 200 / z,
+      straightAlignThreshold: 4 / z,
+    };
+    const route = router.route({
+      parent: { id: parent.id, rect: parent.rect },
+      child: { id: '__header-place-preview__', rect: { x: endpoint.x, y: endpoint.y, w: 1, h: 1 } },
+      style: routeStyle,
+      anchors: { end: { side: endSide, point: endpoint } },
+    });
+    if (!route) return;
+
+    ctx.save();
+    ctx.lineWidth = 2 / z;
+    ctx.strokeStyle = this.replyArrowColor;
+    ctx.fillStyle = this.replyArrowColor;
+    ctx.globalAlpha = this.replyArrowOpacity;
+
+    const polylineEndDir = (pts: Vec2[]): Vec2 | null => {
+      for (let i = pts.length - 1; i >= 1; i--) {
+        const a = pts[i - 1]!;
+        const b = pts[i]!;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        if (Math.hypot(dx, dy) > 0.001) return { x: dx, y: dy };
+      }
+      return null;
+    };
+
+    const drawRoute = (r: EdgeRoute): { end: Vec2; endDir: Vec2 } | null => {
+      if (r.kind === 'polyline') {
+        const pts = r.points;
+        if (pts.length < 2) return null;
+        const endDir = polylineEndDir(pts);
+        if (!endDir) return null;
+        const end = pts[pts.length - 1]!;
+
+        ctx.beginPath();
+        ctx.moveTo(pts[0]!.x, pts[0]!.y);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i]!.x, pts[i]!.y);
+        ctx.stroke();
+        return { end, endDir };
+      }
+
+      const endDir: Vec2 = { x: r.p3.x - r.c2.x, y: r.p3.y - r.c2.y };
+      if (Math.hypot(endDir.x, endDir.y) <= 0.001) return null;
+      ctx.beginPath();
+      ctx.moveTo(r.p0.x, r.p0.y);
+      ctx.bezierCurveTo(r.c1.x, r.c1.y, r.c2.x, r.c2.y, r.p3.x, r.p3.y);
+      ctx.stroke();
+      return { end: r.p3, endDir };
+    };
+
+    const drawn = drawRoute(route);
+    if (drawn) {
+      const endX = drawn.end.x;
+      const endY = drawn.end.y;
+
+      const dx = drawn.endDir.x;
+      const dy = drawn.endDir.y;
+      const len = Math.hypot(dx, dy);
+      if (len > 0.001) {
+        const ux = dx / len;
+        const uy = dy / len;
+        const px = -uy;
+        const py = ux;
+
+        const baseAnchor = route.arrow?.anchor === 'base';
+        const baseX = baseAnchor ? endX : endX - ux * arrowHeadLen;
+        const baseY = baseAnchor ? endY : endY - uy * arrowHeadLen;
+        const tipX = baseAnchor ? endX + ux * arrowHeadLen : endX;
+        const tipY = baseAnchor ? endY + uy * arrowHeadLen : endY;
+
+        ctx.beginPath();
+        ctx.moveTo(tipX, tipY);
+        ctx.lineTo(baseX + px * arrowHalfW, baseY + py * arrowHalfW);
+        ctx.lineTo(baseX - px * arrowHalfW, baseY - py * arrowHalfW);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+
+    ctx.restore();
+  }
+
   private drawSpawnByDrawPreview(): void {
     const g = this.activeGesture;
     if (!g || g.kind !== 'spawn-by-draw' || !g.hasDrag) return;
@@ -9680,6 +10016,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.drawDemoNodes();
     this.drawWorldInk();
     this.drawSpawnByDrawPreview();
+    this.drawHeaderPlacementPreview();
     this.drawTextAnnotationOutlinePreview();
     this.drawTextAnnotationPlacementPreview();
     this.drawPdfAnnotationOutlinePreview();

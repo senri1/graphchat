@@ -9,6 +9,7 @@ import {
   type WorldEngineDebug,
   type WorldEngineUiState,
 } from './engine/WorldEngine';
+import type { Rect } from './engine/types';
 import ChatComposer from './components/ChatComposer';
 import NodeHeaderMenu from './components/NodeHeaderMenu';
 import RawPayloadViewer from './components/RawPayloadViewer';
@@ -125,7 +126,7 @@ type ToastState = {
 
 type MenuPos = { left: number; top?: number; bottom?: number; maxHeight: number };
 
-type PendingEditNodeSend = { nodeId: string; modelIdOverride?: string | null };
+type PendingEditNodeSend = { nodeId: string; modelIdOverride?: string | null; assistantRect?: Rect | null };
 
 type SendTurnArgs = {
   userText: string;
@@ -540,6 +541,7 @@ export default function App() {
       edgeRouterId: EdgeRouterId;
       replyArrowColor: string;
       replyArrowOpacity: number;
+      replySpawnKind: 'text' | 'ink';
       glassNodesBlurCssPxWebgl: number;
       glassNodesSaturatePctWebgl: number;
       glassNodesBlurCssPxCanvas: number;
@@ -581,6 +583,8 @@ export default function App() {
   const [nodeMenuId, setNodeMenuId] = useState<string | null>(null);
   const [editNodeSendMenuId, setEditNodeSendMenuId] = useState<string | null>(null);
   const [editNodeSendMenuPos, setEditNodeSendMenuPos] = useState<MenuPos | null>(null);
+  const [replySpawnMenuId, setReplySpawnMenuId] = useState<string | null>(null);
+  const [replySpawnMenuPos, setReplySpawnMenuPos] = useState<MenuPos | null>(null);
   const [pendingEditNodeSend, setPendingEditNodeSend] = useState<PendingEditNodeSend | null>(null);
 	  const [confirmDelete, setConfirmDelete] = useState<ConfirmDeleteState | null>(null);
 	  const [confirmApplyBackground, setConfirmApplyBackground] = useState<ConfirmApplyBackgroundState | null>(null);
@@ -635,6 +639,7 @@ export default function App() {
   const [edgeRouterId, setEdgeRouterId] = useState<EdgeRouterId>(() => DEFAULT_EDGE_ROUTER_ID);
   const [replyArrowColor, setReplyArrowColor] = useState<string>(() => DEFAULT_REPLY_ARROW_COLOR);
   const [replyArrowOpacity, setReplyArrowOpacity] = useState<number>(() => DEFAULT_REPLY_ARROW_OPACITY);
+  const [replySpawnKind, setReplySpawnKind] = useState<'text' | 'ink'>(() => 'text');
   const [uiGlassBlurCssPxWebgl, setUiGlassBlurCssPxWebgl] = useState<number>(() => 10);
   const [uiGlassSaturatePctWebgl, setUiGlassSaturatePctWebgl] = useState<number>(() => 140);
   const [composerFontFamily, setComposerFontFamily] = useState<FontFamilyKey>(() => DEFAULT_COMPOSER_FONT_FAMILY);
@@ -667,6 +672,7 @@ export default function App() {
   const edgeRouterIdRef = useRef<EdgeRouterId>(edgeRouterId);
   const replyArrowColorRef = useRef<string>(replyArrowColor);
   const replyArrowOpacityRef = useRef<number>(replyArrowOpacity);
+  const replySpawnKindRef = useRef<'text' | 'ink'>(replySpawnKind);
   const uiGlassBlurCssPxWebglRef = useRef<number>(uiGlassBlurCssPxWebgl);
   const uiGlassSaturatePctWebglRef = useRef<number>(uiGlassSaturatePctWebgl);
   const composerFontFamilyRef = useRef<FontFamilyKey>(composerFontFamily);
@@ -837,6 +843,11 @@ export default function App() {
   }, [replyArrowOpacity]);
 
   useEffect(() => {
+    replySpawnKindRef.current = replySpawnKind;
+    engineRef.current?.setReplySpawnKind(replySpawnKind);
+  }, [replySpawnKind]);
+
+  useEffect(() => {
     glassNodesEnabledRef.current = glassNodesEnabled;
     glassNodesBlurCssPxWebglRef.current = glassNodesBlurCssPxWebgl;
     glassNodesSaturatePctWebglRef.current = glassNodesSaturatePctWebgl;
@@ -919,6 +930,7 @@ export default function App() {
     setRawViewer(null);
     setNodeMenuId(null);
     setEditNodeSendMenuId(null);
+    setReplySpawnMenuId(null);
   }, [activeChatId]);
 
   useEffect(() => {
@@ -945,6 +957,20 @@ export default function App() {
     const canvas = canvasRef.current;
     if (!engine || !canvas) return null;
     const r = engine.getNodeSendButtonArrowScreenRect(nodeId);
+    if (!r) return null;
+    const canvasRect = canvas.getBoundingClientRect();
+    const left = canvasRect.left + r.x;
+    const top = canvasRect.top + r.y;
+    const right = left + r.w;
+    const bottom = top + r.h;
+    return { left, top, right, bottom };
+  }, []);
+
+  const getNodeReplyMenuButtonRect = React.useCallback((nodeId: string): { left: number; top: number; right: number; bottom: number } | null => {
+    const engine = engineRef.current;
+    const canvas = canvasRef.current;
+    if (!engine || !canvas) return null;
+    const r = engine.getNodeReplyButtonArrowScreenRect(nodeId);
     if (!r) return null;
     const canvasRect = canvas.getBoundingClientRect();
     const left = canvasRect.left + r.x;
@@ -1059,6 +1085,7 @@ export default function App() {
               replyArrowOpacity: Number.isFinite(replyArrowOpacityRef.current)
                 ? Math.max(0, Math.min(1, replyArrowOpacityRef.current))
                 : DEFAULT_REPLY_ARROW_OPACITY,
+              replySpawnKind: replySpawnKindRef.current,
               glassNodesBlurCssPx:
                 glassNodesBlurBackendRef.current === 'canvas'
                   ? Math.max(0, Math.min(30, glassNodesBlurCssPxCanvasRef.current))
@@ -2463,6 +2490,7 @@ export default function App() {
     engine.setAllowEditingAllTextNodes(allowEditingAllTextNodesRef.current);
     engine.setSpawnEditNodeByDrawEnabled(spawnEditNodeByDrawRef.current);
     engine.setSpawnInkNodeByDrawEnabled(spawnInkNodeByDrawRef.current);
+    engine.setReplySpawnKind(replySpawnKindRef.current);
     engine.onDebug = setDebug;
     engine.onUiState = setUi;
     engine.onRequestReply = (nodeId) => {
@@ -2488,6 +2516,10 @@ export default function App() {
         if (activeChatIdRef.current === chatId) {
           setComposerDraftAttachments(meta.draftAttachments.slice());
         }
+        if (replySpawnKindRef.current === 'ink') {
+          meta.composerMode = 'ink';
+          setComposerMode('ink');
+        }
         schedulePersistSoon();
         return;
       }
@@ -2500,6 +2532,10 @@ export default function App() {
       setReplySelection(next);
       setReplyContextAttachments(ctx);
       setReplySelectedAttachmentKeys(keys);
+      if (replySpawnKindRef.current === 'ink') {
+        meta.composerMode = 'ink';
+        setComposerMode('ink');
+      }
       schedulePersistSoon();
     };
     engine.onRequestReplyToSelection = (nodeId, selectionText) => {
@@ -2554,13 +2590,20 @@ export default function App() {
     engine.onRequestNodeMenu = (nodeId) => {
       setNodeMenuId((prev) => (prev === nodeId ? null : nodeId));
       setEditNodeSendMenuId(null);
+      setReplySpawnMenuId(null);
     };
-    engine.onRequestSendEditNode = (nodeId) => {
-      setPendingEditNodeSend({ nodeId, modelIdOverride: null });
+    engine.onRequestReplyMenu = (nodeId) => {
+      setReplySpawnMenuId((prev) => (prev === nodeId ? null : nodeId));
+      setNodeMenuId(null);
+      setEditNodeSendMenuId(null);
+    };
+    engine.onRequestSendEditNode = (nodeId, opts) => {
+      setPendingEditNodeSend({ nodeId, modelIdOverride: null, assistantRect: opts?.assistantRect ?? null });
     };
     engine.onRequestSendEditNodeModelMenu = (nodeId) => {
       setEditNodeSendMenuId((prev) => (prev === nodeId ? null : nodeId));
       setNodeMenuId(null);
+      setReplySpawnMenuId(null);
     };
     engine.onRequestCancelGeneration = (nodeId) => cancelJob(nodeId);
     engine.onRequestPersist = () => schedulePersistSoon();
@@ -2922,6 +2965,7 @@ export default function App() {
     edgeRouterIdRef.current = visual.edgeRouterId;
     replyArrowColorRef.current = visual.replyArrowColor;
     replyArrowOpacityRef.current = visual.replyArrowOpacity;
+    replySpawnKindRef.current = visual.replySpawnKind === 'ink' ? 'ink' : 'text';
     setGlassNodesEnabled(glassNodesEnabledRef.current);
     setGlassNodesBlurCssPxWebgl(glassNodesBlurCssPxWebglRef.current);
     setGlassNodesSaturatePctWebgl(glassNodesSaturatePctWebglRef.current);
@@ -2932,6 +2976,7 @@ export default function App() {
     setEdgeRouterId(edgeRouterIdRef.current);
     setReplyArrowColor(replyArrowColorRef.current);
     setReplyArrowOpacity(replyArrowOpacityRef.current);
+    setReplySpawnKind(replySpawnKindRef.current);
     setUiGlassBlurCssPxWebgl(uiGlassBlurCssPxWebglRef.current);
     setUiGlassSaturatePctWebgl(uiGlassSaturatePctWebglRef.current);
     composerFontFamilyRef.current = visual.composerFontFamily;
@@ -2985,6 +3030,7 @@ export default function App() {
       engine.setNodeTextFontSizePx(nodeFontSizePxRef.current);
       engine.setSpawnEditNodeByDrawEnabled(spawnEditNodeByDrawRef.current);
       engine.setSpawnInkNodeByDrawEnabled(spawnInkNodeByDrawRef.current);
+      engine.setReplySpawnKind(replySpawnKindRef.current);
       engine.cancelEditing();
       const nextState = chatStatesRef.current.get(resolvedActive) ?? createEmptyChatState();
       chatStatesRef.current.set(resolvedActive, nextState);
@@ -3221,6 +3267,7 @@ export default function App() {
         edgeRouterId: normalizeEdgeRouterId((visualSrc as any)?.edgeRouterId),
         replyArrowColor: normalizeHexColor((visualSrc as any)?.replyArrowColor, DEFAULT_REPLY_ARROW_COLOR),
         replyArrowOpacity: clampNumber((visualSrc as any)?.replyArrowOpacity, 0, 1, DEFAULT_REPLY_ARROW_OPACITY),
+        replySpawnKind: (visualSrc as any)?.replySpawnKind === 'ink' ? ('ink' as const) : ('text' as const),
         glassNodesBlurCssPxWebgl,
         glassNodesSaturatePctWebgl,
         glassNodesBlurCssPxCanvas,
@@ -4205,6 +4252,7 @@ export default function App() {
   const sendAssistantTurnFromUserNode = (args: {
     userNodeId: string;
     modelIdOverride?: string | null;
+    assistantRect?: Rect | null;
     clearComposerText?: boolean;
   }) => {
     const engine = engineRef.current;
@@ -4281,6 +4329,7 @@ export default function App() {
         userNodeId,
         assistantTitle,
         assistantModelId: selectedModelId,
+        ...(args.assistantRect ? { rect: args.assistantRect } : {}),
       });
       if (!res) return;
 
@@ -4405,6 +4454,7 @@ export default function App() {
       userNodeId,
       assistantTitle,
       assistantModelId: selectedModelId,
+      ...(args.assistantRect ? { rect: args.assistantRect } : {}),
     });
     if (!res) return;
 
@@ -4548,6 +4598,69 @@ export default function App() {
     setEditNodeSendMenuPos({ top, bottom, left, maxHeight });
   }, [composerModelOptions.length, editNodeSendMenuId, getNodeSendMenuButtonRect]);
 
+  const updateReplySpawnMenuPosition = React.useCallback(() => {
+    const nodeId = replySpawnMenuId;
+    if (!nodeId) {
+      setReplySpawnMenuPos(null);
+      return;
+    }
+
+    const rect = getNodeReplyMenuButtonRect(nodeId);
+    if (!rect) {
+      setReplySpawnMenuPos(null);
+      return;
+    }
+
+    const gap = 8;
+    const viewportPadding = 8;
+    const estimatedWidth = 170;
+    const maxMenuH = 256;
+    const itemH = 34;
+    const paddingY = 14;
+    const desiredH = Math.min(maxMenuH, Math.max(56, 2 * itemH + paddingY));
+
+    const spaceAbove = rect.top - gap - viewportPadding;
+    const spaceBelow = window.innerHeight - rect.bottom - gap - viewportPadding;
+    const openAbove = spaceAbove >= desiredH || spaceAbove >= spaceBelow;
+    const top = openAbove ? undefined : rect.bottom + gap;
+    const bottom = openAbove ? window.innerHeight - rect.top + gap : undefined;
+    const maxHeight = Math.max(0, Math.min(maxMenuH, openAbove ? spaceAbove : spaceBelow));
+
+    const left = Math.min(window.innerWidth - viewportPadding - estimatedWidth, Math.max(viewportPadding, rect.left));
+    setReplySpawnMenuPos({ top, bottom, left, maxHeight });
+  }, [getNodeReplyMenuButtonRect, replySpawnMenuId]);
+
+  useEffect(() => {
+    if (!replySpawnMenuId) {
+      setReplySpawnMenuPos(null);
+      return;
+    }
+
+    updateReplySpawnMenuPosition();
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setReplySpawnMenuId(null);
+    };
+
+    const onReposition = () => updateReplySpawnMenuPosition();
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('resize', onReposition);
+    window.addEventListener('scroll', onReposition, true);
+    window.addEventListener('wheel', onReposition, { passive: true });
+    const vv = window.visualViewport;
+    vv?.addEventListener('resize', onReposition);
+    vv?.addEventListener('scroll', onReposition);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('resize', onReposition);
+      window.removeEventListener('scroll', onReposition, true);
+      window.removeEventListener('wheel', onReposition);
+      vv?.removeEventListener('resize', onReposition);
+      vv?.removeEventListener('scroll', onReposition);
+    };
+  }, [replySpawnMenuId, updateReplySpawnMenuPosition]);
+
   useEffect(() => {
     if (!editNodeSendMenuId) {
       setEditNodeSendMenuPos(null);
@@ -4586,6 +4699,7 @@ export default function App() {
     sendAssistantTurnFromUserNode({
       userNodeId: pending.nodeId,
       modelIdOverride: pending.modelIdOverride ?? null,
+      assistantRect: pending.assistantRect ?? null,
       clearComposerText: false,
     });
   }, [pendingEditNodeSend]);
@@ -4737,6 +4851,58 @@ export default function App() {
 	              onClose={() => setNodeMenuId(null)}
 	            />
 	          ) : null}
+            {typeof document !== 'undefined' && replySpawnMenuId && replySpawnMenuPos
+              ? createPortal(
+                  <>
+                    <div className="composerMenuBackdrop" onPointerDown={() => setReplySpawnMenuId(null)} aria-hidden="true" />
+                    <div
+                      className="composerMenu"
+                      style={{
+                        top: replySpawnMenuPos.top,
+                        bottom: replySpawnMenuPos.bottom,
+                        left: replySpawnMenuPos.left,
+                        width: 170,
+                        maxHeight: replySpawnMenuPos.maxHeight,
+                      }}
+                      role="menu"
+                      aria-label="Reply spawn type"
+                    >
+                      {(
+                        [
+                          { kind: 'text' as const, label: 'Reply with text' },
+                          { kind: 'ink' as const, label: 'Reply with ink' },
+                        ] as const
+                      ).map((item) => {
+                        const active = item.kind === replySpawnKind;
+                        return (
+                          <button
+                            key={item.kind}
+                            type="button"
+                            className={`composerMenu__item composerMenu__item--withCheck ${
+                              active ? 'composerMenu__item--active' : ''
+                            }`}
+                            onClick={() => {
+                              setReplySpawnMenuId(null);
+                              const next = item.kind;
+                              replySpawnKindRef.current = next;
+                              setReplySpawnKind(next);
+                              engineRef.current?.setReplySpawnKind(next);
+                              schedulePersistSoon();
+                            }}
+                            role="menuitem"
+                          >
+                            <span className="composerMenu__check" aria-hidden="true">
+                              {active ? '✓' : ''}
+                            </span>
+                            <span className="composerMenu__label">{item.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>,
+                  document.body,
+                )
+              : null}
             {typeof document !== 'undefined' && editNodeSendMenuId && editNodeSendMenuPos
               ? createPortal(
                   <>
@@ -4761,7 +4927,7 @@ export default function App() {
                             const nodeId = String(editNodeSendMenuId ?? '').trim();
                             setEditNodeSendMenuId(null);
                             if (!nodeId) return;
-                            setPendingEditNodeSend({ nodeId, modelIdOverride: m.id });
+                            setPendingEditNodeSend({ nodeId, modelIdOverride: m.id, assistantRect: null });
                           }}
                           role="menuitem"
                           title={m.label}

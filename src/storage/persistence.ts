@@ -20,6 +20,7 @@ export type PersistedWorkspaceSnapshot = {
     edgeRouterId?: string;
     replyArrowColor?: string;
     replyArrowOpacity?: number;
+    replySpawnKind?: 'text' | 'ink';
     glassNodesBlurCssPx?: number;
     glassNodesSaturatePct?: number;
     glassNodesBlurCssPxWebgl?: number;

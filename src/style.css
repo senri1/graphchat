@@ -2391,6 +2391,26 @@ body {
   background: rgba(255, 255, 255, 0.12);
 }
 
+.composerMenu__item--withCheck {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.composerMenu__check {
+  width: 14px;
+  flex: 0 0 14px;
+  text-align: center;
+  color: rgba(147, 197, 253, 0.92);
+}
+
+.composerMenu__label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .composer__send {
   appearance: none;
   border: 1px solid rgba(147, 197, 253, 0.55);
