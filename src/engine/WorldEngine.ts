@@ -705,6 +705,8 @@ export class WorldEngine {
   private readonly resizeHandleDrawPx = 12;
   private readonly resizeHandleHitPx = 22;
   private readonly resizeHandleHitPxTouch = 38;
+  private readonly resizeHandleOutsideHitPx = 10;
+  private readonly resizeHandleOutsideHitPxTouch = 18;
   private readonly minNodeW = 160;
   private readonly minNodeH = 110;
 
@@ -3319,7 +3321,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       }
     }
 
-    const corner = hit && (hit.kind === 'text' || hit.kind === 'ink') ? this.hitResizeHandle(world, hit.rect) : null;
+    let corner: ResizeCorner | null = null;
+    if (hit && (hit.kind === 'text' || hit.kind === 'ink')) {
+      corner = this.hitResizeHandle(world, hit.rect, { topRightOutsideOnly: true });
+    } else if (!hit) {
+      corner = this.findTopmostResizeHandleAtWorld(world, { pointerType: 'mouse' })?.corner ?? null;
+    }
     if (corner) this.setCanvasCursor(this.cursorForResizeCorner(corner));
     else this.setCanvasCursor('default');
   }
@@ -6547,28 +6554,54 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return this.tool === 'erase';
   }
 
-  private hitResizeHandle(world: Vec2, rect: Rect, opts?: { pointerType?: string }): ResizeCorner | null {
+  private hitResizeHandle(
+    world: Vec2,
+    rect: Rect,
+    opts?: { pointerType?: string; topRightOutsideOnly?: boolean },
+  ): ResizeCorner | null {
     const z = Math.max(0.01, this.camera.zoom || 1);
     const t = opts?.pointerType || 'mouse';
-    const hitPx = t === 'touch' ? this.resizeHandleHitPxTouch : this.resizeHandleHitPx;
+    const touchLike = t === 'touch' || t === 'pen';
+    const hitPx = touchLike ? this.resizeHandleHitPxTouch : this.resizeHandleHitPx;
     let hw = hitPx / z;
     const maxHw = Math.max(0, Math.min(rect.w, rect.h) * 0.5);
     if (maxHw > 0) hw = Math.min(hw, maxHw);
     if (hw <= 0) return null;
 
+    const outsidePx = touchLike ? this.resizeHandleOutsideHitPxTouch : this.resizeHandleOutsideHitPx;
+    let ow = outsidePx / z;
+    if (ow > hw) ow = hw;
+
     const { x, y, w, h } = rect;
-    const hitNW = world.x >= x && world.x <= x + hw && world.y >= y && world.y <= y + hw;
+    const hitNW = world.x >= x - ow && world.x <= x + hw && world.y >= y - ow && world.y <= y + hw;
     if (hitNW) return 'nw';
 
-    const hitNE = world.x >= x + w - hw && world.x <= x + w && world.y >= y && world.y <= y + hw;
-    if (hitNE) return 'ne';
+    const hitNE = world.x >= x + w - hw && world.x <= x + w + ow && world.y >= y - ow && world.y <= y + hw;
+    if (hitNE) {
+      if (opts?.topRightOutsideOnly && world.x < x + w && world.y > y) return null;
+      return 'ne';
+    }
 
-    const hitSW = world.x >= x && world.x <= x + hw && world.y >= y + h - hw && world.y <= y + h;
+    const hitSW = world.x >= x - ow && world.x <= x + hw && world.y >= y + h - hw && world.y <= y + h + ow;
     if (hitSW) return 'sw';
 
-    const hitSE = world.x >= x + w - hw && world.x <= x + w && world.y >= y + h - hw && world.y <= y + h;
+    const hitSE =
+      world.x >= x + w - hw && world.x <= x + w + ow && world.y >= y + h - hw && world.y <= y + h + ow;
     if (hitSE) return 'se';
 
+    return null;
+  }
+
+  private findTopmostResizeHandleAtWorld(
+    world: Vec2,
+    opts?: { pointerType?: string },
+  ): { node: TextNode | InkNode; corner: ResizeCorner } | null {
+    for (let i = this.nodes.length - 1; i >= 0; i--) {
+      const n = this.nodes[i]!;
+      if (n.kind !== 'text' && n.kind !== 'ink') continue;
+      const corner = this.hitResizeHandle(world, n.rect, { pointerType: opts?.pointerType, topRightOutsideOnly: true });
+      if (corner) return { node: n, corner };
+    }
     return null;
   }
 
@@ -6941,7 +6974,31 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       return 'draw';
     }
 
-    if (!hit) return null;
+    if (!hit) {
+      const resizeHit = this.findTopmostResizeHandleAtWorld(world, { pointerType: info.pointerType });
+      if (!resizeHit) return null;
+
+      const selectionChanged = this.selectedNodeId !== resizeHit.node.id || this.editingNodeId !== null;
+      this.selectedNodeId = resizeHit.node.id;
+      this.editingNodeId = null;
+      this.bringNodeToFront(resizeHit.node.id);
+
+      const startRect: Rect = { ...resizeHit.node.rect };
+      this.activeGesture = {
+        kind: 'resize',
+        pointerId: info.pointerId,
+        nodeId: resizeHit.node.id,
+        corner: resizeHit.corner,
+        startWorld: world,
+        startRect,
+      };
+      this.suppressTapPointerIds.add(info.pointerId);
+      this.textResizeHold = null;
+      if (resizeHit.node.kind === 'text') this.renderTextLod2Target({ nodeId: resizeHit.node.id, mode: 'resize' });
+      this.requestRender();
+      if (selectionChanged) this.emitUiState();
+      return 'node';
+    }
 
     const selectionChanged = this.selectedNodeId !== hit.id || this.editingNodeId !== null;
     this.selectedNodeId = hit.id;
@@ -7022,10 +7079,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         }
       }
 
-		    const corner =
-		      hit.kind === 'text' || hit.kind === 'ink'
-		        ? this.hitResizeHandle(world, hit.rect, { pointerType: info.pointerType })
-		        : null;
+			    const corner =
+			      hit.kind === 'text' || hit.kind === 'ink'
+			        ? this.hitResizeHandle(world, hit.rect, { pointerType: info.pointerType, topRightOutsideOnly: true })
+			        : null;
 		    const startRect: Rect = { ...hit.rect };
 		    if (corner) {
 	      this.activeGesture = {
