@@ -366,6 +366,8 @@ type InkNode = DemoNodeBase & {
   rect: Rect;
   userPreface?: { replyTo?: string; contexts?: string[] };
   collapsedPrefaceContexts?: Record<number, boolean>;
+  attachments?: ChatAttachment[];
+  selectedAttachmentKeys?: string[];
   strokes: InkStroke[];
   raster: InkRaster | null;
 };
@@ -1061,6 +1063,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         rect: { ...n.rect },
         ...(n.userPreface ? { userPreface: n.userPreface } : {}),
         ...(n.collapsedPrefaceContexts ? { collapsedPrefaceContexts: n.collapsedPrefaceContexts } : {}),
+        attachments: Array.isArray(n.attachments) ? n.attachments : undefined,
+        selectedAttachmentKeys: Array.isArray(n.selectedAttachmentKeys) ? n.selectedAttachmentKeys : undefined,
         strokes: n.strokes.map((s) => ({
           width: s.width,
           color: s.color,
@@ -1327,6 +1331,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         title: n.title,
         ...(userPreface ? { userPreface } : {}),
         collapsedPrefaceContexts,
+        attachments: Array.isArray((n as any)?.attachments) ? ((n as any).attachments as ChatAttachment[]) : undefined,
+        selectedAttachmentKeys: Array.isArray((n as any)?.selectedAttachmentKeys)
+          ? ((n as any).selectedAttachmentKeys as string[])
+          : undefined,
         strokes: (n.strokes ?? []).map((s) => ({
           width: s.width,
           color: s.color,
@@ -2364,6 +2372,131 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.editingNodeId = null;
 
     this.textRasterGeneration += 1;
+    this.requestRender();
+    if (changed) this.emitUiState();
+
+    return { userNodeId, assistantNodeId };
+  }
+
+  spawnInkChatTurn(args: {
+    strokes: InkStroke[];
+    parentNodeId: string | null;
+    userPreface?: { replyTo?: string; contexts?: string[] };
+    userAttachments?: ChatAttachment[];
+    selectedAttachmentKeys?: string[];
+    assistantTitle?: string;
+    assistantModelId?: string | null;
+    rect?: Rect;
+  }): { userNodeId: string; assistantNodeId: string } {
+    const strokes = Array.isArray(args.strokes) ? args.strokes : [];
+    const parentNodeId = args.parentNodeId ?? null;
+    const userPreface = args.userPreface ?? undefined;
+    const userAttachments = Array.isArray(args.userAttachments) ? args.userAttachments : [];
+    const selectedAttachmentKeys = Array.isArray(args.selectedAttachmentKeys) ? args.selectedAttachmentKeys : [];
+    const assistantTitle = typeof args.assistantTitle === 'string' ? args.assistantTitle : '';
+    const assistantModelId = typeof args.assistantModelId === 'string' ? args.assistantModelId : null;
+
+    const parent = parentNodeId ? this.nodes.find((n) => n.id === parentNodeId) ?? null : null;
+    const resolvedParentId = parent ? parent.id : null;
+
+    const explicitRect = this.normalizeSpawnRect(args.rect, { maxW: INK_NODE_MAX_W_PX, maxH: INK_NODE_MAX_H_PX });
+    const nodeW = explicitRect?.w ?? 420;
+    const nodeH = explicitRect?.h ?? 280;
+
+    const now = Date.now().toString(36);
+    const userNodeId = `i${now}-${(this.nodeSeq++).toString(36)}`;
+    const assistantNodeId = `a${now}-${(this.nodeSeq++).toString(36)}`;
+
+    const gapY = 26;
+
+    const normalizedPreface = (() => {
+      if (!userPreface || typeof userPreface !== 'object') return undefined;
+      const replyTo = typeof userPreface.replyTo === 'string' ? userPreface.replyTo.trim() : '';
+      const ctxRaw = Array.isArray(userPreface.contexts) ? userPreface.contexts : [];
+      const contexts = ctxRaw.map((t) => String(t ?? '').trim()).filter(Boolean);
+      if (!replyTo && contexts.length === 0) return undefined;
+      return {
+        ...(replyTo ? { replyTo } : {}),
+        ...(contexts.length ? { contexts } : {}),
+      };
+    })();
+
+    const userNode: InkNode = {
+      kind: 'ink',
+      id: userNodeId,
+      parentId: resolvedParentId,
+      rect: { x: 0, y: 0, w: nodeW, h: nodeH },
+      title: 'User',
+      ...(normalizedPreface ? { userPreface: normalizedPreface } : {}),
+      strokes: strokes.map((s) => ({
+        width: Number.isFinite(s?.width) ? Number(s.width) : 0,
+        color: typeof s?.color === 'string' ? s.color : 'rgba(147,197,253,0.92)',
+        points: Array.isArray(s?.points) ? s.points.map((p) => ({ x: Number(p?.x) || 0, y: Number(p?.y) || 0 })) : [],
+      })),
+      attachments: userAttachments.length ? userAttachments : undefined,
+      selectedAttachmentKeys: selectedAttachmentKeys.length ? selectedAttachmentKeys : undefined,
+      raster: null,
+    };
+
+    const assistantNode: TextNode = {
+      kind: 'text',
+      id: assistantNodeId,
+      parentId: userNodeId,
+      rect: { x: 0, y: 0, w: userNode.rect.w, h: TEXT_NODE_SPAWN_MIN_H_PX },
+      title: assistantTitle.trim() || 'Assistant',
+      author: 'assistant',
+      content: '',
+      contentHash: fingerprintText(''),
+      displayHash: '',
+      summaryExpanded: false,
+      modelId: assistantModelId,
+    };
+
+    const totalH = userNode.rect.h + gapY + assistantNode.rect.h;
+    let x = 0;
+    let userY = 0;
+    if (parent) {
+      x = parent.rect.x;
+      userY = parent.rect.y + parent.rect.h + gapY;
+    } else {
+      const center = this.camera.screenToWorld({ x: this.cssW * 0.5, y: this.cssH * 0.5 });
+      x = center.x - userNode.rect.w * 0.5;
+      userY = center.y - totalH * 0.5;
+    }
+
+    const candidate: Rect = { x, y: userY, w: userNode.rect.w, h: totalH };
+    for (let i = 0; i < 60; i += 1) {
+      const overlap = this.nodes.find((n) => rectsIntersect(n.rect, candidate)) ?? null;
+      if (!overlap) break;
+      userY = overlap.rect.y + overlap.rect.h + gapY;
+      candidate.y = userY;
+    }
+
+    userNode.rect.x = x;
+    userNode.rect.y = userY;
+    assistantNode.rect.x = x;
+    assistantNode.rect.y = userY + userNode.rect.h + gapY;
+
+    if (explicitRect) {
+      const prev = { ...userNode.rect };
+      userNode.rect = this.clampRectToView(userNode.rect);
+      const dx = userNode.rect.x - prev.x;
+      const dy = userNode.rect.y - prev.y;
+      assistantNode.rect.x += dx;
+      assistantNode.rect.y += dy;
+    }
+
+    this.recomputeTextNodeDisplayHash(assistantNode);
+
+    this.nodes.push(userNode, assistantNode);
+    this.bringNodeToFront(assistantNodeId);
+
+    const changed = this.selectedNodeId !== assistantNodeId || this.editingNodeId !== null;
+    this.selectedNodeId = assistantNodeId;
+    this.editingNodeId = null;
+
+    this.textRasterGeneration += 1;
+    this.inkPrefaceRasterGeneration += 1;
     this.requestRender();
     if (changed) this.emitUiState();
 
@@ -4389,21 +4522,29 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       this.touchAttachmentThumbDataUrl(key);
       this.evictOldAttachmentThumbDataUrls();
 
-      let anyChanged = false;
+      let anyTextChanged = false;
+      let anyInkChanged = false;
       for (const node of this.nodes) {
-        if (node.kind !== 'text') continue;
-        const atts = Array.isArray(node.attachments) ? node.attachments : [];
-        const usesKey = atts.some((a) => a?.kind === 'image' && typeof a.storageKey === 'string' && a.storageKey === key);
-        if (!usesKey) continue;
-        const prevHash = node.displayHash;
-        this.recomputeTextNodeDisplayHash(node);
-        if (node.displayHash !== prevHash) anyChanged = true;
+        if (node.kind === 'text') {
+          const atts = Array.isArray(node.attachments) ? node.attachments : [];
+          const usesKey = atts.some((a) => a?.kind === 'image' && typeof a.storageKey === 'string' && a.storageKey === key);
+          if (!usesKey) continue;
+          const prevHash = node.displayHash;
+          this.recomputeTextNodeDisplayHash(node);
+          if (node.displayHash !== prevHash) anyTextChanged = true;
+          continue;
+        }
+
+        if (node.kind === 'ink') {
+          const atts = Array.isArray(node.attachments) ? node.attachments : [];
+          const usesKey = atts.some((a) => a?.kind === 'image' && typeof a.storageKey === 'string' && a.storageKey === key);
+          if (usesKey) anyInkChanged = true;
+        }
       }
 
-      if (anyChanged) {
-        this.textRasterGeneration += 1;
-        this.requestRender();
-      }
+      if (anyTextChanged) this.textRasterGeneration += 1;
+      if (anyInkChanged) this.inkPrefaceRasterGeneration += 1;
+      if (anyTextChanged || anyInkChanged) this.requestRender();
     } catch {
       this.attachmentThumbDataUrlFailed.add(key);
     } finally {
@@ -4642,7 +4783,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const replyTo = (node.userPreface?.replyTo ?? '').trim();
     const ctxRaw = Array.isArray(node.userPreface?.contexts) ? node.userPreface!.contexts! : [];
     const ctx = ctxRaw.map((t) => String(t ?? '').trim()).filter(Boolean);
-    if (!replyTo && ctx.length === 0) return null;
+    const atts = Array.isArray(node.attachments) ? node.attachments : [];
+    if (!replyTo && ctx.length === 0 && atts.length === 0) return null;
 
     const parts: string[] = [];
     parts.push(
@@ -4696,8 +4838,59 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           `<div style="opacity:0.75;margin:0 0 4px;">Context ${i + 1}:</div>` +
           `<div class="gc-preface__mdx">${renderMarkdownMath(ctx[i])}</div>` +
           '</div>' +
-          '</div>',
+        '</div>',
       );
+    }
+
+    if (atts.length > 0) {
+      parts.push('<div style="display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 0;">');
+      for (const att of atts) {
+        if (!att) continue;
+        parts.push(
+          '<div style="width:96px;height:96px;border-radius:8px;overflow:hidden;' +
+            'border:1px solid rgba(255,255,255,0.15);background:rgba(0,0,0,0.20);">',
+        );
+
+        if (att.kind === 'image') {
+          const src = this.resolveImageAttachmentThumbSrc(att);
+          if (src) {
+            const alt = typeof att.name === 'string' && att.name.trim() ? att.name.trim() : 'attachment';
+            parts.push(
+              `<img src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" ` +
+                'style="width:100%;height:100%;object-fit:cover;display:block;" />',
+            );
+          } else {
+            parts.push(
+              '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;' +
+                'font-size:11px;color:rgba(243,244,246,0.85);">Image</div>',
+            );
+          }
+        } else if (att.kind === 'pdf') {
+          const label = 'PDF';
+          const name = typeof att.name === 'string' && att.name.trim() ? att.name.trim() : 'document.pdf';
+          parts.push(
+            '<div style="width:100%;height:100%;display:flex;flex-direction:column;' +
+              'align-items:center;justify-content:center;padding:6px;box-sizing:border-box;' +
+              'text-align:center;color:rgba(243,244,246,0.90);">',
+          );
+          parts.push('<div style="font-weight:700;font-size:11px;">' + escapeHtml(label) + '</div>');
+          parts.push(
+            '<div style="font-size:10px;opacity:0.85;word-break:break-all;display:-webkit-box;' +
+              '-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;">' +
+              escapeHtml(name) +
+              '</div>',
+          );
+          parts.push('</div>');
+        } else if (att.kind === 'ink') {
+          parts.push(
+            '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;' +
+              'font-size:11px;color:rgba(243,244,246,0.85);">Ink</div>',
+          );
+        }
+
+        parts.push('</div>');
+      }
+      parts.push('</div>');
     }
 
     parts.push('</div>');

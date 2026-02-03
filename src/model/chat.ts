@@ -115,4 +115,6 @@ export type ChatNode =
       };
       collapsedPrefaceContexts?: Record<number, boolean>;
       strokes: InkStroke[];
+      attachments?: ChatAttachment[];
+      selectedAttachmentKeys?: string[];
     };

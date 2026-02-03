@@ -2206,6 +2206,73 @@ body {
   accent-color: rgba(147, 197, 253, 0.85);
 }
 
+.composer__modeToggle {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  overflow: hidden;
+  box-shadow: 0 0 0 1px var(--ui-control-ring);
+  background: var(--ui-control-bg);
+}
+
+.composer__modeBtn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.86);
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.composer__modeBtn:hover {
+  background: var(--ui-control-bg-hover);
+}
+
+.composer__modeBtn--active {
+  background: rgba(147, 197, 253, 0.18);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.composer__modeBtn:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
+.composer__inkWrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 10px 12px;
+  box-sizing: border-box;
+  touch-action: none;
+}
+
+.composer__inkCanvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.22);
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.composer__inkHint {
+  position: absolute;
+  left: 24px;
+  top: 22px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.55);
+  user-select: none;
+  pointer-events: none;
+}
+
 .composer__setting {
   display: inline-flex;
   align-items: center;

@@ -130,13 +130,12 @@ async function buildOpenAIInputFromChatNodes(
   const leafSelection = (() => {
     const leaf = byId.get(leafUserNodeId) ?? null;
     const selected =
-      leaf && leaf.kind === 'text' && Array.isArray((leaf as any)?.selectedAttachmentKeys)
+      leaf && (leaf.kind === 'text' || leaf.kind === 'ink') && Array.isArray((leaf as any)?.selectedAttachmentKeys)
         ? ((leaf as any).selectedAttachmentKeys as string[])
         : [];
     const set = new Set<string>(selected);
 
-    // Ink nodes don't currently have a per-send attachment selector, but if the ink
-    // node is anchored under a PDF we still want the PDF file included in the request.
+    // If the ink node is anchored under a PDF we still want the PDF file included in the request.
     if (leaf?.kind === 'ink') {
       for (const n of chain) {
         if (n.kind !== 'pdf') continue;
@@ -176,13 +175,22 @@ async function buildOpenAIInputFromChatNodes(
       const part = await attachmentToOpenAIContent(att);
       if (part) {
         const prefaceText = buildInkTurnText(n);
-        input.push({
-          role: 'user',
-          content: [
-            { type: 'input_text', text: prefaceText },
-            part,
-          ],
-        });
+        const content: any[] = [];
+        if (prefaceText.trim()) content.push({ type: 'input_text', text: prefaceText });
+        content.push(part);
+
+        const atts = Array.isArray((n as any)?.attachments) ? ((n as any).attachments as any[]) : [];
+        for (let i = 0; i < atts.length; i += 1) {
+          const nodeAtt = atts[i];
+          if (!nodeAtt) continue;
+          const key = `${n.id}:${i}`;
+          const includeOwn = n.id === leafUserNodeId;
+          if (!includeOwn && !leafSelection.has(key)) continue;
+          const nodePart = await attachmentToOpenAIContent(nodeAtt);
+          if (nodePart) content.push(nodePart);
+        }
+
+        if (content.length) input.push({ role: 'user', content });
       }
       continue;
     }

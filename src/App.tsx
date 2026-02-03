@@ -42,7 +42,7 @@ import {
   streamOpenAIResponseById,
 } from './services/openaiService';
 import { getGeminiApiKey, sendGeminiResponse } from './services/geminiService';
-import type { ChatAttachment, ChatNode, ThinkingSummaryChunk } from './model/chat';
+import type { ChatAttachment, ChatNode, InkStroke, ThinkingSummaryChunk } from './model/chat';
 import { normalizeBackgroundLibrary, type BackgroundLibraryItem } from './model/backgrounds';
 import { buildOpenAIResponseRequest, type OpenAIChatSettings } from './llm/openai';
 import { buildGeminiContext, type GeminiChatSettings } from './llm/gemini';
@@ -78,6 +78,8 @@ type ReplySelection = { nodeId: string; preview: string; text?: string };
 
 type ChatRuntimeMeta = {
   draft: string;
+  draftInkStrokes: InkStroke[];
+  composerMode: 'text' | 'ink';
   draftAttachments: ChatAttachment[];
   replyTo: ReplySelection | null;
   contextSelections: string[];
@@ -360,12 +362,11 @@ type ContextAttachmentItem = {
 function collectAttachmentStorageKeys(nodes: ChatNode[]): string[] {
   const out = new Set<string>();
   for (const n of nodes) {
-    if (n.kind === 'text') {
+    if (n.kind === 'text' || n.kind === 'ink') {
       const atts = Array.isArray((n as any)?.attachments) ? ((n as any).attachments as ChatAttachment[]) : [];
       for (const att of atts) {
         if (!att) continue;
-        const storageKey =
-          att.kind === 'image' || att.kind === 'pdf' ? (typeof att.storageKey === 'string' ? att.storageKey : '') : '';
+        const storageKey = typeof (att as any)?.storageKey === 'string' ? String((att as any).storageKey).trim() : '';
         if (storageKey) out.add(storageKey);
       }
       continue;
@@ -390,6 +391,18 @@ function collectContextAttachments(nodes: ChatNode[], startNodeId: string): Cont
     if (cur.kind === 'text' && cur.author === 'user' && Array.isArray(cur.attachments)) {
       for (let i = 0; i < cur.attachments.length; i += 1) {
         const att = cur.attachments[i];
+        if (!att) continue;
+        if (att.kind === 'pdf' && typeof (att as any)?.storageKey === 'string') {
+          const k = String((att as any).storageKey).trim();
+          if (k) seenPdfStorageKeys.add(k);
+        }
+        out.push({ key: `${cur.id}:${i}`, nodeId: cur.id, attachment: att });
+      }
+    }
+    if (cur.kind === 'ink' && Array.isArray((cur as any)?.attachments)) {
+      const atts = (cur as any).attachments as ChatAttachment[];
+      for (let i = 0; i < atts.length; i += 1) {
+        const att = atts[i];
         if (!att) continue;
         if (att.kind === 'pdf' && typeof (att as any)?.storageKey === 'string') {
           const k = String((att as any).storageKey).trim();
@@ -441,8 +454,8 @@ function collectAllReferencedAttachmentKeys(args: {
     const draft = meta?.draftAttachments ?? [];
     for (const att of draft) {
       if (!att) continue;
-      if (att.kind !== 'image' && att.kind !== 'pdf') continue;
-      const key = typeof att.storageKey === 'string' ? att.storageKey : '';
+      if (att.kind !== 'image' && att.kind !== 'pdf' && att.kind !== 'ink') continue;
+      const key = typeof (att as any)?.storageKey === 'string' ? String((att as any).storageKey).trim() : '';
       if (key) referenced.add(key);
     }
   }
@@ -575,6 +588,8 @@ export default function App() {
 	  const [toast, setToast] = useState<ToastState | null>(null);
 	  const [viewport, setViewport] = useState(() => ({ w: 1, h: 1 }));
 	  const [composerDraft, setComposerDraft] = useState('');
+    const [composerMode, setComposerMode] = useState<'text' | 'ink'>(() => 'text');
+    const [composerInkStrokes, setComposerInkStrokes] = useState<InkStroke[]>(() => []);
 	  const [composerDraftAttachments, setComposerDraftAttachments] = useState<ChatAttachment[]>(() => []);
 	  const lastAddAttachmentFilesRef = useRef<{ sig: string; at: number }>({ sig: '', at: 0 });
   const draftAttachmentDedupeRef = useRef<Map<string, DraftAttachmentDedupeState>>(new Map());
@@ -710,6 +725,8 @@ export default function App() {
     const chatMeta = new Map<string, ChatRuntimeMeta>();
     chatMeta.set(chatId, {
       draft: '',
+      draftInkStrokes: [],
+      composerMode: 'text',
       draftAttachments: [],
       replyTo: null,
       contextSelections: [],
@@ -736,6 +753,8 @@ export default function App() {
     if (existing) return existing;
     const meta: ChatRuntimeMeta = {
       draft: '',
+      draftInkStrokes: [],
+      composerMode: 'text',
       draftAttachments: [],
       replyTo: null,
       contextSelections: [],
@@ -2817,6 +2836,8 @@ export default function App() {
       const existingMeta = chatMetaRef.current.get(prevChatId);
       if (existingMeta) {
         existingMeta.draft = composerDraft;
+        existingMeta.draftInkStrokes = composerInkStrokes.slice();
+        existingMeta.composerMode = composerMode;
         existingMeta.draftAttachments = composerDraftAttachments.slice();
         existingMeta.replyTo = replySelection;
         existingMeta.contextSelections = contextSelections.slice();
@@ -2844,6 +2865,8 @@ export default function App() {
 
     const meta = ensureChatMeta(nextChatId);
     setComposerDraft(meta.draft);
+    setComposerMode(meta.composerMode === 'ink' ? 'ink' : 'text');
+    setComposerInkStrokes(Array.isArray(meta.draftInkStrokes) ? meta.draftInkStrokes : []);
     setComposerDraftAttachments(Array.isArray(meta.draftAttachments) ? meta.draftAttachments.slice() : []);
     setReplySelection(meta.replyTo);
     setContextSelections(Array.isArray(meta.contextSelections) ? meta.contextSelections : []);
@@ -2974,6 +2997,8 @@ export default function App() {
 
 	    const meta = ensureChatMeta(resolvedActive);
 	    setComposerDraft(meta.draft);
+      setComposerMode(meta.composerMode === 'ink' ? 'ink' : 'text');
+      setComposerInkStrokes(Array.isArray(meta.draftInkStrokes) ? meta.draftInkStrokes : []);
 	    setComposerDraftAttachments(Array.isArray(meta.draftAttachments) ? meta.draftAttachments.slice() : []);
 	    setReplySelection(meta.replyTo);
       setContextSelections(Array.isArray(meta.contextSelections) ? meta.contextSelections : []);
@@ -3072,6 +3097,19 @@ export default function App() {
 
           const meta: ChatRuntimeMeta = {
             draft: typeof raw?.draft === 'string' ? raw.draft : '',
+            draftInkStrokes: Array.isArray(raw?.draftInkStrokes)
+              ? (raw.draftInkStrokes as any[]).map((s) => ({
+                  width: Number.isFinite(Number((s as any)?.width)) ? Number((s as any).width) : 0,
+                  color: typeof (s as any)?.color === 'string' ? ((s as any).color as string) : 'rgba(147,197,253,0.92)',
+                  points: Array.isArray((s as any)?.points)
+                    ? ((s as any).points as any[]).map((p) => ({
+                        x: Number.isFinite(Number((p as any)?.x)) ? Number((p as any).x) : 0,
+                        y: Number.isFinite(Number((p as any)?.y)) ? Number((p as any).y) : 0,
+                      }))
+                    : [],
+                }))
+              : [],
+            composerMode: raw?.composerMode === 'ink' ? 'ink' : 'text',
             draftAttachments: Array.isArray(raw?.draftAttachments) ? (raw.draftAttachments as ChatAttachment[]) : [],
             replyTo:
               raw?.replyTo && typeof raw.replyTo === 'object' && typeof raw.replyTo.nodeId === 'string'
@@ -3265,6 +3303,8 @@ export default function App() {
     chatStatesRef.current.set(id, createEmptyChatState());
     chatMetaRef.current.set(id, {
       draft: '',
+      draftInkStrokes: [],
+      composerMode: 'text',
       draftAttachments: [],
       replyTo: null,
       contextSelections: [],
@@ -3647,6 +3687,8 @@ export default function App() {
         chatStatesRef.current.set(id, createEmptyChatState());
         chatMetaRef.current.set(id, {
           draft: '',
+          draftInkStrokes: [],
+          composerMode: 'text',
           draftAttachments: [],
           replyTo: null,
           contextSelections: [],
@@ -3894,6 +3936,221 @@ export default function App() {
     setReplySelectedAttachmentKeys([]);
     if (args.clearComposerText !== false) setComposerDraft('');
     setComposerDraftAttachments([]);
+
+    const snapshot = engine.exportChatState();
+    chatStatesRef.current.set(chatId, snapshot);
+
+    const provider = getModelInfo(selectedModelId)?.provider ?? 'openai';
+    if (provider === 'gemini') {
+      const settings: GeminiChatSettings = {
+        modelId: selectedModelId,
+        webSearchEnabled: composerWebSearch,
+        inkExport: {
+          cropEnabled: inkSendCropEnabledRef.current,
+          cropPaddingPx: inkSendCropPaddingPxRef.current,
+          downscaleEnabled: inkSendDownscaleEnabledRef.current,
+          maxPixels: inkSendMaxPixelsRef.current,
+          maxDimPx: inkSendMaxDimPxRef.current,
+        },
+      };
+      startGeminiGeneration({
+        chatId,
+        userNodeId: res.userNodeId,
+        assistantNodeId: res.assistantNodeId,
+        settings,
+      });
+    } else {
+      const modelSettings = modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
+      const settings: OpenAIChatSettings = {
+        modelId: selectedModelId,
+        verbosity: modelSettings?.verbosity,
+        webSearchEnabled: composerWebSearch,
+        reasoningSummary: modelSettings?.reasoningSummary,
+        stream: modelSettings?.streaming,
+        background: modelSettings?.background,
+        inkExport: {
+          cropEnabled: inkSendCropEnabledRef.current,
+          cropPaddingPx: inkSendCropPaddingPxRef.current,
+          downscaleEnabled: inkSendDownscaleEnabledRef.current,
+          maxPixels: inkSendMaxPixelsRef.current,
+          maxDimPx: inkSendMaxDimPxRef.current,
+        },
+      };
+      startOpenAIGeneration({
+        chatId,
+        userNodeId: res.userNodeId,
+        assistantNodeId: res.assistantNodeId,
+        settings,
+      });
+    }
+
+    schedulePersistSoon();
+  };
+
+  const sendInkTurn = (args: { strokes: InkStroke[]; viewport?: { w: number; h: number } | null; modelIdOverride?: string | null }) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+
+    const rawStrokes = Array.isArray(args.strokes) ? args.strokes : [];
+    if (rawStrokes.length === 0) {
+      showToast('Nothing to send: ink is empty.', 'error');
+      return;
+    }
+
+    const composerContextTexts = (contextSelections ?? []).map((t) => String(t ?? '').trim()).filter(Boolean);
+
+    const selectionReplyTo =
+      replySelection && typeof replySelection.text === 'string' ? replySelection.text.trim() : '';
+    const replyTo = selectionReplyTo;
+
+    const contextTexts = (() => {
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const t of composerContextTexts) {
+        if (!t) continue;
+        if (seen.has(t)) continue;
+        seen.add(t);
+        out.push(t);
+      }
+      return out;
+    })();
+    const hasPreface = Boolean(replyTo || contextTexts.length > 0);
+
+    const selectedModelId = String(args.modelIdOverride || composerModelId || DEFAULT_MODEL_ID).trim() || DEFAULT_MODEL_ID;
+    const assistantTitle = (() => {
+      const info = getModelInfo(selectedModelId);
+      const shortLabel = typeof info?.shortLabel === 'string' ? info.shortLabel.trim() : '';
+      if (shortLabel) return shortLabel;
+      const label = typeof info?.label === 'string' ? info.label.trim() : '';
+      return label || 'Assistant';
+    })();
+
+    const modelInfo = getModelInfo(selectedModelId);
+    if (modelInfo && modelInfo.supportsImageInput === false) {
+      showToast('Selected model does not support image input.', 'error');
+      return;
+    }
+
+    let desiredParentId = replySelection?.nodeId && engine.hasNode(replySelection.nodeId) ? replySelection.nodeId : null;
+    if (!desiredParentId) {
+      const pdfStorageKey = (composerDraftAttachments ?? []).reduce<string>((acc, att) => {
+        if (acc) return acc;
+        if (!att || att.kind !== 'pdf') return '';
+        const key = typeof (att as any)?.storageKey === 'string' ? String((att as any).storageKey).trim() : '';
+        return key;
+      }, '');
+      if (pdfStorageKey) {
+        try {
+          const snapshot = engine.exportChatState();
+          const pdfNode =
+            snapshot.nodes.find(
+              (n): n is Extract<ChatNode, { kind: 'pdf' }> =>
+                n.kind === 'pdf' && String((n as any)?.storageKey ?? '').trim() === pdfStorageKey,
+            ) ?? null;
+          if (pdfNode && engine.hasNode(pdfNode.id)) desiredParentId = pdfNode.id;
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    const userPreface = hasPreface
+      ? {
+          ...(replyTo ? { replyTo } : {}),
+          ...(contextTexts.length ? { contexts: contextTexts } : {}),
+        }
+      : undefined;
+
+    const TEXT_NODE_PAD_PX = 14;
+    const TEXT_NODE_HEADER_H_PX = 44;
+    const INK_NODE_MAX_W_PX = 2400;
+    const INK_NODE_MAX_H_PX = 1800;
+
+    const viewportW = clampNumber(args.viewport?.w, 1, 10_000, 392);
+    const viewportH = clampNumber(args.viewport?.h, 1, 10_000, 222);
+
+    const desiredRectW = clampNumber(viewportW + TEXT_NODE_PAD_PX * 2, 320, INK_NODE_MAX_W_PX, 420);
+    const desiredRectH = clampNumber(viewportH + TEXT_NODE_HEADER_H_PX + TEXT_NODE_PAD_PX, 240, INK_NODE_MAX_H_PX, 280);
+    const contentW = Math.max(1, desiredRectW - TEXT_NODE_PAD_PX * 2);
+    const contentH = Math.max(1, desiredRectH - TEXT_NODE_HEADER_H_PX - TEXT_NODE_PAD_PX);
+    const nodeMinDim = Math.max(1, Math.min(contentW, contentH));
+    const viewportMinDim = Math.max(1, Math.min(viewportW, viewportH));
+    const scaleX = contentW / viewportW;
+    const scaleY = contentH / viewportH;
+    const scaleW = nodeMinDim / viewportMinDim;
+
+    const nodeStrokes: InkStroke[] = rawStrokes
+      .filter((s) => s && Array.isArray(s.points) && s.points.length > 0)
+      .map((s) => {
+        const widthIn = Number.isFinite(Number(s.width)) ? Number(s.width) : 0;
+        const color = typeof s.color === 'string' ? s.color : 'rgba(147,197,253,0.92)';
+        const pts = Array.isArray(s.points) ? s.points : [];
+        const isNorm =
+          Number.isFinite(widthIn) &&
+          widthIn >= 0 &&
+          widthIn <= 1.001 &&
+          pts.length > 0 &&
+          pts.every((p) => {
+            const x = Number((p as any)?.x);
+            const y = Number((p as any)?.y);
+            if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+            return x >= -0.001 && x <= 1.001 && y >= -0.001 && y <= 1.001;
+          });
+
+        const width = Math.max(0, widthIn) * (isNorm ? nodeMinDim : scaleW);
+        const points = pts
+          .map((p) => {
+            const xIn = Number((p as any)?.x);
+            const yIn = Number((p as any)?.y);
+            if (!Number.isFinite(xIn) || !Number.isFinite(yIn)) return null;
+            const x = isNorm ? xIn * contentW : xIn * scaleX;
+            const y = isNorm ? yIn * contentH : yIn * scaleY;
+            return { x, y };
+          })
+          .filter((p): p is { x: number; y: number } => Boolean(p));
+        return { width, color, points };
+      });
+
+    if (nodeStrokes.length === 0) {
+      showToast('Nothing to send: ink is empty.', 'error');
+      return;
+    }
+
+    const chatId = activeChatIdRef.current;
+    const meta = ensureChatMeta(chatId);
+
+    const res = engine.spawnInkChatTurn({
+      strokes: nodeStrokes,
+      parentNodeId: desiredParentId,
+      userPreface,
+      userAttachments: composerDraftAttachments.length ? composerDraftAttachments : undefined,
+      selectedAttachmentKeys: replySelectedAttachmentKeys.length ? replySelectedAttachmentKeys : undefined,
+      assistantTitle,
+      assistantModelId: selectedModelId,
+      rect: { x: 0, y: 0, w: desiredRectW, h: desiredRectH },
+    });
+
+    meta.turns.push({
+      id: genId('turn'),
+      createdAt: Date.now(),
+      userNodeId: res.userNodeId,
+      assistantNodeId: res.assistantNodeId,
+      attachmentNodeIds: [],
+    });
+    meta.headNodeId = res.assistantNodeId;
+    meta.replyTo = null;
+    meta.contextSelections = [];
+    meta.draftAttachments = [];
+    meta.selectedAttachmentKeys = [];
+    meta.draftInkStrokes = [];
+    draftAttachmentDedupeRef.current.delete(chatId);
+    lastAddAttachmentFilesRef.current = { sig: '', at: 0 };
+    setReplySelection(null);
+    setContextSelections([]);
+    setReplyContextAttachments([]);
+    setReplySelectedAttachmentKeys([]);
+    setComposerDraftAttachments([]);
+    setComposerInkStrokes([]);
 
     const snapshot = engine.exportChatState();
     chatStatesRef.current.set(chatId, snapshot);
@@ -4577,6 +4834,21 @@ export default function App() {
             composerMinimizedRef.current = value;
             schedulePersistSoon();
           }}
+          mode={composerMode}
+          onChangeMode={(next) => {
+            const value = next === 'ink' ? 'ink' : 'text';
+            setComposerMode(value);
+            ensureChatMeta(activeChatId).composerMode = value;
+            schedulePersistSoon();
+          }}
+          inkTool={ui.tool}
+          inkStrokes={composerInkStrokes}
+          onChangeInkStrokes={(next) => {
+            const strokes = Array.isArray(next) ? next : [];
+            setComposerInkStrokes(strokes);
+            ensureChatMeta(activeChatId).draftInkStrokes = strokes;
+            schedulePersistSoon();
+          }}
           value={composerDraft}
           onChange={(next) => {
             setComposerDraft(next);
@@ -4719,12 +4991,17 @@ export default function App() {
             schedulePersistSoon();
           }}
           sendDisabled={
-            !composerDraft.trim() &&
-            composerDraftAttachments.length === 0 &&
-            (contextSelections ?? []).every((t) => !String(t ?? '').trim())
+            composerMode === 'ink'
+              ? composerInkStrokes.length === 0
+              : !composerDraft.trim() &&
+                composerDraftAttachments.length === 0 &&
+                (contextSelections ?? []).every((t) => !String(t ?? '').trim())
           }
           onSend={() => {
             sendTurn({ userText: composerDraft, allowPdfAttachmentParentFallback: true, clearComposerText: true });
+          }}
+          onSendInk={({ strokes, viewport }) => {
+            sendInkTurn({ strokes, viewport });
           }}
         />
         <input
@@ -5202,6 +5479,8 @@ export default function App() {
             const chatMeta = new Map<string, ChatRuntimeMeta>();
             chatMeta.set(chatId, {
               draft: '',
+              draftInkStrokes: [],
+              composerMode: 'text',
               draftAttachments: [],
               replyTo: null,
               contextSelections: [],
@@ -5222,6 +5501,8 @@ export default function App() {
             setFocusedFolderId(root.id);
             setActiveChatId(chatId);
             setComposerDraft('');
+            setComposerMode('text');
+            setComposerInkStrokes([]);
             setComposerDraftAttachments([]);
             setReplySelection(null);
             setReplyContextAttachments([]);

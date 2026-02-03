@@ -144,15 +144,32 @@ async function buildAttachmentPartsForUserNode(args: {
   allowedKeys: Set<string>;
   ai: any | null;
 }): Promise<any[]> {
+  return buildAttachmentPartsForNodeAttachments({
+    nodeId: args.node.id,
+    attachments: Array.isArray(args.node.attachments) ? args.node.attachments : [],
+    includeOwn: args.includeOwn,
+    allowedKeys: args.allowedKeys,
+    ai: args.ai,
+  });
+}
+
+async function buildAttachmentPartsForNodeAttachments(args: {
+  nodeId: string;
+  attachments: ChatAttachment[];
+  includeOwn: boolean;
+  allowedKeys: Set<string>;
+  ai: any | null;
+}): Promise<any[]> {
   const parts: any[] = [];
-  const attArr: ChatAttachment[] = Array.isArray(args.node.attachments) ? args.node.attachments : [];
+  const nodeId = String(args.nodeId ?? '').trim();
+  const attArr: ChatAttachment[] = Array.isArray(args.attachments) ? args.attachments : [];
 
   for (let i = 0; i < attArr.length; i += 1) {
     const att = attArr[i];
     if (!att) continue;
     if (att.kind === 'ink') continue;
 
-    const key = `${args.node.id}:${i}`;
+    const key = `${nodeId}:${i}`;
     if (!args.includeOwn && !args.allowedKeys.has(key)) continue;
 
     if (!args.ai) {
@@ -240,13 +257,12 @@ async function buildGeminiHistory(args: {
   const leafSelection = (() => {
     const leaf = byId.get(args.leafUserNodeId) ?? null;
     const selected =
-      leaf && leaf.kind === 'text' && Array.isArray((leaf as any)?.selectedAttachmentKeys)
+      leaf && (leaf.kind === 'text' || leaf.kind === 'ink') && Array.isArray((leaf as any)?.selectedAttachmentKeys)
         ? ((leaf as any).selectedAttachmentKeys as string[])
         : [];
     const set = new Set<string>(selected);
 
-    // Ink nodes don't currently have a per-send attachment selector, but if the ink
-    // node is anchored under a PDF we still want the PDF file included in the request.
+    // If the ink node is anchored under a PDF we still want the PDF file included in the request.
     if (leaf?.kind === 'ink') {
       for (const n of chain) {
         if (n.kind !== 'pdf') continue;
@@ -333,12 +349,23 @@ async function buildGeminiHistory(args: {
           filename: `ink-${n.id}.png`,
         });
         const prefaceText = buildInkTurnText(n);
+        const parts: any[] = [];
+        if (prefaceText.trim()) parts.push({ text: prefaceText });
+        parts.push({ fileData: { fileUri: meta.uri, mimeType: meta.mimeType } });
+
+        const includeOwn = n.id === args.leafUserNodeId;
+        const atts = Array.isArray((n as any)?.attachments) ? ((n as any).attachments as ChatAttachment[]) : [];
+        const attParts = await buildAttachmentPartsForNodeAttachments({
+          nodeId: n.id,
+          attachments: atts,
+          includeOwn,
+          allowedKeys: leafSelection,
+          ai: args.ai,
+        });
+        parts.push(...attParts);
         history.push({
           role: 'user',
-          parts: [
-            { text: prefaceText },
-            { fileData: { fileUri: meta.uri, mimeType: meta.mimeType } },
-          ],
+          parts: parts.length ? parts : [{ text: '' }],
         });
       } catch {
         history.push({

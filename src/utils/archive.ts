@@ -271,7 +271,7 @@ async function buildChatExport(args: ExportChatArgs): Promise<{ chat: ArchiveV1[
   for (const raw of nodesCopy) {
     const node = raw as any;
     if (!node || typeof node !== 'object') continue;
-    if (node.kind !== 'text') continue;
+    if (node.kind !== 'text' && node.kind !== 'ink') continue;
     await rehydrateAttachmentsInPlace(node.attachments, warnings, { kind: 'node', id: safeString(node.id) });
   }
 
@@ -540,6 +540,40 @@ export async function importArchive(
           warnings.push(`Failed to persist raw response payload for node ${safeString(node.id)}`);
         }
       }
+    } else if (node.kind === 'ink') {
+      const atts = Array.isArray(node.attachments) ? (node.attachments as any[]) : [];
+      for (let i = 0; i < atts.length; i += 1) {
+        const att = atts[i];
+        if (!att || typeof att !== 'object') continue;
+        const kind = safeString(att.kind);
+        const data = typeof att.data === 'string' ? att.data : '';
+        const mimeType = safeString(att.mimeType).trim();
+        if ((kind === 'image' || kind === 'pdf' || kind === 'ink') && data) {
+          const fallbackMt = kind === 'pdf' ? 'application/pdf' : kind === 'image' ? 'image/png' : 'application/octet-stream';
+          const mt = mimeType || fallbackMt;
+          try {
+            const blob = base64ToBlob(data, mt);
+            const storageKey = await putAttachment({
+              blob,
+              mimeType: mt,
+              name: safeString(att.name).trim() || undefined,
+              size: Number.isFinite(Number(att.size)) ? Number(att.size) : undefined,
+            });
+            const next = { ...att, storageKey, mimeType: mt } as any;
+            delete next.data;
+            atts[i] = next;
+          } catch {
+            warnings.push(`Failed to import attachment for node ${safeString(node.id)}`);
+          }
+        }
+        // Drop any non-portable keys that slipped through.
+        try {
+          delete att.storageKey;
+        } catch {
+          // ignore
+        }
+      }
+      if (atts.length) node.attachments = atts;
     } else if (node.kind === 'pdf') {
       const fileData = node.fileData as any;
       const data = fileData && typeof fileData === 'object' ? safeString(fileData.data) : '';
