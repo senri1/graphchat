@@ -1625,7 +1625,8 @@ body {
   transition: transform 240ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 200ms ease;
 }
 
-.composerDock--dragging {
+.composerDock--dragging,
+.composerDock--resizing {
   transition: none !important;
 }
 

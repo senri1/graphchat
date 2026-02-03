@@ -235,6 +235,7 @@ export default function ChatComposer(props: Props) {
   const inkDrawRafRef = useRef<number | null>(null);
   const [dockReady, setDockReady] = useState(false);
   const [dockDragging, setDockDragging] = useState(false);
+  const [dockResizing, setDockResizing] = useState(false);
   const [internalMinimized, setInternalMinimized] = useState(false);
   const minimized = minimizedProp !== undefined ? Boolean(minimizedProp) : internalMinimized;
   const setMinimized = useCallback(
@@ -708,6 +709,7 @@ export default function ChatComposer(props: Props) {
     const activePointerId = activePointerIdRef.current;
     if (typeof activePointerId === 'number' && ev && ev.pointerId !== activePointerId) return;
     resizingRef.current = false;
+    setDockResizing(false);
     const move = activeMoveListenerRef.current ?? onPointerMove;
     const end = activeEndListenerRef.current ?? (endResize as any);
     window.removeEventListener('pointermove', move as any, true);
@@ -734,6 +736,7 @@ export default function ChatComposer(props: Props) {
     e.stopPropagation();
     if (resizingRef.current) return;
     resizingRef.current = true;
+    setDockResizing(true);
     resizeModeRef.current = mode;
 
     if (mode.kind !== 'width') setManualHeightEnabled(true);
@@ -1099,7 +1102,7 @@ export default function ChatComposer(props: Props) {
   return (
     <>
       <div
-        className={`composerDock ${dockReady ? 'composerDock--ready' : ''} ${dockDragging ? 'composerDock--dragging' : ''} ${minimized && !hasDraftAttachments ? 'composerDock--minimized' : ''} ${minimized && hasDraftAttachments ? 'composerDock--minimizedWithAttachments' : ''}`}
+        className={`composerDock ${dockReady ? 'composerDock--ready' : ''} ${dockDragging ? 'composerDock--dragging' : ''} ${dockResizing ? 'composerDock--resizing' : ''} ${minimized && !hasDraftAttachments ? 'composerDock--minimized' : ''} ${minimized && hasDraftAttachments ? 'composerDock--minimizedWithAttachments' : ''}`}
         ref={(el) => {
           dockRef.current = el;
           if (!containerRef) return;
