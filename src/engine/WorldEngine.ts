@@ -5862,27 +5862,32 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   }
 
   private computeTextLod2Target(): { nodeId: string; mode: TextLod2Mode } | null {
+    const editingId = this.editingNodeId;
     const rawId = this.rawViewerNodeId;
     if (this.pdfAnnotationPlacement || this.textAnnotationPlacement) return null;
 
     const g = this.activeGesture;
     if (g?.kind === 'resize') {
       const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === g.nodeId) ?? null;
-      if (node) return { nodeId: g.nodeId, mode: 'resize' };
+      if (node && node.id !== editingId) return { nodeId: g.nodeId, mode: 'resize' };
     }
 
-    if (this.textSelectNodeId && this.textSelectNodeId !== rawId) return { nodeId: this.textSelectNodeId, mode: 'select' };
+    if (this.textSelectNodeId && this.textSelectNodeId !== rawId && this.textSelectNodeId !== editingId) {
+      return { nodeId: this.textSelectNodeId, mode: 'select' };
+    }
 
     const overlay = this.textLod2;
     if (overlay?.isMenuOpen()) {
       const nodeId = overlay.getNodeId();
-      if (nodeId && nodeId !== rawId) return { nodeId, mode: 'select' };
+      if (nodeId && nodeId !== rawId && nodeId !== editingId) return { nodeId, mode: 'select' };
     }
 
-    if (this.hoverTextNodeId && this.hoverTextNodeId !== rawId) return { nodeId: this.hoverTextNodeId, mode: 'select' };
+    if (this.hoverTextNodeId && this.hoverTextNodeId !== rawId && this.hoverTextNodeId !== editingId) {
+      return { nodeId: this.hoverTextNodeId, mode: 'select' };
+    }
 
     // Touch devices don't have hover; keep the selected text node "interactive" so it can be scrolled/read.
-    if (this.touchUi && this.selectedNodeId && this.selectedNodeId !== rawId) {
+    if (this.touchUi && this.selectedNodeId && this.selectedNodeId !== rawId && this.selectedNodeId !== editingId) {
       const selectedText = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === this.selectedNodeId) ?? null;
       if (selectedText) return { nodeId: selectedText.id, mode: 'select' };
     }
@@ -5893,12 +5898,15 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const selected = this.selectedNodeId
       ? (this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === this.selectedNodeId) ?? null)
       : null;
-    if (selected?.isGenerating && selected.id !== rawId && rectsIntersect(selected.rect, view)) return { nodeId: selected.id, mode: 'select' };
+    if (selected?.isGenerating && selected.id !== editingId && selected.id !== rawId && rectsIntersect(selected.rect, view)) {
+      return { nodeId: selected.id, mode: 'select' };
+    }
 
     for (let i = this.nodes.length - 1; i >= 0; i -= 1) {
       const n = this.nodes[i];
       if (n.kind !== 'text') continue;
       if (!n.isGenerating) continue;
+      if (n.id === editingId) continue;
       if (n.id === rawId) continue;
       if (!rectsIntersect(n.rect, view)) continue;
       return { nodeId: n.id, mode: 'select' };
@@ -5911,7 +5919,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       if (best || now > hold.expiresAt) {
         this.textResizeHold = null;
       } else {
-        if (hold.nodeId === rawId) return null;
+        if (hold.nodeId === rawId || hold.nodeId === editingId) return null;
         return { nodeId: hold.nodeId, mode: 'resize' };
       }
     }
@@ -5972,6 +5980,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   private renderTextLod2Target(target: { nodeId: string; mode: TextLod2Mode } | null): void {
     const overlay = this.textLod2;
     if (!target) {
+      if (overlay) overlay.hide();
+      this.textLod2HitZones = null;
+      return;
+    }
+
+    if (this.editingNodeId && target.nodeId === this.editingNodeId) {
       if (overlay) overlay.hide();
       this.textLod2HitZones = null;
       return;
