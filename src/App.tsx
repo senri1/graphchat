@@ -500,6 +500,8 @@ export default function App() {
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const composerDockRef = useRef<HTMLDivElement | null>(null);
   const engineRef = useRef<WorldEngine | null>(null);
+  const editingDraftByNodeIdRef = useRef<Map<string, string>>(new Map());
+  const lastEditingNodeIdRef = useRef<string | null>(null);
   const generationJobsByAssistantIdRef = useRef<Map<string, GenerationJob>>(new Map());
   const resumedLlmJobsRef = useRef(false);
   const inkInputConfig = useMemo<InkInputDebugConfig>(() => {
@@ -2481,6 +2483,7 @@ export default function App() {
       overlayHost: container,
       inputEl: surface,
       inputController: { enablePointerCapture: inkInputConfig.pointerCapture },
+      getEditingDraft: (nodeId) => editingDraftByNodeIdRef.current.get(nodeId) ?? null,
     });
     engine.setNodeTextFontFamily(fontFamilyCss(nodeFontFamilyRef.current));
     engine.setNodeTextFontSizePx(nodeFontSizePxRef.current);
@@ -2492,7 +2495,14 @@ export default function App() {
     engine.setSpawnInkNodeByDrawEnabled(spawnInkNodeByDrawRef.current);
     engine.setReplySpawnKind(replySpawnKindRef.current);
     engine.onDebug = setDebug;
-    engine.onUiState = setUi;
+    engine.onUiState = (next) => {
+      setUi(next);
+      const editingId = typeof next.editingNodeId === 'string' ? next.editingNodeId : null;
+      if (editingId !== lastEditingNodeIdRef.current) {
+        lastEditingNodeIdRef.current = editingId;
+        if (editingId) editingDraftByNodeIdRef.current.set(editingId, next.editingText ?? '');
+      }
+    };
     engine.onRequestReply = (nodeId) => {
       const chatId = activeChatIdRef.current;
       const meta = ensureChatMeta(chatId);
@@ -4948,6 +4958,7 @@ export default function App() {
               userPreface={editorUserPreface}
               modelId={composerModelId}
               modelOptions={composerModelOptions}
+              onDraftChange={(next) => editingDraftByNodeIdRef.current.set(ui.editingNodeId as string, next)}
 	            anchorRect={editorAnchor}
               getScreenRect={() => engineRef.current?.getNodeScreenRect(ui.editingNodeId as string) ?? null}
               getZoom={() => engineRef.current?.camera.zoom ?? 1}

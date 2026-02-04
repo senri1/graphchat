@@ -20,6 +20,7 @@ type Props = {
   viewport: { w: number; h: number };
   zoom: number;
   baseFontSizePx: number;
+  onDraftChange?: (next: string) => void;
   onResize: (nextRect: Rect) => void;
   onResizeEnd: () => void;
   onTogglePrefaceContext?: (contextIndex: number) => void;
@@ -33,7 +34,7 @@ type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
 type MenuPos = { left: number; top?: number; bottom?: number; maxHeight: number };
 
 export default function TextNodeEditor(props: Props) {
-  const { nodeId, title, initialValue, userPreface, modelId, modelOptions, anchorRect, getScreenRect, getZoom, viewport, zoom, baseFontSizePx, onResize, onResizeEnd, onTogglePrefaceContext, onCommit, onCancel, onSend } = props;
+  const { nodeId, title, initialValue, userPreface, modelId, modelOptions, anchorRect, getScreenRect, getZoom, viewport, zoom, baseFontSizePx, onDraftChange, onResize, onResizeEnd, onTogglePrefaceContext, onCommit, onCancel, onSend } = props;
   const [draft, setDraft] = useState(() => initialValue ?? '');
   const [previewEnabled, setPreviewEnabled] = useState(false);
   const [collapsedPrefaceContexts, setCollapsedPrefaceContexts] = useState<Record<number, boolean>>(() => userPreface?.collapsedPrefaceContexts ?? {});
@@ -47,6 +48,7 @@ export default function TextNodeEditor(props: Props) {
   const onResizeRef = useRef(onResize);
   const onResizeEndRef = useRef(onResizeEnd);
   const onSendRef = useRef(onSend);
+  const onDraftChangeRef = useRef<Props['onDraftChange']>(onDraftChange);
   const resizeRef = useRef<{
     pointerId: number;
     corner: ResizeCorner;
@@ -71,12 +73,14 @@ export default function TextNodeEditor(props: Props) {
     onResizeRef.current = onResize;
     onResizeEndRef.current = onResizeEnd;
     onSendRef.current = onSend;
-  }, [onCancel, onCommit, onResize, onResizeEnd, onSend]);
+    onDraftChangeRef.current = onDraftChange;
+  }, [onCancel, onCommit, onDraftChange, onResize, onResizeEnd, onSend]);
 
   useEffect(() => {
     committedRef.current = false;
     setDraft(initialValue ?? '');
     draftRef.current = initialValue ?? '';
+    onDraftChangeRef.current?.(initialValue ?? '');
     const raf = requestAnimationFrame(() => taRef.current?.focus());
     return () => cancelAnimationFrame(raf);
   }, [nodeId, initialValue]);
@@ -681,7 +685,11 @@ export default function TextNodeEditor(props: Props) {
             ref={taRef}
             className="editor__textarea"
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => {
+              const next = e.target.value;
+              setDraft(next);
+              onDraftChangeRef.current?.(next);
+            }}
             spellCheck={false}
             onKeyDown={(e) => {
               if (e.key === 'Escape') {
