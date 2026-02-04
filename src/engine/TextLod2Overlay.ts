@@ -301,6 +301,7 @@ export class TextLod2Overlay {
   private prevOverflowX: string | null = null;
   private prevOverflowY: string | null = null;
   private lockScrollTop: number | null = null;
+  private lockScrollLeft: number | null = null;
 
   onRequestCloseSelection?: () => void;
   onRequestAction?: (action: TextLod2Action) => void;
@@ -324,7 +325,7 @@ export class TextLod2Overlay {
     client?: { x: number; y: number },
     trigger?: AnnotatePointerTrigger | null,
   ) => void;
-  onScroll?: (nodeId: string, scrollTop: number) => void;
+  onScroll?: (nodeId: string, scrollTop: number, scrollLeft: number) => void;
 
   setBaseTextStyle(style: { fontFamily?: string; fontSizePx?: number; lineHeight?: number; color?: string }): void {
     try {
@@ -410,6 +411,7 @@ export class TextLod2Overlay {
 
     this.forwardedPenPointerId = e.pointerId;
     this.lockScrollTop = Math.max(0, Number(this.content.scrollTop) || 0);
+    this.lockScrollLeft = Math.max(0, Number(this.content.scrollLeft) || 0);
 
     // Prevent native scroll while the pen drag gesture is active.
     try {
@@ -449,6 +451,7 @@ export class TextLod2Overlay {
     const cleanup = () => {
       this.forwardedPenPointerId = null;
       this.lockScrollTop = null;
+      this.lockScrollLeft = null;
       try {
         if (this.prevTouchAction != null) (this.content.style as any).touchAction = this.prevTouchAction;
         else (this.content.style as any).touchAction = 'pan-x pan-y';
@@ -567,13 +570,19 @@ export class TextLod2Overlay {
 
   private readonly onContentScroll = () => {
     if (this.suppressScrollCallback) return;
-    if (this.forwardedPenPointerId != null && this.lockScrollTop != null) {
-      const desired = this.lockScrollTop;
-      const actual = Number(this.content.scrollTop || 0);
-      if (Number.isFinite(actual) && Math.abs(actual - desired) >= 0.5) {
+    if (this.forwardedPenPointerId != null && (this.lockScrollTop != null || this.lockScrollLeft != null)) {
+      const desiredTop = this.lockScrollTop ?? 0;
+      const desiredLeft = this.lockScrollLeft ?? 0;
+      const actualTop = Number(this.content.scrollTop || 0);
+      const actualLeft = Number(this.content.scrollLeft || 0);
+
+      const needsTopReset = Number.isFinite(actualTop) && Math.abs(actualTop - desiredTop) >= 0.5;
+      const needsLeftReset = Number.isFinite(actualLeft) && Math.abs(actualLeft - desiredLeft) >= 0.5;
+      if (needsTopReset || needsLeftReset) {
         this.suppressScrollCallback = true;
         try {
-          this.content.scrollTop = desired;
+          if (needsTopReset) this.content.scrollTop = desiredTop;
+          if (needsLeftReset) this.content.scrollLeft = desiredLeft;
         } catch {
           // ignore
         } finally {
@@ -585,7 +594,7 @@ export class TextLod2Overlay {
     const nodeId = this.visibleNodeId;
     if (!nodeId) return;
     try {
-      this.onScroll?.(nodeId, this.content.scrollTop || 0);
+      this.onScroll?.(nodeId, this.content.scrollTop || 0, this.content.scrollLeft || 0);
     } catch {
       // ignore
     }
@@ -1011,6 +1020,7 @@ export class TextLod2Overlay {
     contentHash: string;
     html: string;
     scrollTop?: number;
+    scrollLeft?: number;
   }): void {
     const prevNodeId = this.visibleNodeId;
     const prevHash = this.contentHash;
@@ -1060,11 +1070,17 @@ export class TextLod2Overlay {
       this.content.style.overflowY = 'scroll';
     }
 
-    if (this.forwardedPenPointerId == null && (nodeChanged || hashChanged) && Number.isFinite(opts.scrollTop as number)) {
-      const desired = Math.max(0, Number(opts.scrollTop) || 0);
+    if (
+      this.forwardedPenPointerId == null &&
+      (nodeChanged || hashChanged) &&
+      (Number.isFinite(opts.scrollTop as number) || Number.isFinite(opts.scrollLeft as number))
+    ) {
+      const desiredTop = Number.isFinite(opts.scrollTop as number) ? Math.max(0, Number(opts.scrollTop) || 0) : null;
+      const desiredLeft = Number.isFinite(opts.scrollLeft as number) ? Math.max(0, Number(opts.scrollLeft) || 0) : null;
       this.suppressScrollCallback = true;
       try {
-        this.content.scrollTop = desired;
+        if (desiredTop != null) this.content.scrollTop = desiredTop;
+        if (desiredLeft != null) this.content.scrollLeft = desiredLeft;
       } catch {
         // ignore
       } finally {

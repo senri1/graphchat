@@ -407,6 +407,7 @@ export async function rasterizeHtmlToImage(
     fontSizePx?: number;
     lineHeight?: number;
     color?: string;
+    scrollX?: number;
     scrollY?: number;
     scrollGutterPx?: number;
   },
@@ -447,6 +448,18 @@ export async function rasterizeHtmlToImage(
     card.innerHTML = html ?? '';
     root.appendChild(card);
 
+    const scrollX = (() => {
+      const raw = Number(opts.scrollX);
+      if (!Number.isFinite(raw)) return 0;
+      const v = Math.max(0, Math.round(raw));
+      if (v <= 0) return 0;
+      try {
+        const max = Math.max(0, (card.scrollWidth || 0) - (card.clientWidth || 0));
+        return Math.min(v, max);
+      } catch {
+        return v;
+      }
+    })();
     const scrollY = (() => {
       const raw = Number(opts.scrollY);
       if (!Number.isFinite(raw)) return 0;
@@ -459,9 +472,9 @@ export async function rasterizeHtmlToImage(
         return v;
       }
     })();
-    if (scrollY > 0) {
+    if (scrollX > 0 || scrollY > 0) {
       const inner = document.createElement('div');
-      inner.style.transform = `translateY(${-scrollY}px)`;
+      inner.style.transform = `translate(${-scrollX}px, ${-scrollY}px)`;
       inner.style.transformOrigin = '0 0';
       try {
         while (card.firstChild) inner.appendChild(card.firstChild);

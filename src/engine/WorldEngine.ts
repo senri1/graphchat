@@ -346,6 +346,7 @@ type TextNode = DemoNodeBase & {
   thinkingSummary?: ThinkingSummaryChunk[];
   summaryExpanded?: boolean;
   expandedSummaryChunks?: Record<number, boolean>;
+  contentScrollX?: number;
   contentScrollY?: number;
   attachments?: ChatAttachment[];
   selectedAttachmentKeys?: string[];
@@ -382,6 +383,7 @@ type TextRasterJob = {
   width: number;
   height: number;
   html: string;
+  scrollX: number;
   scrollY: number;
 };
 
@@ -1050,6 +1052,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           thinkingSummary: n.thinkingSummary,
           summaryExpanded: n.summaryExpanded,
           expandedSummaryChunks: n.expandedSummaryChunks,
+          contentScrollX: n.contentScrollX,
           contentScrollY: n.contentScrollY,
           attachments: Array.isArray(n.attachments) ? n.attachments : undefined,
           selectedAttachmentKeys: Array.isArray(n.selectedAttachmentKeys) ? n.selectedAttachmentKeys : undefined,
@@ -1227,6 +1230,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           }
           return Object.keys(out).length ? out : undefined;
         })();
+        const contentScrollX = (() => {
+          const raw = Number((n as any)?.contentScrollX);
+          if (!Number.isFinite(raw)) return undefined;
+          const v = Math.max(0, Math.round(raw));
+          return v > 0 ? v : undefined;
+        })();
         const contentScrollY = (() => {
           const raw = Number((n as any)?.contentScrollY);
           if (!Number.isFinite(raw)) return undefined;
@@ -1285,10 +1294,11 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 	          apiRequest: (n as any)?.apiRequest,
 	          apiResponse: (n as any)?.apiResponse,
 	          canonicalMessage,
-	          canonicalMeta: (n as any)?.canonicalMeta,
+          canonicalMeta: (n as any)?.canonicalMeta,
           thinkingSummary,
           summaryExpanded: Boolean((n as any)?.summaryExpanded),
           expandedSummaryChunks,
+          contentScrollX,
           contentScrollY,
           attachments: Array.isArray((n as any)?.attachments) ? ((n as any).attachments as ChatAttachment[]) : undefined,
           selectedAttachmentKeys: Array.isArray((n as any)?.selectedAttachmentKeys)
@@ -2890,17 +2900,18 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
             })();
             if (!stillWanted) continue;
 
-	          const res = await rasterizeHtmlToImage(job.html, {
-	            width: job.width,
-	            height: job.height,
-	            rasterScale: job.rasterScale,
+            const res = await rasterizeHtmlToImage(job.html, {
+              width: job.width,
+              height: job.height,
+              rasterScale: job.rasterScale,
               fontFamily: this.nodeTextFontFamily,
               fontSizePx: this.nodeTextFontSizePx,
               lineHeight: this.nodeTextLineHeight,
               color: this.nodeTextColor,
+              scrollX: job.scrollX,
               scrollY: job.scrollY,
               scrollGutterPx: this.getTextScrollGutterPx(),
-	          });
+            });
 	          if (this.textRasterGeneration !== gen) {
             this.closeImage(res.image);
             return;
@@ -4161,6 +4172,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return Math.max(0, Math.round(raw));
   }
 
+  private getTextNodeScrollX(node: TextNode): number {
+    const raw = Number(node.contentScrollX);
+    if (!Number.isFinite(raw)) return 0;
+    return Math.max(0, Math.round(raw));
+  }
+
   private getTextScrollGutterPx(): number {
     if (this.textScrollGutterPx != null) return this.textScrollGutterPx;
     if (typeof document === 'undefined') {
@@ -4382,11 +4399,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     });
   }
 
-  private textRasterSigForNode(node: TextNode, contentRect: Rect): { sig: string; scrollY: number } {
+  private textRasterSigForNode(node: TextNode, contentRect: Rect): { sig: string; scrollX: number; scrollY: number } {
+    const scrollX = this.getTextNodeScrollX(node);
     const scrollY = this.getTextNodeScrollY(node);
     const gutter = this.getTextScrollGutterPx();
-    const sig = `${node.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}|sy${scrollY}|sg${gutter}`;
-    return { sig, scrollY };
+    const sig = `${node.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}|sx${scrollX}|sy${scrollY}|sg${gutter}`;
+    return { sig, scrollX, scrollY };
   }
 
   private buildTextNodeDisplaySig(node: TextNode): string {
@@ -5230,15 +5248,18 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         }
       },
     });
-    overlay.onScroll = (nodeId, scrollTop) => {
+    overlay.onScroll = (nodeId, scrollTop, scrollLeft) => {
       const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === nodeId) ?? null;
       if (!node) return;
       if (node.id === this.editingNodeId) return;
-      const next = Math.max(0, Math.round(Number(scrollTop) || 0));
-      const prev = this.getTextNodeScrollY(node);
-      if (next === prev) return;
+      const nextY = Math.max(0, Math.round(Number(scrollTop) || 0));
+      const nextX = Math.max(0, Math.round(Number(scrollLeft) || 0));
+      const prevY = this.getTextNodeScrollY(node);
+      const prevX = this.getTextNodeScrollX(node);
+      if (nextY === prevY && nextX === prevX) return;
 
-      node.contentScrollY = next > 0 ? next : undefined;
+      node.contentScrollY = nextY > 0 ? nextY : undefined;
+      node.contentScrollX = nextX > 0 ? nextX : undefined;
       if (!node.isGenerating) {
         const contentRect = this.textContentRect(node.rect);
         const sig = this.textRasterSigForNode(node, contentRect).sig;
@@ -5876,6 +5897,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       this.textSelectNodeId !== node.id &&
       (!node.isGenerating || isHovered || (this.touchUi && isSelected));
     const desiredScrollTop = this.getTextNodeScrollY(node);
+    const desiredScrollLeft = this.getTextNodeScrollX(node);
     lod2.show({
       nodeId: node.id,
       mode: target.mode,
@@ -5887,11 +5909,14 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       contentHash: node.displayHash,
       html,
       scrollTop: desiredScrollTop,
+      scrollLeft: desiredScrollLeft,
     });
 
     const actualScrollTop = Math.max(0, Math.round(lod2.getContentElement().scrollTop || 0));
-    if (actualScrollTop !== desiredScrollTop) {
+    const actualScrollLeft = Math.max(0, Math.round(lod2.getContentElement().scrollLeft || 0));
+    if (actualScrollTop !== desiredScrollTop || actualScrollLeft !== desiredScrollLeft) {
       node.contentScrollY = actualScrollTop > 0 ? actualScrollTop : undefined;
+      node.contentScrollX = actualScrollLeft > 0 ? actualScrollLeft : undefined;
       try {
         this.onRequestPersist?.();
       } catch {
@@ -6501,7 +6526,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       if (!rectsIntersect(n.rect, view)) continue;
 
       const contentRect = this.textContentRect(n.rect);
-      const { sig, scrollY } = this.textRasterSigForNode(n, contentRect);
+      const { sig, scrollX, scrollY } = this.textRasterSigForNode(n, contentRect);
       const best = this.bestTextRasterKeyBySig.get(sig);
       const hasBest = !!best && this.textRasterCache.has(best.key);
       if (hasBest && best!.rasterScale >= desiredScale) continue;
@@ -6521,6 +6546,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         width: contentRect.w,
         height: contentRect.h,
         html: this.renderTextNodeHtml(n),
+        scrollX,
         scrollY,
       });
     }

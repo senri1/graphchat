@@ -85,6 +85,7 @@ export type ChatNode =
       thinkingSummary?: ThinkingSummaryChunk[];
       summaryExpanded?: boolean;
       expandedSummaryChunks?: Record<number, boolean>;
+      contentScrollX?: number;
       contentScrollY?: number;
       attachments?: ChatAttachment[];
       selectedAttachmentKeys?: string[];
