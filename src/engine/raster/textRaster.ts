@@ -35,7 +35,8 @@ const MDX_CSS = `
 .mdx h1 { font-size: 1.25em; }
 .mdx h2 { font-size: 1.125em; }
 .mdx h3 { font-size: 1.0625em; }
-.mdx ul, .mdx ol { padding-left: 1.25rem; margin: 0.6rem 0; }
+.mdx ul { padding-left: 1.25rem; margin: 0.6rem 0; }
+.mdx ol { padding-left: 2.25rem; margin: 0.6rem 0; }
 .mdx code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 0.9em;
