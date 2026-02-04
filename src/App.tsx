@@ -2761,7 +2761,7 @@ export default function App() {
   }, [inkInputConfig.hud]);
 
   useLayoutEffect(() => {
-    if (ui.tool !== 'draw') return;
+    if (ui.tool !== 'draw' && ui.tool !== 'select') return;
     const target = inkInputConfig.layer && inkInputConfig.layerPointerEvents ? inkCaptureRef.current : worldSurfaceRef.current;
     const el = target ?? worldSurfaceRef.current;
     if (!el) return;
@@ -4834,7 +4834,7 @@ export default function App() {
 	      <div className="workspace" ref={workspaceRef}>
           <div className="worldSurface" ref={worldSurfaceRef}>
 	          <canvas className="stage" ref={canvasRef} />
-            {ui.tool === 'draw' && inkInputConfig.layer ? (
+            {(ui.tool === 'draw' || ui.tool === 'select') && inkInputConfig.layer ? (
               <div
                 className={`inkCaptureLayer${inkInputConfig.layerPointerEvents ? '' : ' inkCaptureLayer--passthrough'}`}
                 ref={inkCaptureRef}
