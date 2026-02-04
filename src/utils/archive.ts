@@ -90,14 +90,75 @@ function filenameSafeBase(name: string): string {
   return base.replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 64) || 'graphchatv1-chat';
 }
 
+function isProbablyDataUrl(value: string): boolean {
+  return /^data:[^,]+,/.test(value);
+}
+
+function truncateDataUrlForDisplay(value: string, maxChars: number): string {
+  const s = safeString(value);
+  if (s.length <= maxChars) return s;
+  const comma = s.indexOf(',');
+  if (comma === -1) return `${s.slice(0, maxChars)}… (${s.length} chars)`;
+  const prefix = s.slice(0, comma + 1);
+  const data = s.slice(comma + 1);
+  const keep = Math.max(0, maxChars - prefix.length);
+  return `${prefix}${data.slice(0, keep)}… (${data.length} chars)`;
+}
+
+function cloneRawPayloadForArchive(
+  payload: unknown,
+  opts?: { maxDepth?: number; maxStringChars?: number; maxDataUrlChars?: number },
+): unknown {
+  const maxDepth = Math.max(1, Math.floor(opts?.maxDepth ?? 30));
+  const maxStringChars = Math.max(256, Math.floor(opts?.maxStringChars ?? 20000));
+  const maxDataUrlChars = Math.max(64, Math.floor(opts?.maxDataUrlChars ?? 220));
+
+  const seen = new WeakMap<object, unknown>();
+  const visit = (value: unknown, depth: number): unknown => {
+    if (depth > maxDepth) return '[Max depth]';
+    if (typeof value === 'string') {
+      if (isProbablyDataUrl(value)) return truncateDataUrlForDisplay(value, maxDataUrlChars);
+      if (value.length > maxStringChars) return `${value.slice(0, maxStringChars)}… (${value.length} chars)`;
+      return value;
+    }
+    if (value == null || typeof value !== 'object') return value;
+    if (seen.has(value as object)) return seen.get(value as object);
+
+    if (Array.isArray(value)) {
+      const out: unknown[] = [];
+      seen.set(value as object, out);
+      for (const item of value) out.push(visit(item, depth + 1));
+      return out;
+    }
+
+    const out: Record<string, unknown> = {};
+    seen.set(value as object, out);
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = visit(v, depth + 1);
+    return out;
+  };
+
+  return visit(payload, 0);
+}
+
 function base64ToBlob(base64: string, mimeType: string): Blob {
   const mt = safeString(mimeType).trim() || 'application/octet-stream';
-  const b64 = safeString(base64).replace(/\s+/g, '');
+  let b64 = safeString(base64).replace(/\s+/g, '');
+  if (!b64) return new Blob([], { type: mt });
+  const mod = b64.length % 4;
+  if (mod) b64 += '='.repeat(4 - mod);
   if (typeof atob !== 'function') throw new Error('Base64 decoding is not available in this environment.');
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
-  return new Blob([bytes], { type: mt });
+
+  // Decode in chunks to avoid atob() size limits on large attachments/PDFs.
+  const chunkSize = 1024 * 1024; // base64 chars; must be divisible by 4
+  const parts: Uint8Array[] = [];
+  for (let offset = 0; offset < b64.length; offset += chunkSize) {
+    const slice = b64.slice(offset, offset + chunkSize);
+    const bin = atob(slice);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+    parts.push(bytes);
+  }
+  return new Blob(parts, { type: mt });
 }
 
 async function blobToBase64(blob: Blob, mimeTypeHint?: string): Promise<{ base64: string; mimeType: string } | null> {
@@ -164,63 +225,96 @@ async function rehydrateAttachmentsInPlace(value: any, warnings: string[], conte
 
     if (kind === 'image') {
       await embedBlob('image/png');
-      try {
-        delete att.storageKey;
-      } catch {
-        // ignore
+      if (typeof att.data === 'string' && att.data) {
+        try {
+          delete att.storageKey;
+        } catch {
+          // ignore
+        }
       }
     } else if (kind === 'pdf') {
       await embedBlob('application/pdf');
-      try {
-        delete att.storageKey;
-      } catch {
-        // ignore
+      if (typeof att.data === 'string' && att.data) {
+        try {
+          delete att.storageKey;
+        } catch {
+          // ignore
+        }
       }
     } else if (kind === 'ink') {
       // Ink attachments are rare in v1, but keep best-effort portability.
       await embedBlob('application/octet-stream');
-      try {
-        delete att.storageKey;
-      } catch {
-        // ignore
+      if (typeof att.data === 'string' && att.data) {
+        try {
+          delete att.storageKey;
+        } catch {
+          // ignore
+        }
       }
     }
   }
 }
 
-async function rehydratePayloadsInPlace(nodes: any[], warnings: string[]) {
-  for (const raw of nodes) {
+async function rehydratePayloadsInPlace(args: { chatId: string; nodes: any[]; warnings: string[] }) {
+  const chatId = safeString(args.chatId).trim();
+  for (const raw of args.nodes) {
     const node = raw as any;
     if (!node || typeof node !== 'object') continue;
-    if (node.kind !== 'text') continue;
+    const nodeId = safeString(node.id).trim();
+    if (!nodeId) continue;
 
-    const reqKey = typeof node.apiRequestKey === 'string' ? node.apiRequestKey.trim() : '';
-    const resKey = typeof node.apiResponseKey === 'string' ? node.apiResponseKey.trim() : '';
-
-    if (reqKey) {
+    const fetchPayload = async (key: string, warnLabel: string, warnOnMissing: boolean): Promise<unknown | null> => {
+      if (!key) return null;
       try {
-        const payload = await getPayload(reqKey);
+        const payload = await getPayload(key);
+        if (payload == null) {
+          if (warnOnMissing) args.warnings.push(`Missing ${warnLabel} payload for key ${key}`);
+          return null;
+        }
+        return cloneRawPayloadForArchive(payload);
+      } catch {
+        args.warnings.push(`Failed to fetch ${warnLabel} payload for key ${key}`);
+        return null;
+      }
+    };
+
+    if (node.kind === 'text') {
+      const author = safeString(node.author).trim();
+
+      const reqKeyExplicit = typeof node.apiRequestKey === 'string' ? node.apiRequestKey.trim() : '';
+      const resKeyExplicit = typeof node.apiResponseKey === 'string' ? node.apiResponseKey.trim() : '';
+      const reqKeyDerived = chatId && author === 'user' ? `${chatId}/${nodeId}/req` : '';
+      const resKeyDerived = chatId && author === 'assistant' ? `${chatId}/${nodeId}/res` : '';
+
+      if (author === 'user' && node.apiRequest === undefined) {
+        const payload =
+          (await fetchPayload(reqKeyExplicit, 'raw request', Boolean(reqKeyExplicit))) ??
+          (await fetchPayload(reqKeyDerived, 'raw request', false));
         if (payload != null) node.apiRequest = payload;
-        else if (node.apiRequest === undefined) warnings.push(`Missing raw request payload for key ${reqKey}`);
-      } catch {
-        warnings.push(`Failed to fetch raw request payload for key ${reqKey}`);
       }
-    }
-    if (resKey) {
-      try {
-        const payload = await getPayload(resKey);
+      if (author === 'assistant' && node.apiResponse === undefined) {
+        const payload =
+          (await fetchPayload(resKeyExplicit, 'raw response', Boolean(resKeyExplicit))) ??
+          (await fetchPayload(resKeyDerived, 'raw response', false));
         if (payload != null) node.apiResponse = payload;
-        else if (node.apiResponse === undefined) warnings.push(`Missing raw response payload for key ${resKey}`);
-      } catch {
-        warnings.push(`Failed to fetch raw response payload for key ${resKey}`);
       }
+
+      try {
+        delete node.apiRequestKey;
+        delete node.apiResponseKey;
+      } catch {
+        // ignore
+      }
+      continue;
     }
 
-    try {
-      delete node.apiRequestKey;
-      delete node.apiResponseKey;
-    } catch {
-      // ignore
+    if (node.kind === 'ink') {
+      if (node.apiRequest === undefined && chatId) {
+        const key = `${chatId}/${nodeId}/req`;
+        const payload = await fetchPayload(key, 'raw request', false);
+        if (payload != null) node.apiRequest = payload;
+      }
+      continue;
     }
   }
 }
@@ -233,6 +327,7 @@ async function rehydratePdfNodeFilesInPlace(nodes: any[], warnings: string[]) {
     const storageKey = typeof node.storageKey === 'string' ? node.storageKey.trim() : '';
     if (!storageKey) continue;
 
+    let embedded = false;
     try {
       const rec = await getStoredAttachment(storageKey);
       if (!rec?.blob) {
@@ -251,13 +346,16 @@ async function rehydratePdfNodeFilesInPlace(nodes: any[], warnings: string[]) {
         name: safeString(rec.name).trim() || safeString(node.fileName).trim() || 'document.pdf',
         ...(Number.isFinite(Number(rec.size)) ? { size: Number(rec.size) } : {}),
       };
+      embedded = true;
     } catch {
       warnings.push(`Failed to fetch PDF blob for key ${storageKey}`);
     } finally {
-      try {
-        delete node.storageKey;
-      } catch {
-        // ignore
+      if (embedded) {
+        try {
+          delete node.storageKey;
+        } catch {
+          // ignore
+        }
       }
     }
   }
@@ -267,7 +365,7 @@ async function buildChatExport(args: ExportChatArgs): Promise<{ chat: ArchiveV1[
   const warnings: string[] = [];
 
   const nodesCopy = (args.state.nodes ?? []).map((n) => sanitizeNodeForExport(n));
-  await rehydratePayloadsInPlace(nodesCopy, warnings);
+  await rehydratePayloadsInPlace({ chatId: args.chatId, nodes: nodesCopy, warnings });
   for (const raw of nodesCopy) {
     const node = raw as any;
     if (!node || typeof node !== 'object') continue;
@@ -498,12 +596,6 @@ export async function importArchive(
             warnings.push(`Failed to import attachment for node ${safeString(node.id)}`);
           }
         }
-        // Drop any non-portable keys that slipped through.
-        try {
-          delete att.storageKey;
-        } catch {
-          // ignore
-        }
       }
       if (atts.length) node.attachments = atts;
 
@@ -566,19 +658,33 @@ export async function importArchive(
             warnings.push(`Failed to import attachment for node ${safeString(node.id)}`);
           }
         }
-        // Drop any non-portable keys that slipped through.
-        try {
-          delete att.storageKey;
-        } catch {
-          // ignore
-        }
       }
       if (atts.length) node.attachments = atts;
+
+      // Preserve raw request payloads for ink turns (used by the raw viewer via a derived key).
+      const hadReq = Object.prototype.hasOwnProperty.call(node, 'apiRequest');
+      const req = node.apiRequest;
+      try {
+        delete node.apiRequestKey;
+        delete node.apiResponseKey;
+      } catch {
+        // ignore
+      }
+      if (hadReq && req !== undefined) {
+        const key = `${chatId}/${safeString(node.id)}/req`;
+        try {
+          await putPayload({ key, json: req });
+          delete node.apiRequest;
+        } catch {
+          warnings.push(`Failed to persist raw request payload for node ${safeString(node.id)}`);
+        }
+      }
     } else if (node.kind === 'pdf') {
       const fileData = node.fileData as any;
       const data = fileData && typeof fileData === 'object' ? safeString(fileData.data) : '';
       if (data) {
         const mt = safeString(fileData.mimeType).trim() || 'application/pdf';
+        let imported = false;
         try {
           const blob = base64ToBlob(data, mt);
           const storageKey = await putAttachment({
@@ -588,16 +694,31 @@ export async function importArchive(
             size: Number.isFinite(Number(fileData.size)) ? Number(fileData.size) : undefined,
           });
           node.storageKey = storageKey;
+          const importedName = safeString(fileData.name).trim();
+          if (!safeString(node.fileName).trim() && importedName) node.fileName = importedName;
           node.status = 'empty';
           node.error = null;
+          imported = true;
         } catch {
           warnings.push(`Failed to import PDF node ${safeString(node.id)}`);
+          node.status = 'error';
+          node.error = safeString(node.error).trim() || 'Import failed';
+        } finally {
+          if (imported) {
+            try {
+              delete node.fileData;
+            } catch {
+              // ignore
+            }
+          }
         }
-      }
-      try {
-        delete node.fileData;
-      } catch {
-        // ignore
+      } else {
+        // fileData is archive-only; remove if it exists but has no embedded content.
+        try {
+          delete node.fileData;
+        } catch {
+          // ignore
+        }
       }
     }
   }
@@ -606,6 +727,19 @@ export async function importArchive(
   const rawMeta = rawChat.meta && typeof rawChat.meta === 'object' ? safeClone(rawChat.meta) : {};
   const meta: any = {
     draft: typeof rawMeta.draft === 'string' ? rawMeta.draft : '',
+    draftInkStrokes: Array.isArray((rawMeta as any)?.draftInkStrokes)
+      ? ((rawMeta as any).draftInkStrokes as any[]).map((s) => ({
+          width: Number.isFinite(Number((s as any)?.width)) ? Number((s as any).width) : 0,
+          color: typeof (s as any)?.color === 'string' ? ((s as any).color as string) : 'rgba(147,197,253,0.92)',
+          points: Array.isArray((s as any)?.points)
+            ? ((s as any).points as any[]).map((p) => ({
+                x: Number.isFinite(Number((p as any)?.x)) ? Number((p as any).x) : 0,
+                y: Number.isFinite(Number((p as any)?.y)) ? Number((p as any).y) : 0,
+              }))
+            : [],
+        }))
+      : [],
+    composerMode: (rawMeta as any)?.composerMode === 'ink' ? 'ink' : 'text',
     draftAttachments: Array.isArray(rawMeta.draftAttachments) ? rawMeta.draftAttachments : [],
     replyTo: rawMeta.replyTo && typeof rawMeta.replyTo === 'object' ? rawMeta.replyTo : null,
     contextSelections: Array.isArray(rawMeta.contextSelections)

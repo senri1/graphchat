@@ -1015,30 +1015,31 @@ export default function App() {
     }
 
     if (node.kind !== 'text') return;
-    const kind: RawViewerState['kind'] = node.author === 'user' ? 'request' : 'response';
-    const title = `${kind === 'request' ? 'Raw request' : 'Raw response'} • ${node.title}`;
+	    const kind: RawViewerState['kind'] = node.author === 'user' ? 'request' : 'response';
+	    const title = `${kind === 'request' ? 'Raw request' : 'Raw response'} • ${node.title}`;
 
-    const directPayload = kind === 'request' ? (node as any).apiRequest : (node as any).apiResponse;
-    const rawKey = kind === 'request' ? (node as any).apiRequestKey : (node as any).apiResponseKey;
-    const key = typeof rawKey === 'string' ? rawKey.trim() : '';
+	    const directPayload = kind === 'request' ? (node as any).apiRequest : (node as any).apiResponse;
+	    const rawKey = kind === 'request' ? (node as any).apiRequestKey : (node as any).apiResponseKey;
+	    const explicitKey = typeof rawKey === 'string' ? rawKey.trim() : '';
+	    const key = explicitKey || (chatId ? `${chatId}/${nodeId}/${kind === 'request' ? 'req' : 'res'}` : '');
 
     setRawViewer((prev) => {
       if (prev?.nodeId === nodeId) return null;
       return { nodeId, title, kind, payload: directPayload };
     });
 
-    if (directPayload !== undefined) return;
-    if (!key) return;
-    void (async () => {
-      try {
-        const loaded = await getPayload(key);
-        setRawViewer((prev) => {
-          if (!prev || prev.nodeId !== nodeId) return prev;
-          return { ...prev, payload: loaded === null ? undefined : loaded };
-        });
-      } catch {
-        // ignore
-      }
+	    if (directPayload !== undefined) return;
+	    if (!key) return;
+	    void (async () => {
+	      try {
+	        const loaded = await getPayload(key);
+	        setRawViewer((prev) => {
+	          if (!prev || prev.nodeId !== nodeId) return prev;
+	          return { ...prev, payload: loaded === null ? undefined : cloneRawPayloadForDisplay(loaded) };
+	        });
+	      } catch {
+	        // ignore
+	      }
     })();
   }, []);
 
@@ -1458,10 +1459,15 @@ export default function App() {
 	          canonicalMeta: result.canonicalMeta,
         });
       }
-      engine?.setTextNodeThinkingSummary(job.assistantNodeId, undefined);
-      engine?.setTextNodeContent(job.assistantNodeId, finalText, { streaming: false });
-      if (result.apiResponse !== undefined) engine?.setTextNodeApiPayload(job.assistantNodeId, { apiResponse: result.apiResponse });
-    }
+	      engine?.setTextNodeThinkingSummary(job.assistantNodeId, undefined);
+	      engine?.setTextNodeContent(job.assistantNodeId, finalText, { streaming: false });
+	      if (result.apiResponse !== undefined || result.apiResponseKey !== undefined) {
+	        engine?.setTextNodeApiPayload(job.assistantNodeId, {
+	          apiResponse: result.apiResponse,
+	          apiResponseKey: result.apiResponseKey,
+	        });
+	      }
+	    }
 
     generationJobsByAssistantIdRef.current.delete(assistantNodeId);
     schedulePersistSoon();
@@ -1495,13 +1501,13 @@ export default function App() {
 	      } catch {
 	        // ignore
 	      }
-	      updateStoredTextNode(chatId, assistantNodeId, { apiResponse: storedResponse, apiResponseKey: responseKey });
-	      if (activeChatIdRef.current === chatId) {
-	        engineRef.current?.setTextNodeApiPayload(assistantNodeId, { apiResponse: storedResponse });
-	      }
-	      schedulePersistSoon();
-	    })();
-	  };
+		      updateStoredTextNode(chatId, assistantNodeId, { apiResponse: storedResponse, apiResponseKey: responseKey });
+		      if (activeChatIdRef.current === chatId) {
+		        engineRef.current?.setTextNodeApiPayload(assistantNodeId, { apiResponse: storedResponse, apiResponseKey: responseKey });
+		      }
+		      schedulePersistSoon();
+		    })();
+		  };
 
   const startOpenAIGeneration = (args: {
     chatId: string;
@@ -1595,13 +1601,16 @@ export default function App() {
 	      if (activeChatIdRef.current === chatId) {
 	        engineRef.current?.setTextNodeApiPayload(job.userNodeId, { apiRequest: storedRequest });
       }
-      try {
-        const key = `${chatId}/${job.userNodeId}/req`;
-        await putPayload({ key, json: sentRequest });
-        updateStoredTextNode(chatId, job.userNodeId, { apiRequestKey: key });
-      } catch {
-        // ignore
-	      }
+	      try {
+	        const key = `${chatId}/${job.userNodeId}/req`;
+	        await putPayload({ key, json: sentRequest });
+	        updateStoredTextNode(chatId, job.userNodeId, { apiRequestKey: key });
+	        if (activeChatIdRef.current === chatId) {
+	          engineRef.current?.setTextNodeApiPayload(job.userNodeId, { apiRequestKey: key });
+	        }
+	      } catch {
+	        // ignore
+		      }
 	      schedulePersistSoon();
 
 	      const callbacks = {
@@ -2089,13 +2098,16 @@ export default function App() {
       if (activeChatIdRef.current === chatId) {
         engineRef.current?.setTextNodeApiPayload(job.userNodeId, { apiRequest: storedRequest });
       }
-      try {
-        const key = `${chatId}/${job.userNodeId}/req`;
-        await putPayload({ key, json: persistedRequest });
-        updateStoredTextNode(chatId, job.userNodeId, { apiRequestKey: key });
-      } catch {
-        // ignore
-      }
+	      try {
+	        const key = `${chatId}/${job.userNodeId}/req`;
+	        await putPayload({ key, json: persistedRequest });
+	        updateStoredTextNode(chatId, job.userNodeId, { apiRequestKey: key });
+	        if (activeChatIdRef.current === chatId) {
+	          engineRef.current?.setTextNodeApiPayload(job.userNodeId, { apiRequestKey: key });
+	        }
+	      } catch {
+	        // ignore
+	      }
       schedulePersistSoon();
 
       const res = await sendGeminiResponse({ request });
@@ -3486,17 +3498,22 @@ export default function App() {
     if (chatIds.length === 0) {
       alert('No chats to export.');
       return;
-    }
+	    }
+	
+	    const exportArgs: any[] = [];
+	    const skipped: string[] = [];
+	    for (const idRaw of chatIds) {
+	      const id = String(idRaw ?? '').trim();
+	      if (!id) continue;
 
-    const exportArgs: any[] = [];
-    for (const idRaw of chatIds) {
-      const id = String(idRaw ?? '').trim();
-      if (!id) continue;
+	      const info = findChatNameAndFolderPath(root, id);
+	      const chatName = info?.name ?? `Chat ${id.slice(-4)}`;
+	      const folderPath = info?.folderPath ?? [];
 
-      let state = chatStatesRef.current.get(id) ?? null;
-      if (!state) {
-        try {
-          const rec = await getChatStateRecord(id);
+	      let state = chatStatesRef.current.get(id) ?? null;
+	      if (!state) {
+	        try {
+	          const rec = await getChatStateRecord(id);
           const s = (rec?.state ?? null) as any;
           if (s && typeof s === 'object') {
             state = {
@@ -3508,27 +3525,26 @@ export default function App() {
           }
         } catch {
           state = null;
-        }
-      }
-      if (!state) continue;
+	        }
+	      }
+	      if (!state) {
+	        skipped.push(`${chatName} (${id})`);
+	        continue;
+	      }
 
-      let meta: any = chatMetaRef.current.get(id) ?? null;
-      if (!meta) {
-        try {
+	      let meta: any = chatMetaRef.current.get(id) ?? null;
+	      if (!meta) {
+	        try {
           const rec = await getChatMetaRecord(id);
           meta = rec?.meta ?? null;
         } catch {
           meta = null;
-        }
-      }
+	        }
+	      }
 
-      const info = findChatNameAndFolderPath(root, id);
-      const chatName = info?.name ?? `Chat ${id.slice(-4)}`;
-      const folderPath = info?.folderPath ?? [];
-
-      const bgKey = meta && typeof meta.backgroundStorageKey === 'string' ? String(meta.backgroundStorageKey).trim() : null;
-      const bgName =
-        bgKey ? (backgroundLibraryRef.current ?? []).find((b) => b.storageKey === bgKey)?.name ?? null : null;
+	      const bgKey = meta && typeof meta.backgroundStorageKey === 'string' ? String(meta.backgroundStorageKey).trim() : null;
+	      const bgName =
+	        bgKey ? (backgroundLibraryRef.current ?? []).find((b) => b.storageKey === bgKey)?.name ?? null : null;
 
       exportArgs.push({
         chatId: id,
@@ -3547,24 +3563,28 @@ export default function App() {
       return;
     }
 
-    try {
-      const mod = await import('./utils/archive');
-      const { blob, filename, warnings } = await mod.exportAllChatArchives({
-        chats: exportArgs,
+	    try {
+	      const mod = await import('./utils/archive');
+	      const { blob, filename, warnings } = await mod.exportAllChatArchives({
+	        chats: exportArgs,
         workspace: {
           root: treeRootRef.current,
           activeChatId: String(activeChatIdRef.current ?? ''),
           focusedFolderId: String(focusedFolderIdRef.current ?? ''),
         },
-        appName: 'graphchatv1',
-        appVersion: '0',
-      });
-      mod.triggerDownload(blob, filename);
-      if (warnings.length) console.warn('Export-all warnings:', warnings);
-    } catch (err: any) {
-      alert(`Export failed: ${err?.message || String(err)}`);
-    }
-  };
+	        appName: 'graphchatv1',
+	        appVersion: '0',
+	      });
+	      mod.triggerDownload(blob, filename);
+	      const allWarnings = [
+	        ...(warnings ?? []),
+	        ...skipped.map((s) => `Skipped chat: ${s}`),
+	      ].filter(Boolean);
+	      if (allWarnings.length) console.warn('Export-all warnings:', allWarnings);
+	    } catch (err: any) {
+	      alert(`Export failed: ${err?.message || String(err)}`);
+	    }
+	  };
 
   const requestExportChat = (chatId: string) => {
     const id = String(chatId ?? '').trim();

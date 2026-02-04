@@ -340,7 +340,9 @@ type TextNode = DemoNodeBase & {
   llmError?: string | null;
   llmTask?: ChatLlmTask;
   apiRequest?: unknown;
+  apiRequestKey?: string;
   apiResponse?: unknown;
+  apiResponseKey?: string;
   canonicalMessage?: CanonicalAssistantMessage;
   canonicalMeta?: unknown;
   thinkingSummary?: ThinkingSummaryChunk[];
@@ -1049,7 +1051,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           llmError: n.llmError ?? null,
           llmTask: n.llmTask,
           apiRequest: n.apiRequest,
+          apiRequestKey: n.apiRequestKey,
           apiResponse: n.apiResponse,
+          apiResponseKey: n.apiResponseKey,
           canonicalMessage: n.canonicalMessage,
           canonicalMeta: n.canonicalMeta,
           thinkingSummary: n.thinkingSummary,
@@ -1252,11 +1256,11 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 	          const text = typeof (raw as any).text === 'string' ? (raw as any).text : '';
 	          return text ? ({ role: 'assistant', text } as CanonicalAssistantMessage) : undefined;
 	        })();
-	        const llmTask = (() => {
-	          const raw = (n as any)?.llmTask;
-	          if (!raw || typeof raw !== 'object') return undefined;
-	          const provider = typeof (raw as any).provider === 'string' ? (raw as any).provider : '';
-	          const kind = typeof (raw as any).kind === 'string' ? (raw as any).kind : '';
+        const llmTask = (() => {
+          const raw = (n as any)?.llmTask;
+          if (!raw || typeof raw !== 'object') return undefined;
+          const provider = typeof (raw as any).provider === 'string' ? (raw as any).provider : '';
+          const kind = typeof (raw as any).kind === 'string' ? (raw as any).kind : '';
 	          if (!provider || !kind) return undefined;
 	          const taskId = typeof (raw as any).taskId === 'string' ? (raw as any).taskId : undefined;
 	          const cancelable = typeof (raw as any).cancelable === 'boolean' ? (raw as any).cancelable : undefined;
@@ -1269,14 +1273,24 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 	            ...(taskId ? { taskId } : {}),
 	            ...(cancelable !== undefined ? { cancelable } : {}),
 	            ...(background !== undefined ? { background } : {}),
-	            ...(lastEventSeq !== undefined ? { lastEventSeq } : {}),
-	          } as ChatLlmTask;
-	        })();
-	        const node: TextNode = {
-	          kind: 'text',
-	          id: n.id,
-	          parentId,
-	          ...(parentAnchor ? { parentAnchor } : {}),
+            ...(lastEventSeq !== undefined ? { lastEventSeq } : {}),
+          } as ChatLlmTask;
+        })();
+        const apiRequestKey = (() => {
+          const raw = (n as any)?.apiRequestKey;
+          const key = typeof raw === 'string' ? String(raw).trim() : '';
+          return key ? key : undefined;
+        })();
+        const apiResponseKey = (() => {
+          const raw = (n as any)?.apiResponseKey;
+          const key = typeof raw === 'string' ? String(raw).trim() : '';
+          return key ? key : undefined;
+        })();
+        const node: TextNode = {
+          kind: 'text',
+          id: n.id,
+          parentId,
+          ...(parentAnchor ? { parentAnchor } : {}),
           rect: { ...n.rect },
           title: n.title,
           ...(isEditNode ? { isEditNode: true } : {}),
@@ -1288,15 +1302,17 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           displayHash: '',
           isGenerating: Boolean((n as any)?.isGenerating),
 	          modelId: typeof (n as any)?.modelId === 'string' ? ((n as any).modelId as string) : null,
-	          llmParams:
-	            (n as any)?.llmParams && typeof (n as any).llmParams === 'object'
-	              ? ((n as any).llmParams as ChatLlmParams)
-	              : undefined,
-	          llmError: typeof (n as any)?.llmError === 'string' ? ((n as any).llmError as string) : null,
-	          llmTask,
-	          apiRequest: (n as any)?.apiRequest,
-	          apiResponse: (n as any)?.apiResponse,
-	          canonicalMessage,
+          llmParams:
+            (n as any)?.llmParams && typeof (n as any).llmParams === 'object'
+              ? ((n as any).llmParams as ChatLlmParams)
+              : undefined,
+          llmError: typeof (n as any)?.llmError === 'string' ? ((n as any).llmError as string) : null,
+          llmTask,
+          apiRequest: (n as any)?.apiRequest,
+          apiRequestKey,
+          apiResponse: (n as any)?.apiResponse,
+          apiResponseKey,
+          canonicalMessage,
           canonicalMeta: (n as any)?.canonicalMeta,
           thinkingSummary,
           summaryExpanded: Boolean((n as any)?.summaryExpanded),
@@ -4126,7 +4142,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 	  this.requestRender();
 	}
 
-  setTextNodeApiPayload(nodeId: string, patch: { apiRequest?: unknown; apiResponse?: unknown }): void {
+  setTextNodeApiPayload(
+    nodeId: string,
+    patch: { apiRequest?: unknown; apiRequestKey?: string | null; apiResponse?: unknown; apiResponseKey?: string | null },
+  ): void {
     const id = nodeId;
     if (!id) return;
     const node = this.nodes.find((n): n is TextNode => n.id === id && n.kind === 'text');
@@ -4140,6 +4159,22 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (patch.apiResponse !== undefined && node.apiResponse !== patch.apiResponse) {
       node.apiResponse = patch.apiResponse;
       changed = true;
+    }
+    if (patch.apiRequestKey !== undefined) {
+      const key = typeof patch.apiRequestKey === 'string' ? patch.apiRequestKey.trim() : '';
+      const next = key ? key : undefined;
+      if (node.apiRequestKey !== next) {
+        node.apiRequestKey = next;
+        changed = true;
+      }
+    }
+    if (patch.apiResponseKey !== undefined) {
+      const key = typeof patch.apiResponseKey === 'string' ? patch.apiResponseKey.trim() : '';
+      const next = key ? key : undefined;
+      if (node.apiResponseKey !== next) {
+        node.apiResponseKey = next;
+        changed = true;
+      }
     }
 
     if (changed) this.requestRender();
