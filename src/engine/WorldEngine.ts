@@ -7195,6 +7195,49 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       }
     }
 
+    // In select mode, allow pen/stylus to draw inside ink nodes without switching tools.
+    if (this.tool === 'select' && info.pointerType === 'pen' && hit && hit.kind === 'ink') {
+      const inkNode = hit;
+      const contentRect = this.textContentRect(inkNode.rect);
+      const inContent =
+        world.x >= contentRect.x &&
+        world.x <= contentRect.x + contentRect.w &&
+        world.y >= contentRect.y &&
+        world.y <= contentRect.y + contentRect.h;
+
+      if (inContent) {
+        const layout = this.inkPrefaceLayoutForNode(inkNode, contentRect);
+        if (!layout || world.y >= layout.inkRect.y) {
+          const stroke: InkStroke = {
+            points: [],
+            width: this.inkStrokeWidthWorld(info.pointerType),
+            color: 'rgba(147,197,253,0.92)',
+          };
+          const local: InkPoint = {
+            x: clamp(world.x - contentRect.x, 0, contentRect.w),
+            y: clamp(world.y - contentRect.y, 0, contentRect.h),
+          };
+          stroke.points.push(local);
+          this.activeGesture = {
+            kind: 'ink-node',
+            pointerId: info.pointerId,
+            pointerType: info.pointerType,
+            nodeId: inkNode.id,
+            stroke,
+          };
+
+          const selectionChanged = this.selectedNodeId !== inkNode.id || this.editingNodeId !== null;
+          this.selectedNodeId = inkNode.id;
+          this.editingNodeId = null;
+          this.bringNodeToFront(inkNode.id);
+          this.suppressTapPointerIds.add(info.pointerId);
+          this.requestRender();
+          if (selectionChanged) this.emitUiState();
+          return 'draw';
+        }
+      }
+    }
+
     if (this.shouldDrawInk(info.pointerType)) {
       const stroke: InkStroke = {
         points: [],

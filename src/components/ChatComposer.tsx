@@ -870,9 +870,8 @@ export default function ChatComposer(props: Props) {
       const v: ComposerMode = next === 'ink' ? 'ink' : 'text';
       if (v === mode) return;
       onChangeModeRef.current(v);
-      if (v === 'ink') scheduleDrawInk();
     },
-    [disabled, mode, scheduleDrawInk],
+    [disabled, mode],
   );
 
   const commitInkStrokes = useCallback(
@@ -899,9 +898,13 @@ export default function ChatComposer(props: Props) {
     (e: InkPointerLikeEvent) => {
       if (disabled) return;
       if (mode !== 'ink') return;
-      if (inkTool !== 'draw' && inkTool !== 'erase') return;
       if (e.pointerType === 'mouse' && e.button !== 0) return;
       if (inkGestureRef.current) return;
+
+      const pointerType = e.pointerType === 'pen' || e.pointerType === 'touch' || e.pointerType === 'mouse' ? e.pointerType : 'touch';
+      const tool: InkTool =
+        inkTool === 'draw' || inkTool === 'erase' ? inkTool : inkTool === 'select' && pointerType === 'pen' ? 'draw' : 'select';
+      if (tool !== 'draw' && tool !== 'erase') return;
 
       const canvas = inkCanvasRef.current;
       if (!canvas) return;
@@ -919,10 +922,9 @@ export default function ChatComposer(props: Props) {
       e.preventDefault();
       e.stopPropagation();
 
-      const pointerType = e.pointerType === 'pen' || e.pointerType === 'touch' || e.pointerType === 'mouse' ? e.pointerType : 'touch';
       const strokes = Array.isArray(inkStrokesRef.current) ? inkStrokesRef.current : [];
 
-      if (inkTool === 'draw') {
+      if (tool === 'draw') {
         const widthPx = pointerType === 'pen' ? 2.75 : 2.5;
         const stroke: InkStroke = {
           points: [{ x, y }],
@@ -1037,7 +1039,8 @@ export default function ChatComposer(props: Props) {
 
   useEffect(() => {
     if (typeof document === 'undefined') return;
-    const isInkToolEnabled = () => mode === 'ink' && (inkTool === 'draw' || inkTool === 'erase') && !disabled;
+    const isInkToolEnabled = () =>
+      mode === 'ink' && (inkTool === 'draw' || inkTool === 'erase' || inkTool === 'select') && !disabled;
 
     const onTouchMoveCapture = (e: TouchEvent) => {
       if (!isInkToolEnabled()) return;
@@ -1270,7 +1273,7 @@ export default function ChatComposer(props: Props) {
                   onContextMenu={(e) => e.preventDefault()}
                 />
                 {inkTool !== 'draw' && inkTool !== 'erase' ? (
-                  <div className="composer__inkHint">Switch to Draw or Erase tool.</div>
+                  <div className="composer__inkHint">Draw with a pen, or switch to Draw or Erase tool.</div>
                 ) : null}
               </div>
             ) : (
