@@ -2293,15 +2293,15 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return id;
   }
 
-  spawnChatTurn(args: {
-    userText: string;
-    parentNodeId: string | null;
-    userPreface?: { replyTo?: string; contexts?: string[] };
-    userAttachments?: ChatAttachment[];
-    selectedAttachmentKeys?: string[];
-    assistantTitle?: string;
-    assistantModelId?: string | null;
-  }): { userNodeId: string; assistantNodeId: string } {
+	  spawnChatTurn(args: {
+	    userText: string;
+	    parentNodeId: string | null;
+	    userPreface?: { replyTo?: string; contexts?: string[] };
+	    userAttachments?: ChatAttachment[];
+	    selectedAttachmentKeys?: string[];
+	    assistantTitle?: string;
+	    assistantModelId?: string | null;
+	  }): { userNodeId: string; assistantNodeId: string } {
     const userText = String(args.userText ?? '');
     const parentNodeId = args.parentNodeId ?? null;
     const userPreface = args.userPreface ?? undefined;
@@ -2380,8 +2380,43 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     // Avoid spawning directly on top of existing nodes in the current view.
     // This keeps "new tree" sends usable without layout work yet.
     const candidate: Rect = { x, y: userY, w: nodeW, h: totalH };
+    const intersectsPdf = (r: Rect): boolean => this.nodes.some((n) => n.kind === 'pdf' && rectsIntersect(n.rect, r));
+
+    if (parent && intersectsPdf(candidate)) {
+      // If replying under a node that overlaps a PDF, don't push the whole turn to the bottom of the PDF.
+      // Keep the vertical placement (under the parent) and optionally nudge sideways.
+      const baseX = candidate.x;
+      const stepX = gapY;
+      const maxSteps = 12;
+      const firstPdf = this.nodes.find((n): n is PdfNode => n.kind === 'pdf' && rectsIntersect(n.rect, candidate)) ?? null;
+      const preferDir = (() => {
+        if (!firstPdf) return 1;
+        const c = candidate.x + candidate.w * 0.5;
+        const pc = firstPdf.rect.x + firstPdf.rect.w * 0.5;
+        return c < pc ? -1 : 1;
+      })();
+
+      for (let i = 1; i <= maxSteps; i += 1) {
+        const dx = stepX * i;
+        const attempt1: Rect = { ...candidate, x: baseX + dx * preferDir };
+        if (!intersectsPdf(attempt1)) {
+          x = attempt1.x;
+          candidate.x = attempt1.x;
+          break;
+        }
+        const attempt2: Rect = { ...candidate, x: baseX - dx * preferDir };
+        if (!intersectsPdf(attempt2)) {
+          x = attempt2.x;
+          candidate.x = attempt2.x;
+          break;
+        }
+      }
+    }
     for (let i = 0; i < 60; i += 1) {
-      const overlap = this.nodes.find((n) => rectsIntersect(n.rect, candidate)) ?? null;
+      const overlap =
+        (parent
+          ? this.nodes.find((n) => n.kind !== 'pdf' && rectsIntersect(n.rect, candidate))
+          : this.nodes.find((n) => rectsIntersect(n.rect, candidate))) ?? null;
       if (!overlap) break;
       userY = overlap.rect.y + overlap.rect.h + gapY;
       candidate.y = userY;
@@ -2409,10 +2444,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return { userNodeId, assistantNodeId };
   }
 
-  spawnInkChatTurn(args: {
-    strokes: InkStroke[];
-    parentNodeId: string | null;
-    userPreface?: { replyTo?: string; contexts?: string[] };
+	  spawnInkChatTurn(args: {
+	    strokes: InkStroke[];
+	    parentNodeId: string | null;
+	    userPreface?: { replyTo?: string; contexts?: string[] };
     userAttachments?: ChatAttachment[];
     selectedAttachmentKeys?: string[];
     assistantTitle?: string;
@@ -2496,8 +2531,42 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     }
 
     const candidate: Rect = { x, y: userY, w: userNode.rect.w, h: totalH };
+    const intersectsPdf = (r: Rect): boolean => this.nodes.some((n) => n.kind === 'pdf' && rectsIntersect(n.rect, r));
+
+    if (parent && intersectsPdf(candidate)) {
+      // Same as spawnChatTurn: keep replies near the parent even when overlapping a PDF.
+      const baseX = candidate.x;
+      const stepX = gapY;
+      const maxSteps = 12;
+      const firstPdf = this.nodes.find((n): n is PdfNode => n.kind === 'pdf' && rectsIntersect(n.rect, candidate)) ?? null;
+      const preferDir = (() => {
+        if (!firstPdf) return 1;
+        const c = candidate.x + candidate.w * 0.5;
+        const pc = firstPdf.rect.x + firstPdf.rect.w * 0.5;
+        return c < pc ? -1 : 1;
+      })();
+
+      for (let i = 1; i <= maxSteps; i += 1) {
+        const dx = stepX * i;
+        const attempt1: Rect = { ...candidate, x: baseX + dx * preferDir };
+        if (!intersectsPdf(attempt1)) {
+          x = attempt1.x;
+          candidate.x = attempt1.x;
+          break;
+        }
+        const attempt2: Rect = { ...candidate, x: baseX - dx * preferDir };
+        if (!intersectsPdf(attempt2)) {
+          x = attempt2.x;
+          candidate.x = attempt2.x;
+          break;
+        }
+      }
+    }
     for (let i = 0; i < 60; i += 1) {
-      const overlap = this.nodes.find((n) => rectsIntersect(n.rect, candidate)) ?? null;
+      const overlap =
+        (parent
+          ? this.nodes.find((n) => n.kind !== 'pdf' && rectsIntersect(n.rect, candidate))
+          : this.nodes.find((n) => rectsIntersect(n.rect, candidate))) ?? null;
       if (!overlap) break;
       userY = overlap.rect.y + overlap.rect.h + gapY;
       candidate.y = userY;
@@ -2576,8 +2645,39 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     } else {
       // Avoid spawning directly on top of existing nodes in the current view.
       const candidate: Rect = { ...assistantNode.rect };
+      const intersectsPdf = (r: Rect): boolean => this.nodes.some((n) => n.kind === 'pdf' && rectsIntersect(n.rect, r));
+
+      if (intersectsPdf(candidate)) {
+        // Keep assistant replies close to the user node even when a PDF overlaps that area.
+        const baseX = candidate.x;
+        const stepX = gapY;
+        const maxSteps = 12;
+        const firstPdf = this.nodes.find((n): n is PdfNode => n.kind === 'pdf' && rectsIntersect(n.rect, candidate)) ?? null;
+        const preferDir = (() => {
+          if (!firstPdf) return 1;
+          const c = candidate.x + candidate.w * 0.5;
+          const pc = firstPdf.rect.x + firstPdf.rect.w * 0.5;
+          return c < pc ? -1 : 1;
+        })();
+
+        for (let i = 1; i <= maxSteps; i += 1) {
+          const dx = stepX * i;
+          const attempt1: Rect = { ...candidate, x: baseX + dx * preferDir };
+          if (!intersectsPdf(attempt1)) {
+            assistantNode.rect.x = attempt1.x;
+            candidate.x = attempt1.x;
+            break;
+          }
+          const attempt2: Rect = { ...candidate, x: baseX - dx * preferDir };
+          if (!intersectsPdf(attempt2)) {
+            assistantNode.rect.x = attempt2.x;
+            candidate.x = attempt2.x;
+            break;
+          }
+        }
+      }
       for (let i = 0; i < 60; i += 1) {
-        const overlap = this.nodes.find((n) => rectsIntersect(n.rect, candidate)) ?? null;
+        const overlap = this.nodes.find((n) => n.kind !== 'pdf' && rectsIntersect(n.rect, candidate)) ?? null;
         if (!overlap) break;
         candidate.y = overlap.rect.y + overlap.rect.h + gapY;
         assistantNode.rect.y = candidate.y;
