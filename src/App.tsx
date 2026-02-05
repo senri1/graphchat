@@ -42,11 +42,13 @@ import {
   streamOpenAIResponse,
   streamOpenAIResponseById,
 } from './services/openaiService';
+import { getAnthropicApiKey, sendAnthropicMessage, streamAnthropicMessage } from './services/anthropicService';
 import { getGeminiApiKey, sendGeminiResponse } from './services/geminiService';
 import type { ChatAttachment, ChatNode, InkStroke, ThinkingSummaryChunk } from './model/chat';
 import { normalizeBackgroundLibrary, type BackgroundLibraryItem } from './model/backgrounds';
 import { buildOpenAIResponseRequest, type OpenAIChatSettings } from './llm/openai';
 import { buildGeminiContext, type GeminiChatSettings } from './llm/gemini';
+import { buildAnthropicMessageRequest, type AnthropicChatSettings } from './llm/anthropic';
 import { DEFAULT_MODEL_ID, getModelInfo, listModels } from './llm/registry';
 import { extractCanonicalMessage, extractCanonicalMeta } from './llm/openaiCanonical';
 import { buildModelUserSettings, normalizeModelUserSettings, type ModelUserSettingsById } from './llm/modelUserSettings';
@@ -2130,6 +2132,165 @@ export default function App() {
     })();
   };
 
+  const startAnthropicGeneration = (args: {
+    chatId: string;
+    userNodeId: string;
+    assistantNodeId: string;
+    settings: AnthropicChatSettings;
+    nodesOverride?: ChatNode[];
+  }) => {
+    const chatId = args.chatId;
+    if (!chatId) return;
+    if (generationJobsByAssistantIdRef.current.has(args.assistantNodeId)) return;
+
+    const apiKey = getAnthropicApiKey();
+    if (!apiKey) {
+      const msg = 'Anthropic API key missing. Set ANTHROPIC_API_KEY in graphchatv1/.env.local';
+      updateStoredTextNode(chatId, args.assistantNodeId, { content: msg, isGenerating: false, llmError: msg });
+      if (activeChatIdRef.current === chatId) {
+        engineRef.current?.setTextNodeContent(args.assistantNodeId, msg, { streaming: false });
+        engineRef.current?.setTextNodeLlmState(args.assistantNodeId, {
+          isGenerating: false,
+          modelId: args.settings.modelId,
+          llmError: msg,
+        });
+      }
+      return;
+    }
+
+    const state = chatStatesRef.current.get(chatId);
+    const settings = args.settings;
+    const llmParams = { webSearchEnabled: settings.webSearchEnabled };
+
+    const job: GenerationJob = {
+      chatId,
+      userNodeId: args.userNodeId,
+      assistantNodeId: args.assistantNodeId,
+      modelId: settings.modelId,
+      llmParams,
+      startedAt: Date.now(),
+      abortController: new AbortController(),
+      background: false,
+      taskId: null,
+      lastEventSeq: null,
+      fullText: '',
+      thinkingSummary: [],
+      lastFlushedText: '',
+      lastFlushAt: 0,
+      flushTimer: null,
+      closed: false,
+    };
+
+    generationJobsByAssistantIdRef.current.set(job.assistantNodeId, job);
+    updateStoredTextNode(chatId, job.assistantNodeId, {
+      isGenerating: true,
+      modelId: job.modelId,
+      llmParams: job.llmParams,
+      llmError: null,
+    });
+    if (activeChatIdRef.current === chatId) {
+      engineRef.current?.setTextNodeLlmState(job.assistantNodeId, {
+        isGenerating: true,
+        modelId: job.modelId,
+        llmParams: job.llmParams,
+        llmError: null,
+      });
+    }
+
+    void (async () => {
+      let request: Record<string, unknown>;
+      try {
+        request = await buildAnthropicMessageRequest({
+          nodes: args.nodesOverride ?? state?.nodes ?? [],
+          leafUserNodeId: args.userNodeId,
+          settings,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        finishJob(job.assistantNodeId, { finalText: job.fullText, error: msg });
+        return;
+      }
+      if (job.closed || job.abortController.signal.aborted) return;
+
+      const streamingEnabled = typeof settings.stream === 'boolean' ? settings.stream : true;
+      const sentRequest = streamingEnabled ? { ...(request ?? {}), stream: true } : { ...(request ?? {}) };
+
+      const storedRequest = cloneRawPayloadForDisplay(sentRequest);
+      updateStoredTextNode(chatId, job.userNodeId, { apiRequest: storedRequest });
+      if (activeChatIdRef.current === chatId) {
+        engineRef.current?.setTextNodeApiPayload(job.userNodeId, { apiRequest: storedRequest });
+      }
+      try {
+        const key = `${chatId}/${job.userNodeId}/req`;
+        await putPayload({ key, json: sentRequest });
+        updateStoredTextNode(chatId, job.userNodeId, { apiRequestKey: key });
+      } catch {
+        // ignore
+      }
+      schedulePersistSoon();
+
+      const callbacks = {
+        onDelta: (_delta: string, fullText: string) => {
+          if (job.closed) return;
+          job.fullText = fullText;
+          scheduleJobFlush(job);
+        },
+      };
+
+      const res = streamingEnabled
+        ? await streamAnthropicMessage({
+            apiKey,
+            request: sentRequest,
+            signal: job.abortController.signal,
+            callbacks,
+          })
+        : await sendAnthropicMessage({ apiKey, request: sentRequest, signal: job.abortController.signal });
+
+      if (job.closed || job.abortController.signal.aborted) return;
+      if (!generationJobsByAssistantIdRef.current.has(job.assistantNodeId)) return;
+
+      const finalText = (typeof res.text === 'string' ? res.text : '') || job.fullText;
+      const usedWebSearch = Boolean(job.llmParams?.webSearchEnabled);
+      const canonicalMessage =
+        finalText && finalText.trim() ? ({ role: 'assistant', text: finalText.trim() } as any) : undefined;
+      const canonicalMeta = { usedWebSearch };
+
+      const storedResponse = res.response !== undefined ? cloneRawPayloadForDisplay(res.response) : undefined;
+      let responseKey: string | undefined = undefined;
+      if (res.response !== undefined) {
+        try {
+          const key = `${chatId}/${job.assistantNodeId}/res`;
+          await putPayload({ key, json: res.response });
+          responseKey = key;
+        } catch {
+          // ignore
+        }
+      }
+
+      if (res.ok) {
+        finishJob(job.assistantNodeId, {
+          finalText,
+          error: null,
+          apiResponse: storedResponse,
+          apiResponseKey: responseKey,
+          canonicalMessage,
+          canonicalMeta,
+        });
+      } else {
+        const error = res.cancelled ? 'Canceled' : res.error;
+        finishJob(job.assistantNodeId, {
+          finalText,
+          error,
+          cancelled: res.cancelled,
+          apiResponse: storedResponse,
+          apiResponseKey: responseKey,
+          canonicalMessage,
+          canonicalMeta,
+        });
+      }
+    })();
+  };
+
 	  const resumeOpenAIBackgroundJob = (args: {
 	    chatId: string;
 	    assistantNode: Extract<ChatNode, { kind: 'text' }>;
@@ -2440,17 +2601,19 @@ export default function App() {
 	          continue;
 	        }
 
-	        const modelId = typeof textNode.modelId === 'string' && textNode.modelId ? textNode.modelId : DEFAULT_MODEL_ID;
-	        const info = getModelInfo(modelId);
-	        if (info?.provider !== 'openai') continue;
-
-	        const msg = 'Interrupted (refresh). Enable Background mode to resume long-running requests.';
-	        updateStoredTextNode(chatId, textNode.id, { isGenerating: false, llmError: msg, llmTask: undefined });
-	        if (activeChatIdRef.current === chatId) {
-	          engineRef.current?.setTextNodeLlmState(textNode.id, { isGenerating: false, llmError: msg, llmTask: null } as any);
-	        }
-	      }
-	    }
+		        const modelId = typeof textNode.modelId === 'string' && textNode.modelId ? textNode.modelId : DEFAULT_MODEL_ID;
+		        const info = getModelInfo(modelId);
+		        const provider = info?.provider ?? 'openai';
+		        const msg =
+		          provider === 'openai'
+		            ? 'Interrupted (refresh). Enable Background mode to resume long-running requests.'
+		            : 'Interrupted (refresh). Request cannot be resumed.';
+		        updateStoredTextNode(chatId, textNode.id, { isGenerating: false, llmError: msg, llmTask: undefined });
+		        if (activeChatIdRef.current === chatId) {
+		          engineRef.current?.setTextNodeLlmState(textNode.id, { isGenerating: false, llmError: msg, llmTask: null } as any);
+		        }
+		      }
+		    }
 
 	    schedulePersistSoon();
 	  };
@@ -4016,6 +4179,26 @@ export default function App() {
         assistantNodeId: res.assistantNodeId,
         settings,
       });
+    } else if (provider === 'anthropic') {
+      const modelSettings = modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
+      const settings: AnthropicChatSettings = {
+        modelId: selectedModelId,
+        webSearchEnabled: composerWebSearch,
+        stream: modelSettings?.streaming,
+        inkExport: {
+          cropEnabled: inkSendCropEnabledRef.current,
+          cropPaddingPx: inkSendCropPaddingPxRef.current,
+          downscaleEnabled: inkSendDownscaleEnabledRef.current,
+          maxPixels: inkSendMaxPixelsRef.current,
+          maxDimPx: inkSendMaxDimPxRef.current,
+        },
+      };
+      startAnthropicGeneration({
+        chatId,
+        userNodeId: res.userNodeId,
+        assistantNodeId: res.assistantNodeId,
+        settings,
+      });
     } else {
       const modelSettings = modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
       const settings: OpenAIChatSettings = {
@@ -4231,6 +4414,26 @@ export default function App() {
         assistantNodeId: res.assistantNodeId,
         settings,
       });
+    } else if (provider === 'anthropic') {
+      const modelSettings = modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
+      const settings: AnthropicChatSettings = {
+        modelId: selectedModelId,
+        webSearchEnabled: composerWebSearch,
+        stream: modelSettings?.streaming,
+        inkExport: {
+          cropEnabled: inkSendCropEnabledRef.current,
+          cropPaddingPx: inkSendCropPaddingPxRef.current,
+          downscaleEnabled: inkSendDownscaleEnabledRef.current,
+          maxPixels: inkSendMaxPixelsRef.current,
+          maxDimPx: inkSendMaxDimPxRef.current,
+        },
+      };
+      startAnthropicGeneration({
+        chatId,
+        userNodeId: res.userNodeId,
+        assistantNodeId: res.assistantNodeId,
+        settings,
+      });
     } else {
       const modelSettings = modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
       const settings: OpenAIChatSettings = {
@@ -4382,6 +4585,26 @@ export default function App() {
           },
         };
         startGeminiGeneration({
+          chatId,
+          userNodeId,
+          assistantNodeId: res.assistantNodeId,
+          settings,
+        });
+      } else if (provider === 'anthropic') {
+        const modelSettings = modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
+        const settings: AnthropicChatSettings = {
+          modelId: selectedModelId,
+          webSearchEnabled: composerWebSearch,
+          stream: modelSettings?.streaming,
+          inkExport: {
+            cropEnabled: inkSendCropEnabledRef.current,
+            cropPaddingPx: inkSendCropPaddingPxRef.current,
+            downscaleEnabled: inkSendDownscaleEnabledRef.current,
+            maxPixels: inkSendMaxPixelsRef.current,
+            maxDimPx: inkSendMaxDimPxRef.current,
+          },
+        };
+        startAnthropicGeneration({
           chatId,
           userNodeId,
           assistantNodeId: res.assistantNodeId,
@@ -4541,6 +4764,27 @@ export default function App() {
         },
       };
       startGeminiGeneration({
+        chatId,
+        userNodeId,
+        assistantNodeId: res.assistantNodeId,
+        settings,
+        nodesOverride,
+      });
+    } else if (provider === 'anthropic') {
+      const modelSettings = modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
+      const settings: AnthropicChatSettings = {
+        modelId: selectedModelId,
+        webSearchEnabled: composerWebSearch,
+        stream: modelSettings?.streaming,
+        inkExport: {
+          cropEnabled: inkSendCropEnabledRef.current,
+          cropPaddingPx: inkSendCropPaddingPxRef.current,
+          downscaleEnabled: inkSendDownscaleEnabledRef.current,
+          maxPixels: inkSendMaxPixelsRef.current,
+          maxDimPx: inkSendMaxDimPxRef.current,
+        },
+      };
+      startAnthropicGeneration({
         chatId,
         userNodeId,
         assistantNodeId: res.assistantNodeId,

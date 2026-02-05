@@ -1,4 +1,4 @@
-export type ProviderId = 'openai' | 'gemini';
+export type ProviderId = 'openai' | 'gemini' | 'anthropic';
 
 export type TextVerbosity = 'low' | 'medium' | 'high';
 
@@ -206,6 +206,36 @@ const REGISTRY: ModelInfo[] = [
     supportsImageInput: true,
     parameters: { webSearch: true, streaming: false, background: false },
     defaults: { webSearch: true, streaming: false, background: false },
+  },
+  {
+    id: 'claude-sonnet-4-5',
+    provider: 'anthropic',
+    apiModel: 'claude-sonnet-4-5',
+    label: 'Anthropic - Claude Sonnet 4.5',
+    shortLabel: 'Sonnet 4.5',
+    supportsImageInput: true,
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
+  },
+  {
+    id: 'claude-haiku-4-5',
+    provider: 'anthropic',
+    apiModel: 'claude-haiku-4-5',
+    label: 'Anthropic - Claude Haiku 4.5',
+    shortLabel: 'Haiku 4.5',
+    supportsImageInput: true,
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
+  },
+  {
+    id: 'claude-opus-4-5',
+    provider: 'anthropic',
+    apiModel: 'claude-opus-4-5',
+    label: 'Anthropic - Claude Opus 4.5',
+    shortLabel: 'Opus 4.5',
+    supportsImageInput: true,
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
   },
 ];
 
