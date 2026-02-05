@@ -42,7 +42,7 @@ import {
   streamOpenAIResponse,
   streamOpenAIResponseById,
 } from './services/openaiService';
-import { getGeminiApiKey, sendGeminiResponse } from './services/geminiService';
+import { getGeminiApiKey, sendGeminiResponse, streamGeminiResponse } from './services/geminiService';
 import type { ChatAttachment, ChatNode, InkStroke, ThinkingSummaryChunk } from './model/chat';
 import { normalizeBackgroundLibrary, type BackgroundLibraryItem } from './model/backgrounds';
 import { buildOpenAIResponseRequest, type OpenAIChatSettings } from './llm/openai';
@@ -685,7 +685,7 @@ export default function App() {
   const sidebarFontFamilyRef = useRef<FontFamilyKey>(sidebarFontFamily);
   const sidebarFontSizePxRef = useRef<number>(sidebarFontSizePx);
   const backgroundLoadSeqRef = useRef(0);
-  const allModels = useMemo(() => listModels(), []);
+  const allModels = useMemo(() => listModels(), [listModels]);
   const edgeRouterOptions = useMemo(
     () => listEdgeRouters().map((r) => ({ id: r.id as EdgeRouterId, label: r.label, description: r.description })),
     [],
@@ -2094,6 +2094,7 @@ export default function App() {
     const state = chatStatesRef.current.get(chatId);
     const settings = args.settings;
     const llmParams = { webSearchEnabled: settings.webSearchEnabled };
+    const streamingEnabled = typeof settings.stream === 'boolean' ? settings.stream : true;
 
     const job: GenerationJob = {
       chatId,
@@ -2166,7 +2167,16 @@ export default function App() {
 	      }
       schedulePersistSoon();
 
-      const res = await sendGeminiResponse({ request });
+      const callbacks = {
+        onDelta: (_delta: string, fullText: string) => {
+          if (job.closed) return;
+          job.fullText = fullText;
+          scheduleJobFlush(job);
+        },
+      };
+      const res = streamingEnabled
+        ? await streamGeminiResponse({ request, signal: job.abortController.signal, callbacks })
+        : await sendGeminiResponse({ request, signal: job.abortController.signal });
       if (job.closed || job.abortController.signal.aborted) return;
       if (!generationJobsByAssistantIdRef.current.has(job.assistantNodeId)) return;
 
@@ -2190,6 +2200,7 @@ export default function App() {
       finishJob(job.assistantNodeId, {
         finalText,
         error: isError ? (finalText.trim() ? finalText : 'Gemini request failed') : null,
+        cancelled: res.cancelled,
         apiResponse: storedResponse,
         apiResponseKey: responseKey,
         canonicalMessage,
@@ -4075,9 +4086,11 @@ export default function App() {
 
     const provider = getModelInfo(selectedModelId)?.provider ?? 'openai';
     if (provider === 'gemini') {
+      const modelSettings = modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
       const settings: GeminiChatSettings = {
         modelId: selectedModelId,
         webSearchEnabled: composerWebSearch,
+        stream: modelSettings?.streaming,
         inkExport: {
           cropEnabled: inkSendCropEnabledRef.current,
           cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -4290,9 +4303,11 @@ export default function App() {
 
     const provider = getModelInfo(selectedModelId)?.provider ?? 'openai';
     if (provider === 'gemini') {
+      const modelSettings = modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
       const settings: GeminiChatSettings = {
         modelId: selectedModelId,
         webSearchEnabled: composerWebSearch,
+        stream: modelSettings?.streaming,
         inkExport: {
           cropEnabled: inkSendCropEnabledRef.current,
           cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -4446,9 +4461,11 @@ export default function App() {
 
       const provider = getModelInfo(selectedModelId)?.provider ?? 'openai';
       if (provider === 'gemini') {
+        const modelSettings = modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
         const settings: GeminiChatSettings = {
           modelId: selectedModelId,
           webSearchEnabled: composerWebSearch,
+          stream: modelSettings?.streaming,
           inkExport: {
             cropEnabled: inkSendCropEnabledRef.current,
             cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -4605,9 +4622,11 @@ export default function App() {
 
     const provider = getModelInfo(selectedModelId)?.provider ?? 'openai';
     if (provider === 'gemini') {
+      const modelSettings = modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
       const settings: GeminiChatSettings = {
         modelId: selectedModelId,
         webSearchEnabled: composerWebSearch,
+        stream: modelSettings?.streaming,
         inkExport: {
           cropEnabled: inkSendCropEnabledRef.current,
           cropPaddingPx: inkSendCropPaddingPxRef.current,
