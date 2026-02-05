@@ -610,6 +610,7 @@ type ActiveGesture =
 export class WorldEngine {
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
+  private readonly inputEl: HTMLElement;
 
   readonly camera = new Camera({ minZoom: 0.05, maxZoom: 6 });
   private readonly input: InputController;
@@ -1009,6 +1010,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     })();
 
     const inputEl = opts.inputEl ?? this.canvas;
+    this.inputEl = inputEl;
     this.input = new InputController(inputEl, this.camera, {
       onChange: () => this.requestRender(),
       onInteractingChange: (v) => {
@@ -3338,12 +3340,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     // Hover detection for mouse/trackpad text selection:
     // show a LOD2 DOM overlay over the text content rect so native selection works.
-    this.canvas.addEventListener('pointermove', this.onHoverPointerMove, { passive: true });
+    this.inputEl.addEventListener('pointermove', this.onHoverPointerMove, { passive: true });
   }
 
   dispose(): void {
     try {
-      this.canvas.removeEventListener('pointermove', this.onHoverPointerMove as any);
+      this.inputEl.removeEventListener('pointermove', this.onHoverPointerMove as any);
     } catch {
       // ignore
     }
