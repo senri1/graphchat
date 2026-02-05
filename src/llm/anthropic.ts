@@ -215,7 +215,12 @@ async function buildAnthropicMessagesFromChatNodes(
           raw = null;
         }
       }
-      if (!raw && (n as any).apiResponse !== undefined) raw = (n as any).apiResponse;
+
+      const rawContent = raw && typeof raw === 'object' && Array.isArray((raw as any)?.content) ? ((raw as any).content as any[]) : null;
+      if (rawContent && rawContent.length > 0) {
+        messages.push({ role: 'assistant', content: rawContent });
+        continue;
+      }
 
       const rawText = raw ? extractTextFromAnthropicMessage(raw) : '';
       if (rawText.trim()) {

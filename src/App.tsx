@@ -2241,15 +2241,79 @@ export default function App() {
       } catch {
         // ignore
       }
-      schedulePersistSoon();
+	      schedulePersistSoon();
 
-      const callbacks = {
-        onDelta: (_delta: string, fullText: string) => {
-          if (job.closed) return;
-          job.fullText = fullText;
-          scheduleJobFlush(job);
-        },
-      };
+	      const callbacks = {
+	        onDelta: (_delta: string, fullText: string) => {
+	          if (job.closed) return;
+	          job.fullText = fullText;
+	          scheduleJobFlush(job);
+	        },
+	        onEvent: (evt: any) => {
+	          if (job.closed) return;
+
+	          const t = typeof evt?.type === 'string' ? String(evt.type) : '';
+	          if (t === 'content_block_start') {
+	            const idx = typeof evt?.index === 'number' ? evt.index : 0;
+	            const block = evt?.content_block;
+	            if (block && typeof block === 'object' && block.type === 'thinking') {
+	              const initial = typeof block?.thinking === 'string' ? block.thinking : '';
+	              if (!initial) return;
+
+	              const chunks = job.thinkingSummary ?? [];
+	              const existing = chunks.find((c) => c.summaryIndex === idx);
+	              const nextChunks: ThinkingSummaryChunk[] = existing
+	                ? chunks.map((c) => (c.summaryIndex === idx ? { ...c, text: initial, done: false } : c))
+	                : [...chunks, { summaryIndex: idx, text: initial, done: false }];
+	              job.thinkingSummary = nextChunks;
+
+	              updateStoredTextNode(chatId, job.assistantNodeId, { thinkingSummary: nextChunks });
+	              if (activeChatIdRef.current === chatId) {
+	                engineRef.current?.setTextNodeThinkingSummary(job.assistantNodeId, nextChunks);
+	              }
+	            }
+	            return;
+	          }
+
+	          if (t !== 'content_block_delta') return;
+
+	          const idx = typeof evt?.index === 'number' ? evt.index : 0;
+	          const delta = evt?.delta;
+	          const deltaType = typeof delta?.type === 'string' ? String(delta.type) : '';
+
+	          if (deltaType === 'thinking_delta') {
+	            const text = typeof delta?.thinking === 'string' ? delta.thinking : '';
+	            if (!text) return;
+
+	            const chunks = job.thinkingSummary ?? [];
+	            const existing = chunks.find((c) => c.summaryIndex === idx);
+	            const nextChunks: ThinkingSummaryChunk[] = existing
+	              ? chunks.map((c) => (c.summaryIndex === idx ? { ...c, text: c.text + text } : c))
+	              : [...chunks, { summaryIndex: idx, text, done: false }];
+	            job.thinkingSummary = nextChunks;
+
+	            updateStoredTextNode(chatId, job.assistantNodeId, { thinkingSummary: nextChunks });
+	            if (activeChatIdRef.current === chatId) {
+	              engineRef.current?.setTextNodeThinkingSummary(job.assistantNodeId, nextChunks);
+	            }
+	            return;
+	          }
+
+	          if (deltaType === 'signature_delta') {
+	            const chunks = job.thinkingSummary ?? [];
+	            if (!chunks.length) return;
+	            const nextChunks: ThinkingSummaryChunk[] = chunks.map((c) =>
+	              c.summaryIndex === idx ? { ...c, done: true } : c,
+	            );
+	            job.thinkingSummary = nextChunks;
+
+	            updateStoredTextNode(chatId, job.assistantNodeId, { thinkingSummary: nextChunks });
+	            if (activeChatIdRef.current === chatId) {
+	              engineRef.current?.setTextNodeThinkingSummary(job.assistantNodeId, nextChunks);
+	            }
+	          }
+	        },
+	      };
 
       const res = streamingEnabled
         ? await streamAnthropicMessage({
@@ -2263,15 +2327,41 @@ export default function App() {
       if (job.closed || job.abortController.signal.aborted) return;
       if (!generationJobsByAssistantIdRef.current.has(job.assistantNodeId)) return;
 
-      const finalText = (typeof res.text === 'string' ? res.text : '') || job.fullText;
-      const usedWebSearch = Boolean(job.llmParams?.webSearchEnabled);
-      const canonicalMessage =
-        finalText && finalText.trim() ? ({ role: 'assistant', text: finalText.trim() } as any) : undefined;
-      const canonicalMeta = { usedWebSearch };
+	      const finalText = (typeof res.text === 'string' ? res.text : '') || job.fullText;
+	      const usedWebSearch = Boolean(job.llmParams?.webSearchEnabled);
+	      const canonicalMessage =
+	        finalText && finalText.trim() ? ({ role: 'assistant', text: finalText.trim() } as any) : undefined;
+	      const canonicalMeta = (() => {
+	        const base = { usedWebSearch } as any;
+	        const chunksFromResponse = (() => {
+	          if (job.thinkingSummary && job.thinkingSummary.length > 0) return job.thinkingSummary;
+	          const raw = res.response;
+	          if (!raw || typeof raw !== 'object') return [];
+	          const content = Array.isArray((raw as any)?.content) ? ((raw as any).content as any[]) : [];
+	          const out: ThinkingSummaryChunk[] = [];
+	          for (let i = 0; i < content.length; i += 1) {
+	            const block = content[i];
+	            if (!block || typeof block !== 'object') continue;
+	            if (block.type !== 'thinking') continue;
+	            const text = typeof (block as any)?.thinking === 'string' ? (block as any).thinking : String((block as any)?.thinking ?? '');
+	            if (!text.trim()) continue;
+	            out.push({ summaryIndex: i, text, done: true });
+	          }
+	          return out;
+	        })();
 
-      const storedResponse = res.response !== undefined ? cloneRawPayloadForDisplay(res.response) : undefined;
-      let responseKey: string | undefined = undefined;
-      if (res.response !== undefined) {
+	        if (chunksFromResponse.length === 0) return base;
+	        return {
+	          ...base,
+	          reasoningSummaryBlocks: [...chunksFromResponse]
+	            .sort((a, b) => (a.summaryIndex ?? 0) - (b.summaryIndex ?? 0))
+	            .map((c) => ({ type: 'summary_text' as const, text: c?.text ?? '' })),
+	        };
+	      })();
+
+	      const storedResponse = res.response !== undefined ? cloneRawPayloadForDisplay(res.response) : undefined;
+	      let responseKey: string | undefined = undefined;
+	      if (res.response !== undefined) {
         try {
           const key = `${chatId}/${job.assistantNodeId}/res`;
           await putPayload({ key, json: res.response });

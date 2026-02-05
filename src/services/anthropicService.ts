@@ -212,6 +212,7 @@ export async function streamAnthropicMessage(args: {
   let fullText = '';
   let message: any | null = null;
   const contentBlocks: any[] = [];
+  const inputJsonByIndex: string[] = [];
   let streamError: string | null = null;
 
   try {
@@ -267,6 +268,72 @@ export async function streamAnthropicMessage(args: {
               (existingBlock as any).text = existingText + textDelta;
             } else {
               contentBlocks[idx] = { type: 'text', text: textDelta };
+            }
+          }
+        } else if (idx != null && deltaType === 'thinking_delta') {
+          const thinkingDelta = typeof delta?.thinking === 'string' ? String(delta.thinking) : '';
+          if (thinkingDelta) {
+            const existingBlock = contentBlocks[idx];
+            if (existingBlock && typeof existingBlock === 'object') {
+              const existing = typeof (existingBlock as any).thinking === 'string' ? String((existingBlock as any).thinking) : '';
+              (existingBlock as any).thinking = existing + thinkingDelta;
+            } else {
+              contentBlocks[idx] = { type: 'thinking', thinking: thinkingDelta };
+            }
+          }
+        } else if (idx != null && deltaType === 'signature_delta') {
+          const sigDelta = typeof delta?.signature === 'string' ? String(delta.signature) : '';
+          if (sigDelta) {
+            const existingBlock = contentBlocks[idx];
+            if (existingBlock && typeof existingBlock === 'object') {
+              const existing = typeof (existingBlock as any).signature === 'string' ? String((existingBlock as any).signature) : '';
+              (existingBlock as any).signature = existing + sigDelta;
+            } else {
+              contentBlocks[idx] = { type: 'thinking', signature: sigDelta };
+            }
+          }
+        } else if (idx != null && deltaType === 'input_json_delta') {
+          const partial = typeof delta?.partial_json === 'string' ? String(delta.partial_json) : '';
+          if (partial) {
+            const prev = typeof inputJsonByIndex[idx] === 'string' ? inputJsonByIndex[idx] : '';
+            const next = prev + partial;
+            inputJsonByIndex[idx] = next;
+
+            try {
+              const parsed = JSON.parse(next);
+              const existingBlock = contentBlocks[idx];
+              if (existingBlock && typeof existingBlock === 'object') {
+                (existingBlock as any).input = parsed;
+              }
+            } catch {
+              // ignore until JSON completes
+            }
+          }
+        } else if (idx != null && deltaType === 'redacted_thinking_delta') {
+          const dataDelta = typeof delta?.data === 'string' ? String(delta.data) : '';
+          if (dataDelta) {
+            const existingBlock = contentBlocks[idx];
+            if (existingBlock && typeof existingBlock === 'object') {
+              const existing = typeof (existingBlock as any).data === 'string' ? String((existingBlock as any).data) : '';
+              (existingBlock as any).data = existing + dataDelta;
+            } else {
+              contentBlocks[idx] = { type: 'redacted_thinking', data: dataDelta };
+            }
+          }
+        }
+      } else if (t === 'content_block_stop') {
+        const idx = typeof evt?.index === 'number' ? evt.index : null;
+        if (idx != null) {
+          const pendingJson = typeof inputJsonByIndex[idx] === 'string' ? inputJsonByIndex[idx] : '';
+          if (pendingJson) {
+            try {
+              const parsed = JSON.parse(pendingJson);
+              const existingBlock = contentBlocks[idx];
+              if (existingBlock && typeof existingBlock === 'object') {
+                (existingBlock as any).input = parsed;
+              }
+            } catch {
+              // ignore
             }
           }
         }
