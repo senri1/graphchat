@@ -351,7 +351,7 @@ const EDGE_ROUTERS = [
 
 export type EdgeRouterId = (typeof EDGE_ROUTERS)[number]['id'];
 
-export const DEFAULT_EDGE_ROUTER_ID: EdgeRouterId = 'straight';
+export const DEFAULT_EDGE_ROUTER_ID: EdgeRouterId = 'orthogonal-dynamic';
 
 export function listEdgeRouters(): readonly EdgeRouter[] {
   return EDGE_ROUTERS;

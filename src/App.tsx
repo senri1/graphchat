@@ -163,17 +163,32 @@ type InkInputHudState = {
   selectionRangeCount: number;
 };
 
-const DEFAULT_COMPOSER_FONT_FAMILY: FontFamilyKey = 'ui-monospace';
-const DEFAULT_COMPOSER_FONT_SIZE_PX = 13;
+const DEFAULT_COMPOSER_FONT_FAMILY: FontFamilyKey = 'font-sans';
+const DEFAULT_COMPOSER_FONT_SIZE_PX = 14;
 
-const DEFAULT_NODE_FONT_FAMILY: FontFamilyKey = 'ui-sans-serif';
+const DEFAULT_NODE_FONT_FAMILY: FontFamilyKey = 'font-sans';
 const DEFAULT_NODE_FONT_SIZE_PX = 14;
 
-const DEFAULT_SIDEBAR_FONT_FAMILY: FontFamilyKey = 'ui-sans-serif';
-const DEFAULT_SIDEBAR_FONT_SIZE_PX = 12;
+const DEFAULT_SIDEBAR_FONT_FAMILY: FontFamilyKey = 'ui-monospace';
+const DEFAULT_SIDEBAR_FONT_SIZE_PX = 13;
 
-const DEFAULT_REPLY_ARROW_COLOR = '#93c5fd';
-const DEFAULT_REPLY_ARROW_OPACITY = 1;
+const DEFAULT_REPLY_ARROW_COLOR = '#f5f5f5';
+const DEFAULT_REPLY_ARROW_OPACITY = 0.7;
+const DEFAULT_DEBUG_HUD_VISIBLE = false;
+const DEFAULT_ALLOW_EDITING_ALL_TEXT_NODES = false;
+const DEFAULT_SPAWN_EDIT_NODE_BY_DRAW = false;
+const DEFAULT_SPAWN_INK_NODE_BY_DRAW = false;
+const DEFAULT_GLASS_NODES_ENABLED = true;
+const DEFAULT_GLASS_BLUR_BACKEND: GlassBlurBackend = 'webgl';
+const DEFAULT_GLASS_BLUR_CSS_PX_WEBGL = 23;
+const DEFAULT_GLASS_SATURATE_PCT_WEBGL = 180;
+const DEFAULT_GLASS_BLUR_CSS_PX_CANVAS = 23;
+const DEFAULT_GLASS_SATURATE_PCT_CANVAS = 180;
+const DEFAULT_UI_GLASS_BLUR_CSS_PX_WEBGL = 15;
+const DEFAULT_UI_GLASS_SATURATE_PCT_WEBGL = 140;
+const DEFAULT_GLASS_UNDERLAY_ALPHA = 1;
+const DEFAULT_INK_SEND_CROP_ENABLED = false;
+const DEFAULT_INK_SEND_DOWNSCALE_ENABLED = false;
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
   const n = Number(value);
@@ -624,18 +639,18 @@ export default function App() {
   const [replySelectedAttachmentKeys, setReplySelectedAttachmentKeys] = useState<string[]>(() => []);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsPanel, setSettingsPanel] = useState<'appearance' | 'models' | 'debug' | 'data' | 'reset'>('appearance');
-  const [debugHudVisible, setDebugHudVisible] = useState(true);
-  const [allowEditingAllTextNodes, setAllowEditingAllTextNodes] = useState(false);
+  const [debugHudVisible, setDebugHudVisible] = useState(DEFAULT_DEBUG_HUD_VISIBLE);
+  const [allowEditingAllTextNodes, setAllowEditingAllTextNodes] = useState(DEFAULT_ALLOW_EDITING_ALL_TEXT_NODES);
   const allowEditingAllTextNodesRef = useRef<boolean>(allowEditingAllTextNodes);
-  const [spawnEditNodeByDraw, setSpawnEditNodeByDraw] = useState(false);
+  const [spawnEditNodeByDraw, setSpawnEditNodeByDraw] = useState(DEFAULT_SPAWN_EDIT_NODE_BY_DRAW);
   const spawnEditNodeByDrawRef = useRef<boolean>(spawnEditNodeByDraw);
-  const [spawnInkNodeByDraw, setSpawnInkNodeByDraw] = useState(false);
+  const [spawnInkNodeByDraw, setSpawnInkNodeByDraw] = useState(DEFAULT_SPAWN_INK_NODE_BY_DRAW);
   const spawnInkNodeByDrawRef = useRef<boolean>(spawnInkNodeByDraw);
-  const [inkSendCropEnabled, setInkSendCropEnabled] = useState(true);
+  const [inkSendCropEnabled, setInkSendCropEnabled] = useState(DEFAULT_INK_SEND_CROP_ENABLED);
   const inkSendCropEnabledRef = useRef<boolean>(inkSendCropEnabled);
   const [inkSendCropPaddingPx, setInkSendCropPaddingPx] = useState<number>(24);
   const inkSendCropPaddingPxRef = useRef<number>(inkSendCropPaddingPx);
-  const [inkSendDownscaleEnabled, setInkSendDownscaleEnabled] = useState(true);
+  const [inkSendDownscaleEnabled, setInkSendDownscaleEnabled] = useState(DEFAULT_INK_SEND_DOWNSCALE_ENABLED);
   const inkSendDownscaleEnabledRef = useRef<boolean>(inkSendDownscaleEnabled);
   const [inkSendMaxPixels, setInkSendMaxPixels] = useState<number>(6_000_000);
   const inkSendMaxPixelsRef = useRef<number>(inkSendMaxPixels);
@@ -649,19 +664,19 @@ export default function App() {
   const [importIncludeDateInName, setImportIncludeDateInName] = useState(false);
   const [importBackgroundAvailable, setImportBackgroundAvailable] = useState(false);
   const [importIncludeBackground, setImportIncludeBackground] = useState(false);
-  const [glassNodesEnabled, setGlassNodesEnabled] = useState<boolean>(() => false);
-  const [glassNodesBlurCssPxWebgl, setGlassNodesBlurCssPxWebgl] = useState<number>(() => 10);
-  const [glassNodesSaturatePctWebgl, setGlassNodesSaturatePctWebgl] = useState<number>(() => 140);
-  const [glassNodesBlurCssPxCanvas, setGlassNodesBlurCssPxCanvas] = useState<number>(() => 10);
-  const [glassNodesSaturatePctCanvas, setGlassNodesSaturatePctCanvas] = useState<number>(() => 140);
-  const [glassNodesUnderlayAlpha, setGlassNodesUnderlayAlpha] = useState<number>(() => 0.95);
-  const [glassNodesBlurBackend, setGlassNodesBlurBackend] = useState<GlassBlurBackend>(() => 'webgl');
+  const [glassNodesEnabled, setGlassNodesEnabled] = useState<boolean>(() => DEFAULT_GLASS_NODES_ENABLED);
+  const [glassNodesBlurCssPxWebgl, setGlassNodesBlurCssPxWebgl] = useState<number>(() => DEFAULT_GLASS_BLUR_CSS_PX_WEBGL);
+  const [glassNodesSaturatePctWebgl, setGlassNodesSaturatePctWebgl] = useState<number>(() => DEFAULT_GLASS_SATURATE_PCT_WEBGL);
+  const [glassNodesBlurCssPxCanvas, setGlassNodesBlurCssPxCanvas] = useState<number>(() => DEFAULT_GLASS_BLUR_CSS_PX_CANVAS);
+  const [glassNodesSaturatePctCanvas, setGlassNodesSaturatePctCanvas] = useState<number>(() => DEFAULT_GLASS_SATURATE_PCT_CANVAS);
+  const [glassNodesUnderlayAlpha, setGlassNodesUnderlayAlpha] = useState<number>(() => DEFAULT_GLASS_UNDERLAY_ALPHA);
+  const [glassNodesBlurBackend, setGlassNodesBlurBackend] = useState<GlassBlurBackend>(() => DEFAULT_GLASS_BLUR_BACKEND);
   const [edgeRouterId, setEdgeRouterId] = useState<EdgeRouterId>(() => DEFAULT_EDGE_ROUTER_ID);
   const [replyArrowColor, setReplyArrowColor] = useState<string>(() => DEFAULT_REPLY_ARROW_COLOR);
   const [replyArrowOpacity, setReplyArrowOpacity] = useState<number>(() => DEFAULT_REPLY_ARROW_OPACITY);
   const [replySpawnKind, setReplySpawnKind] = useState<'text' | 'ink'>(() => 'text');
-  const [uiGlassBlurCssPxWebgl, setUiGlassBlurCssPxWebgl] = useState<number>(() => 10);
-  const [uiGlassSaturatePctWebgl, setUiGlassSaturatePctWebgl] = useState<number>(() => 140);
+  const [uiGlassBlurCssPxWebgl, setUiGlassBlurCssPxWebgl] = useState<number>(() => DEFAULT_UI_GLASS_BLUR_CSS_PX_WEBGL);
+  const [uiGlassSaturatePctWebgl, setUiGlassSaturatePctWebgl] = useState<number>(() => DEFAULT_UI_GLASS_SATURATE_PCT_WEBGL);
   const [composerFontFamily, setComposerFontFamily] = useState<FontFamilyKey>(() => DEFAULT_COMPOSER_FONT_FAMILY);
   const [composerFontSizePx, setComposerFontSizePx] = useState<number>(() => DEFAULT_COMPOSER_FONT_SIZE_PX);
   const [composerMinimized, setComposerMinimized] = useState<boolean>(() => false);
@@ -1123,8 +1138,8 @@ export default function App() {
               uiGlassSaturatePctWebgl: Math.max(100, Math.min(200, uiGlassSaturatePctWebglRef.current)),
               glassNodesUnderlayAlpha: Number.isFinite(glassNodesUnderlayAlphaRef.current)
                 ? Math.max(0, Math.min(1, glassNodesUnderlayAlphaRef.current))
-                : 0.95,
-              glassNodesBlurBackend: glassNodesBlurBackendRef.current === 'canvas' ? 'canvas' : 'webgl',
+                : DEFAULT_GLASS_UNDERLAY_ALPHA,
+              glassNodesBlurBackend: glassNodesBlurBackendRef.current === 'canvas' ? 'canvas' : DEFAULT_GLASS_BLUR_BACKEND,
               composerFontFamily: composerFontFamilyRef.current,
               composerFontSizePx: Math.round(clampNumber(composerFontSizePxRef.current, 10, 30, DEFAULT_COMPOSER_FONT_SIZE_PX)),
               composerMinimized: Boolean(composerMinimizedRef.current),
@@ -1220,17 +1235,29 @@ export default function App() {
     engine.setEdgeRouter(edgeRouterIdRef.current);
     engine.setReplyArrowColor(replyArrowColorRef.current);
     engine.setReplyArrowOpacity(replyArrowOpacityRef.current);
-    const blurBackend = glassNodesBlurBackendRef.current === 'canvas' ? 'canvas' : 'webgl';
+    const blurBackend = glassNodesBlurBackendRef.current === 'canvas' ? 'canvas' : DEFAULT_GLASS_BLUR_BACKEND;
     const blurCssPx =
       blurBackend === 'canvas' ? glassNodesBlurCssPxCanvasRef.current : glassNodesBlurCssPxWebglRef.current;
     const saturatePct =
       blurBackend === 'canvas' ? glassNodesSaturatePctCanvasRef.current : glassNodesSaturatePctWebglRef.current;
     engine.setGlassNodesEnabled(Boolean(glassNodesEnabledRef.current));
     engine.setGlassNodesBlurBackend(blurBackend);
-    engine.setGlassNodesBlurCssPx(Number.isFinite(blurCssPx) ? Math.max(0, Math.min(30, blurCssPx)) : 10);
-    engine.setGlassNodesSaturatePct(Number.isFinite(saturatePct) ? Math.max(100, Math.min(200, saturatePct)) : 140);
+    engine.setGlassNodesBlurCssPx(
+      Number.isFinite(blurCssPx)
+        ? Math.max(0, Math.min(30, blurCssPx))
+        : blurBackend === 'canvas'
+          ? DEFAULT_GLASS_BLUR_CSS_PX_CANVAS
+          : DEFAULT_GLASS_BLUR_CSS_PX_WEBGL,
+    );
+    engine.setGlassNodesSaturatePct(
+      Number.isFinite(saturatePct)
+        ? Math.max(100, Math.min(200, saturatePct))
+        : blurBackend === 'canvas'
+          ? DEFAULT_GLASS_SATURATE_PCT_CANVAS
+          : DEFAULT_GLASS_SATURATE_PCT_WEBGL,
+    );
     engine.setGlassNodesUnderlayAlpha(
-      Number.isFinite(glassNodesUnderlayAlphaRef.current) ? glassNodesUnderlayAlphaRef.current : 0.95,
+      Number.isFinite(glassNodesUnderlayAlphaRef.current) ? glassNodesUnderlayAlphaRef.current : DEFAULT_GLASS_UNDERLAY_ALPHA,
     );
 
     const key = typeof meta.backgroundStorageKey === 'string' ? meta.backgroundStorageKey : null;
@@ -3569,16 +3596,28 @@ export default function App() {
 
     const visual = payload.visual;
     glassNodesEnabledRef.current = Boolean(visual.glassNodesEnabled);
-    glassNodesBlurCssPxWebglRef.current = Number.isFinite(visual.glassNodesBlurCssPxWebgl) ? visual.glassNodesBlurCssPxWebgl : 10;
-    glassNodesSaturatePctWebglRef.current = Number.isFinite(visual.glassNodesSaturatePctWebgl) ? visual.glassNodesSaturatePctWebgl : 140;
-    glassNodesBlurCssPxCanvasRef.current = Number.isFinite(visual.glassNodesBlurCssPxCanvas) ? visual.glassNodesBlurCssPxCanvas : 10;
-    glassNodesSaturatePctCanvasRef.current = Number.isFinite(visual.glassNodesSaturatePctCanvas) ? visual.glassNodesSaturatePctCanvas : 140;
-    uiGlassBlurCssPxWebglRef.current = Number.isFinite(visual.uiGlassBlurCssPxWebgl) ? visual.uiGlassBlurCssPxWebgl : glassNodesBlurCssPxWebglRef.current;
+    glassNodesBlurCssPxWebglRef.current = Number.isFinite(visual.glassNodesBlurCssPxWebgl)
+      ? visual.glassNodesBlurCssPxWebgl
+      : DEFAULT_GLASS_BLUR_CSS_PX_WEBGL;
+    glassNodesSaturatePctWebglRef.current = Number.isFinite(visual.glassNodesSaturatePctWebgl)
+      ? visual.glassNodesSaturatePctWebgl
+      : DEFAULT_GLASS_SATURATE_PCT_WEBGL;
+    glassNodesBlurCssPxCanvasRef.current = Number.isFinite(visual.glassNodesBlurCssPxCanvas)
+      ? visual.glassNodesBlurCssPxCanvas
+      : DEFAULT_GLASS_BLUR_CSS_PX_CANVAS;
+    glassNodesSaturatePctCanvasRef.current = Number.isFinite(visual.glassNodesSaturatePctCanvas)
+      ? visual.glassNodesSaturatePctCanvas
+      : DEFAULT_GLASS_SATURATE_PCT_CANVAS;
+    uiGlassBlurCssPxWebglRef.current = Number.isFinite(visual.uiGlassBlurCssPxWebgl)
+      ? visual.uiGlassBlurCssPxWebgl
+      : DEFAULT_UI_GLASS_BLUR_CSS_PX_WEBGL;
     uiGlassSaturatePctWebglRef.current = Number.isFinite(visual.uiGlassSaturatePctWebgl)
       ? visual.uiGlassSaturatePctWebgl
-      : glassNodesSaturatePctWebglRef.current;
-    glassNodesUnderlayAlphaRef.current = Number.isFinite(visual.glassNodesUnderlayAlpha) ? visual.glassNodesUnderlayAlpha : 0.95;
-    glassNodesBlurBackendRef.current = visual.glassNodesBlurBackend === 'canvas' ? 'canvas' : 'webgl';
+      : DEFAULT_UI_GLASS_SATURATE_PCT_WEBGL;
+    glassNodesUnderlayAlphaRef.current = Number.isFinite(visual.glassNodesUnderlayAlpha)
+      ? visual.glassNodesUnderlayAlpha
+      : DEFAULT_GLASS_UNDERLAY_ALPHA;
+    glassNodesBlurBackendRef.current = visual.glassNodesBlurBackend === 'canvas' ? 'canvas' : DEFAULT_GLASS_BLUR_BACKEND;
     edgeRouterIdRef.current = visual.edgeRouterId;
     replyArrowColorRef.current = visual.replyArrowColor;
     replyArrowOpacityRef.current = visual.replyArrowOpacity;
@@ -3630,15 +3669,27 @@ export default function App() {
 
     const engine = engineRef.current;
     if (engine) {
-      const blurBackend = glassNodesBlurBackendRef.current === 'canvas' ? 'canvas' : 'webgl';
+      const blurBackend = glassNodesBlurBackendRef.current === 'canvas' ? 'canvas' : DEFAULT_GLASS_BLUR_BACKEND;
       const blurCssPx =
         blurBackend === 'canvas' ? glassNodesBlurCssPxCanvasRef.current : glassNodesBlurCssPxWebglRef.current;
       const saturatePct =
         blurBackend === 'canvas' ? glassNodesSaturatePctCanvasRef.current : glassNodesSaturatePctWebglRef.current;
       engine.setGlassNodesEnabled(glassNodesEnabledRef.current);
       engine.setGlassNodesBlurBackend(blurBackend);
-      engine.setGlassNodesBlurCssPx(Number.isFinite(blurCssPx) ? Math.max(0, Math.min(30, blurCssPx)) : 10);
-      engine.setGlassNodesSaturatePct(Number.isFinite(saturatePct) ? Math.max(100, Math.min(200, saturatePct)) : 140);
+      engine.setGlassNodesBlurCssPx(
+        Number.isFinite(blurCssPx)
+          ? Math.max(0, Math.min(30, blurCssPx))
+          : blurBackend === 'canvas'
+            ? DEFAULT_GLASS_BLUR_CSS_PX_CANVAS
+            : DEFAULT_GLASS_BLUR_CSS_PX_WEBGL,
+      );
+      engine.setGlassNodesSaturatePct(
+        Number.isFinite(saturatePct)
+          ? Math.max(100, Math.min(200, saturatePct))
+          : blurBackend === 'canvas'
+            ? DEFAULT_GLASS_SATURATE_PCT_CANVAS
+            : DEFAULT_GLASS_SATURATE_PCT_WEBGL,
+      );
       engine.setGlassNodesUnderlayAlpha(glassNodesUnderlayAlphaRef.current);
       engine.setEdgeRouter(edgeRouterIdRef.current);
       engine.setReplyArrowColor(replyArrowColorRef.current);
@@ -3748,13 +3799,13 @@ export default function App() {
               glassNodesEnabled: Boolean(raw?.glassNodesEnabled),
               glassNodesBlurCssPx: Number.isFinite(Number(raw?.glassNodesBlurCssPx))
                 ? Math.max(0, Math.min(30, Number(raw.glassNodesBlurCssPx)))
-                : 10,
+                : DEFAULT_GLASS_BLUR_CSS_PX_WEBGL,
               glassNodesSaturatePct: Number.isFinite(Number(raw?.glassNodesSaturatePct))
                 ? Math.max(100, Math.min(200, Number(raw.glassNodesSaturatePct)))
-                : 140,
+                : DEFAULT_GLASS_SATURATE_PCT_WEBGL,
               glassNodesUnderlayAlpha: Number.isFinite(Number(raw?.glassNodesUnderlayAlpha))
                 ? Math.max(0, Math.min(1, Number(raw.glassNodesUnderlayAlpha)))
-                : 0.95,
+                : DEFAULT_GLASS_UNDERLAY_ALPHA,
             };
           }
 
@@ -3846,15 +3897,20 @@ export default function App() {
           : legacyVisualFromActive && typeof legacyVisualFromActive === 'object'
             ? legacyVisualFromActive
             : null;
-      const glassNodesBlurBackend: GlassBlurBackend = visualSrc?.glassNodesBlurBackend === 'canvas' ? 'canvas' : 'webgl';
+      const glassNodesBlurBackend: GlassBlurBackend =
+        visualSrc?.glassNodesBlurBackend === 'canvas' ? 'canvas' : DEFAULT_GLASS_BLUR_BACKEND;
       const legacyBlurCssPxRaw = Number((visualSrc as any)?.glassNodesBlurCssPx);
       const legacySaturatePctRaw = Number((visualSrc as any)?.glassNodesSaturatePct);
       const fallbackBlurCssPx = Number.isFinite(legacyBlurCssPxRaw)
         ? Math.max(0, Math.min(30, legacyBlurCssPxRaw))
-        : 10;
+        : glassNodesBlurBackend === 'canvas'
+          ? DEFAULT_GLASS_BLUR_CSS_PX_CANVAS
+          : DEFAULT_GLASS_BLUR_CSS_PX_WEBGL;
       const fallbackSaturatePct = Number.isFinite(legacySaturatePctRaw)
         ? Math.max(100, Math.min(200, legacySaturatePctRaw))
-        : 140;
+        : glassNodesBlurBackend === 'canvas'
+          ? DEFAULT_GLASS_SATURATE_PCT_CANVAS
+          : DEFAULT_GLASS_SATURATE_PCT_WEBGL;
       const blurCssPxWebglRaw = Number((visualSrc as any)?.glassNodesBlurCssPxWebgl);
       const blurCssPxCanvasRaw = Number((visualSrc as any)?.glassNodesBlurCssPxCanvas);
       const saturatePctWebglRaw = Number((visualSrc as any)?.glassNodesSaturatePctWebgl);
@@ -3875,12 +3931,15 @@ export default function App() {
       const uiSaturatePctWebglRaw = Number((visualSrc as any)?.uiGlassSaturatePctWebgl);
       const uiGlassBlurCssPxWebgl = Number.isFinite(uiBlurCssPxWebglRaw)
         ? Math.max(0, Math.min(30, uiBlurCssPxWebglRaw))
-        : glassNodesBlurCssPxWebgl;
+        : DEFAULT_UI_GLASS_BLUR_CSS_PX_WEBGL;
       const uiGlassSaturatePctWebgl = Number.isFinite(uiSaturatePctWebglRaw)
         ? Math.max(100, Math.min(200, uiSaturatePctWebglRaw))
-        : glassNodesSaturatePctWebgl;
+        : DEFAULT_UI_GLASS_SATURATE_PCT_WEBGL;
       const visual = {
-        glassNodesEnabled: Boolean(visualSrc?.glassNodesEnabled),
+        glassNodesEnabled:
+          typeof (visualSrc as any)?.glassNodesEnabled === 'boolean'
+            ? Boolean((visualSrc as any).glassNodesEnabled)
+            : DEFAULT_GLASS_NODES_ENABLED,
         edgeRouterId: normalizeEdgeRouterId((visualSrc as any)?.edgeRouterId),
         replyArrowColor: normalizeHexColor((visualSrc as any)?.replyArrowColor, DEFAULT_REPLY_ARROW_COLOR),
         replyArrowOpacity: clampNumber((visualSrc as any)?.replyArrowOpacity, 0, 1, DEFAULT_REPLY_ARROW_OPACITY),
@@ -3893,7 +3952,7 @@ export default function App() {
         uiGlassSaturatePctWebgl,
         glassNodesUnderlayAlpha: Number.isFinite(Number(visualSrc?.glassNodesUnderlayAlpha))
           ? Math.max(0, Math.min(1, Number(visualSrc.glassNodesUnderlayAlpha)))
-          : 0.95,
+          : DEFAULT_GLASS_UNDERLAY_ALPHA,
         glassNodesBlurBackend,
         composerFontFamily: normalizeFontFamilyKey(
           (visualSrc as any)?.composerFontFamily,
@@ -3918,15 +3977,23 @@ export default function App() {
           24,
           DEFAULT_SIDEBAR_FONT_SIZE_PX,
         ),
-        spawnEditNodeByDraw: Boolean((visualSrc as any)?.spawnEditNodeByDraw),
-        spawnInkNodeByDraw: Boolean((visualSrc as any)?.spawnInkNodeByDraw),
+        spawnEditNodeByDraw:
+          typeof (visualSrc as any)?.spawnEditNodeByDraw === 'boolean'
+            ? Boolean((visualSrc as any).spawnEditNodeByDraw)
+            : DEFAULT_SPAWN_EDIT_NODE_BY_DRAW,
+        spawnInkNodeByDraw:
+          typeof (visualSrc as any)?.spawnInkNodeByDraw === 'boolean'
+            ? Boolean((visualSrc as any).spawnInkNodeByDraw)
+            : DEFAULT_SPAWN_INK_NODE_BY_DRAW,
         inkSendCropEnabled:
-          typeof (visualSrc as any)?.inkSendCropEnabled === 'boolean' ? Boolean((visualSrc as any).inkSendCropEnabled) : true,
+          typeof (visualSrc as any)?.inkSendCropEnabled === 'boolean'
+            ? Boolean((visualSrc as any).inkSendCropEnabled)
+            : DEFAULT_INK_SEND_CROP_ENABLED,
         inkSendCropPaddingPx: clampNumber((visualSrc as any)?.inkSendCropPaddingPx, 0, 200, 24),
         inkSendDownscaleEnabled:
           typeof (visualSrc as any)?.inkSendDownscaleEnabled === 'boolean'
             ? Boolean((visualSrc as any).inkSendDownscaleEnabled)
-            : true,
+            : DEFAULT_INK_SEND_DOWNSCALE_ENABLED,
         inkSendMaxPixels: clampNumber((visualSrc as any)?.inkSendMaxPixels, 100_000, 40_000_000, 6_000_000),
         inkSendMaxDimPx: clampNumber((visualSrc as any)?.inkSendMaxDimPx, 256, 8192, 4096),
       };
@@ -6269,7 +6336,7 @@ export default function App() {
           }}
           glassBlurBackend={glassNodesBlurBackend}
           onChangeGlassBlurBackend={(next) => {
-            const value: GlassBlurBackend = next === 'canvas' ? 'canvas' : 'webgl';
+            const value: GlassBlurBackend = next === 'canvas' ? 'canvas' : DEFAULT_GLASS_BLUR_BACKEND;
             glassNodesBlurBackendRef.current = value;
             setGlassNodesBlurBackend(value);
             const blurCssPx =
@@ -6278,15 +6345,29 @@ export default function App() {
               value === 'canvas' ? glassNodesSaturatePctCanvasRef.current : glassNodesSaturatePctWebglRef.current;
             const engine = engineRef.current;
             engine?.setGlassNodesBlurBackend(value);
-            engine?.setGlassNodesBlurCssPx(Number.isFinite(blurCssPx) ? Math.max(0, Math.min(30, blurCssPx)) : 10);
+            engine?.setGlassNodesBlurCssPx(
+              Number.isFinite(blurCssPx)
+                ? Math.max(0, Math.min(30, blurCssPx))
+                : value === 'canvas'
+                  ? DEFAULT_GLASS_BLUR_CSS_PX_CANVAS
+                  : DEFAULT_GLASS_BLUR_CSS_PX_WEBGL,
+            );
             engine?.setGlassNodesSaturatePct(
-              Number.isFinite(saturatePct) ? Math.max(100, Math.min(200, saturatePct)) : 140,
+              Number.isFinite(saturatePct)
+                ? Math.max(100, Math.min(200, saturatePct))
+                : value === 'canvas'
+                  ? DEFAULT_GLASS_SATURATE_PCT_CANVAS
+                  : DEFAULT_GLASS_SATURATE_PCT_WEBGL,
             );
             schedulePersistSoon();
           }}
           glassBlurPx={glassNodesBlurBackend === 'canvas' ? glassNodesBlurCssPxCanvas : glassNodesBlurCssPxWebgl}
           onChangeGlassBlurPx={(raw) => {
-            const next = Number.isFinite(raw) ? Math.max(0, Math.min(30, raw)) : 0;
+            const next = Number.isFinite(raw)
+              ? Math.max(0, Math.min(30, raw))
+              : glassNodesBlurBackendRef.current === 'canvas'
+                ? DEFAULT_GLASS_BLUR_CSS_PX_CANVAS
+                : DEFAULT_GLASS_BLUR_CSS_PX_WEBGL;
             if (glassNodesBlurBackendRef.current === 'canvas') {
               glassNodesBlurCssPxCanvasRef.current = next;
               setGlassNodesBlurCssPxCanvas(next);
@@ -6299,7 +6380,11 @@ export default function App() {
           }}
           glassSaturationPct={glassNodesBlurBackend === 'canvas' ? glassNodesSaturatePctCanvas : glassNodesSaturatePctWebgl}
           onChangeGlassSaturationPct={(raw) => {
-            const next = Number.isFinite(raw) ? Math.max(100, Math.min(200, raw)) : 140;
+            const next = Number.isFinite(raw)
+              ? Math.max(100, Math.min(200, raw))
+              : glassNodesBlurBackendRef.current === 'canvas'
+                ? DEFAULT_GLASS_SATURATE_PCT_CANVAS
+                : DEFAULT_GLASS_SATURATE_PCT_WEBGL;
             if (glassNodesBlurBackendRef.current === 'canvas') {
               glassNodesSaturatePctCanvasRef.current = next;
               setGlassNodesSaturatePctCanvas(next);
@@ -6312,21 +6397,21 @@ export default function App() {
           }}
           uiGlassBlurPxWebgl={uiGlassBlurCssPxWebgl}
           onChangeUiGlassBlurPxWebgl={(raw) => {
-            const next = Number.isFinite(raw) ? Math.max(0, Math.min(30, raw)) : 10;
+            const next = Number.isFinite(raw) ? Math.max(0, Math.min(30, raw)) : DEFAULT_UI_GLASS_BLUR_CSS_PX_WEBGL;
             uiGlassBlurCssPxWebglRef.current = next;
             setUiGlassBlurCssPxWebgl(next);
             schedulePersistSoon();
           }}
           uiGlassSaturationPctWebgl={uiGlassSaturatePctWebgl}
           onChangeUiGlassSaturationPctWebgl={(raw) => {
-            const next = Number.isFinite(raw) ? Math.max(100, Math.min(200, raw)) : 140;
+            const next = Number.isFinite(raw) ? Math.max(100, Math.min(200, raw)) : DEFAULT_UI_GLASS_SATURATE_PCT_WEBGL;
             uiGlassSaturatePctWebglRef.current = next;
             setUiGlassSaturatePctWebgl(next);
             schedulePersistSoon();
           }}
           glassOpacityPct={glassNodesUnderlayAlpha * 100}
           onChangeGlassOpacityPct={(raw) => {
-            const pct = Number.isFinite(raw) ? Math.max(0, Math.min(100, raw)) : 0;
+            const pct = Number.isFinite(raw) ? Math.max(0, Math.min(100, raw)) : DEFAULT_GLASS_UNDERLAY_ALPHA * 100;
             const next = pct / 100;
             glassNodesUnderlayAlphaRef.current = next;
             setGlassNodesUnderlayAlpha(next);
@@ -6483,29 +6568,45 @@ export default function App() {
             setBackgroundStorageKey(null);
             setComposerModelId(DEFAULT_MODEL_ID);
             setComposerWebSearch(true);
-            setDebugHudVisible(true);
+            setDebugHudVisible(DEFAULT_DEBUG_HUD_VISIBLE);
+            allowEditingAllTextNodesRef.current = DEFAULT_ALLOW_EDITING_ALL_TEXT_NODES;
+            setAllowEditingAllTextNodes(DEFAULT_ALLOW_EDITING_ALL_TEXT_NODES);
+            spawnEditNodeByDrawRef.current = DEFAULT_SPAWN_EDIT_NODE_BY_DRAW;
+            setSpawnEditNodeByDraw(DEFAULT_SPAWN_EDIT_NODE_BY_DRAW);
+            spawnInkNodeByDrawRef.current = DEFAULT_SPAWN_INK_NODE_BY_DRAW;
+            setSpawnInkNodeByDraw(DEFAULT_SPAWN_INK_NODE_BY_DRAW);
+            inkSendCropEnabledRef.current = DEFAULT_INK_SEND_CROP_ENABLED;
+            setInkSendCropEnabled(DEFAULT_INK_SEND_CROP_ENABLED);
+            inkSendCropPaddingPxRef.current = 24;
+            setInkSendCropPaddingPx(24);
+            inkSendDownscaleEnabledRef.current = DEFAULT_INK_SEND_DOWNSCALE_ENABLED;
+            setInkSendDownscaleEnabled(DEFAULT_INK_SEND_DOWNSCALE_ENABLED);
+            inkSendMaxPixelsRef.current = 6_000_000;
+            setInkSendMaxPixels(6_000_000);
+            inkSendMaxDimPxRef.current = 4096;
+            setInkSendMaxDimPx(4096);
             const nextModelUserSettings = buildModelUserSettings(allModels, null);
             setModelUserSettings(nextModelUserSettings);
             modelUserSettingsRef.current = nextModelUserSettings;
 
-            glassNodesEnabledRef.current = false;
-            glassNodesBlurCssPxWebglRef.current = 10;
-            glassNodesSaturatePctWebglRef.current = 140;
-            glassNodesBlurCssPxCanvasRef.current = 10;
-            glassNodesSaturatePctCanvasRef.current = 140;
-            uiGlassBlurCssPxWebglRef.current = 10;
-            uiGlassSaturatePctWebglRef.current = 140;
-            glassNodesUnderlayAlphaRef.current = 0.95;
-            glassNodesBlurBackendRef.current = 'webgl';
-            setGlassNodesEnabled(false);
-            setGlassNodesBlurCssPxWebgl(10);
-            setGlassNodesSaturatePctWebgl(140);
-            setGlassNodesBlurCssPxCanvas(10);
-            setGlassNodesSaturatePctCanvas(140);
-            setGlassNodesUnderlayAlpha(0.95);
-            setGlassNodesBlurBackend('webgl');
-            setUiGlassBlurCssPxWebgl(10);
-            setUiGlassSaturatePctWebgl(140);
+            glassNodesEnabledRef.current = DEFAULT_GLASS_NODES_ENABLED;
+            glassNodesBlurCssPxWebglRef.current = DEFAULT_GLASS_BLUR_CSS_PX_WEBGL;
+            glassNodesSaturatePctWebglRef.current = DEFAULT_GLASS_SATURATE_PCT_WEBGL;
+            glassNodesBlurCssPxCanvasRef.current = DEFAULT_GLASS_BLUR_CSS_PX_CANVAS;
+            glassNodesSaturatePctCanvasRef.current = DEFAULT_GLASS_SATURATE_PCT_CANVAS;
+            uiGlassBlurCssPxWebglRef.current = DEFAULT_UI_GLASS_BLUR_CSS_PX_WEBGL;
+            uiGlassSaturatePctWebglRef.current = DEFAULT_UI_GLASS_SATURATE_PCT_WEBGL;
+            glassNodesUnderlayAlphaRef.current = DEFAULT_GLASS_UNDERLAY_ALPHA;
+            glassNodesBlurBackendRef.current = DEFAULT_GLASS_BLUR_BACKEND;
+            setGlassNodesEnabled(DEFAULT_GLASS_NODES_ENABLED);
+            setGlassNodesBlurCssPxWebgl(DEFAULT_GLASS_BLUR_CSS_PX_WEBGL);
+            setGlassNodesSaturatePctWebgl(DEFAULT_GLASS_SATURATE_PCT_WEBGL);
+            setGlassNodesBlurCssPxCanvas(DEFAULT_GLASS_BLUR_CSS_PX_CANVAS);
+            setGlassNodesSaturatePctCanvas(DEFAULT_GLASS_SATURATE_PCT_CANVAS);
+            setGlassNodesUnderlayAlpha(DEFAULT_GLASS_UNDERLAY_ALPHA);
+            setGlassNodesBlurBackend(DEFAULT_GLASS_BLUR_BACKEND);
+            setUiGlassBlurCssPxWebgl(DEFAULT_UI_GLASS_BLUR_CSS_PX_WEBGL);
+            setUiGlassSaturatePctWebgl(DEFAULT_UI_GLASS_SATURATE_PCT_WEBGL);
 
             edgeRouterIdRef.current = DEFAULT_EDGE_ROUTER_ID;
             setEdgeRouterId(DEFAULT_EDGE_ROUTER_ID);
@@ -6545,14 +6646,17 @@ export default function App() {
               engine.setTool('select');
               engine.loadChatState(state);
               engine.clearBackground();
-              engine.setGlassNodesEnabled(false);
-              engine.setGlassNodesBlurCssPx(10);
-              engine.setGlassNodesSaturatePct(140);
-              engine.setGlassNodesUnderlayAlpha(0.95);
-              engine.setGlassNodesBlurBackend('webgl');
+              engine.setGlassNodesEnabled(DEFAULT_GLASS_NODES_ENABLED);
+              engine.setGlassNodesBlurCssPx(DEFAULT_GLASS_BLUR_CSS_PX_WEBGL);
+              engine.setGlassNodesSaturatePct(DEFAULT_GLASS_SATURATE_PCT_WEBGL);
+              engine.setGlassNodesUnderlayAlpha(DEFAULT_GLASS_UNDERLAY_ALPHA);
+              engine.setGlassNodesBlurBackend(DEFAULT_GLASS_BLUR_BACKEND);
               engine.setEdgeRouter(DEFAULT_EDGE_ROUTER_ID);
               engine.setReplyArrowColor(DEFAULT_REPLY_ARROW_COLOR);
               engine.setReplyArrowOpacity(DEFAULT_REPLY_ARROW_OPACITY);
+              engine.setAllowEditingAllTextNodes(DEFAULT_ALLOW_EDITING_ALL_TEXT_NODES);
+              engine.setSpawnEditNodeByDrawEnabled(DEFAULT_SPAWN_EDIT_NODE_BY_DRAW);
+              engine.setSpawnInkNodeByDrawEnabled(DEFAULT_SPAWN_INK_NODE_BY_DRAW);
               engine.setNodeTextFontFamily(fontFamilyCss(DEFAULT_NODE_FONT_FAMILY));
               engine.setNodeTextFontSizePx(DEFAULT_NODE_FONT_SIZE_PX);
               setUi(engine.getUiState());

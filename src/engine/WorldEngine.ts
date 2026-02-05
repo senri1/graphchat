@@ -619,14 +619,14 @@ export class WorldEngine {
   private cssH = 1;
   private dpr = 1;
 
-  private glassNodesEnabled = false;
-  private glassBlurCssPx = 10;
-  private glassSaturatePct = 140;
-  private glassUnderlayAlpha = 0.95;
+  private glassNodesEnabled = true;
+  private glassBlurCssPx = 23;
+  private glassSaturatePct = 180;
+  private glassUnderlayAlpha = 1;
   private glassBlurBackend: GlassBlurBackend = 'webgl';
   private edgeRouterId: EdgeRouterId = DEFAULT_EDGE_ROUTER_ID;
-  private replyArrowColor = '#93c5fd';
-  private replyArrowOpacity = 1;
+  private replyArrowColor = '#f5f5f5';
+  private replyArrowOpacity = 0.7;
   private webglPreblur: WebGLPreblur | null = null;
   private webglPreblurDisabled = false;
 
