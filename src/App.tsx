@@ -43,10 +43,12 @@ import {
   streamOpenAIResponseById,
 } from './services/openaiService';
 import { getGeminiApiKey, sendGeminiResponse } from './services/geminiService';
+import { getXaiApiKey, sendXaiResponse } from './services/xaiService';
 import type { ChatAttachment, ChatNode, InkStroke, ThinkingSummaryChunk } from './model/chat';
 import { normalizeBackgroundLibrary, type BackgroundLibraryItem } from './model/backgrounds';
 import { buildOpenAIResponseRequest, type OpenAIChatSettings } from './llm/openai';
 import { buildGeminiContext, type GeminiChatSettings } from './llm/gemini';
+import { buildXaiResponseRequest, type XaiChatSettings } from './llm/xai';
 import { DEFAULT_MODEL_ID, getModelInfo, listModels } from './llm/registry';
 import { extractCanonicalMessage, extractCanonicalMeta } from './llm/openaiCanonical';
 import { buildModelUserSettings, normalizeModelUserSettings, type ModelUserSettingsById } from './llm/modelUserSettings';
@@ -1999,6 +2001,149 @@ export default function App() {
       }
     })();
 	  };
+
+  const startXaiGeneration = (args: {
+    chatId: string;
+    userNodeId: string;
+    assistantNodeId: string;
+    settings: XaiChatSettings;
+    nodesOverride?: ChatNode[];
+  }) => {
+    const chatId = args.chatId;
+    if (!chatId) return;
+    if (generationJobsByAssistantIdRef.current.has(args.assistantNodeId)) return;
+
+    const apiKey = getXaiApiKey();
+    if (!apiKey) {
+      const msg = 'xAI API key missing. Set XAI_API_KEY in graphchatv1/.env.local';
+      updateStoredTextNode(chatId, args.assistantNodeId, { content: msg, isGenerating: false, llmError: msg });
+      if (activeChatIdRef.current === chatId) {
+        engineRef.current?.setTextNodeContent(args.assistantNodeId, msg, { streaming: false });
+        engineRef.current?.setTextNodeLlmState(args.assistantNodeId, {
+          isGenerating: false,
+          modelId: args.settings.modelId,
+          llmError: msg,
+        });
+      }
+      return;
+    }
+
+    const state = chatStatesRef.current.get(chatId);
+    const settings = args.settings;
+    const llmParams = { webSearchEnabled: settings.webSearchEnabled };
+
+    const job: GenerationJob = {
+      chatId,
+      userNodeId: args.userNodeId,
+      assistantNodeId: args.assistantNodeId,
+      modelId: settings.modelId,
+      llmParams,
+      startedAt: Date.now(),
+      abortController: new AbortController(),
+      background: false,
+      taskId: null,
+      lastEventSeq: null,
+      fullText: '',
+      thinkingSummary: [],
+      lastFlushedText: '',
+      lastFlushAt: 0,
+      flushTimer: null,
+      closed: false,
+    };
+
+    generationJobsByAssistantIdRef.current.set(job.assistantNodeId, job);
+    updateStoredTextNode(chatId, job.assistantNodeId, {
+      isGenerating: true,
+      modelId: job.modelId,
+      llmParams: job.llmParams,
+      llmError: null,
+    });
+    if (activeChatIdRef.current === chatId) {
+      engineRef.current?.setTextNodeLlmState(job.assistantNodeId, {
+        isGenerating: true,
+        modelId: job.modelId,
+        llmParams: job.llmParams,
+        llmError: null,
+      });
+    }
+
+    void (async () => {
+      let request: Record<string, unknown>;
+      try {
+        request = await buildXaiResponseRequest({
+          nodes: args.nodesOverride ?? state?.nodes ?? [],
+          leafUserNodeId: args.userNodeId,
+          settings,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        finishJob(job.assistantNodeId, { finalText: job.fullText, error: msg });
+        return;
+      }
+      if (job.closed || job.abortController.signal.aborted) return;
+
+      const storedRequest = cloneRawPayloadForDisplay(request);
+      updateStoredTextNode(chatId, job.userNodeId, { apiRequest: storedRequest });
+      if (activeChatIdRef.current === chatId) {
+        engineRef.current?.setTextNodeApiPayload(job.userNodeId, { apiRequest: storedRequest });
+      }
+      try {
+        const key = `${chatId}/${job.userNodeId}/req`;
+        await putPayload({ key, json: request });
+        updateStoredTextNode(chatId, job.userNodeId, { apiRequestKey: key });
+      } catch {
+        // ignore
+      }
+      schedulePersistSoon();
+
+      const res = await sendXaiResponse({ apiKey, request, signal: job.abortController.signal });
+      if (job.closed || job.abortController.signal.aborted) return;
+      if (!generationJobsByAssistantIdRef.current.has(job.assistantNodeId)) return;
+
+      const usedWebSearch =
+        Array.isArray((request as any)?.tools) && (request as any).tools.some((tool: any) => tool && tool.type === 'web_search');
+      const canonicalMeta = extractCanonicalMeta(res.response, { usedWebSearch });
+      const canonicalMessage = extractCanonicalMessage(
+        res.response,
+        typeof res.text === 'string' ? res.text : job.fullText,
+      );
+      const finalText = (typeof res.text === 'string' ? res.text : '') || canonicalMessage?.text || job.fullText || '';
+      const storedResponse = res.response !== undefined ? cloneRawPayloadForDisplay(res.response) : undefined;
+
+      let responseKey: string | undefined = undefined;
+      if (res.response !== undefined) {
+        try {
+          const key = `${chatId}/${job.assistantNodeId}/res`;
+          await putPayload({ key, json: res.response });
+          responseKey = key;
+        } catch {
+          // ignore
+        }
+      }
+
+      if (res.ok) {
+        finishJob(job.assistantNodeId, {
+          finalText,
+          error: null,
+          apiResponse: storedResponse,
+          apiResponseKey: responseKey,
+          canonicalMessage,
+          canonicalMeta,
+        });
+      } else {
+        const error = res.cancelled ? 'Canceled' : res.error;
+        finishJob(job.assistantNodeId, {
+          finalText,
+          error,
+          cancelled: res.cancelled,
+          apiResponse: storedResponse,
+          apiResponseKey: responseKey,
+          canonicalMessage,
+          canonicalMeta,
+        });
+      }
+    })();
+  };
 
   const startGeminiGeneration = (args: {
     chatId: string;
@@ -4016,6 +4161,24 @@ export default function App() {
         assistantNodeId: res.assistantNodeId,
         settings,
       });
+    } else if (provider === 'xai') {
+      const settings: XaiChatSettings = {
+        modelId: selectedModelId,
+        webSearchEnabled: composerWebSearch,
+        inkExport: {
+          cropEnabled: inkSendCropEnabledRef.current,
+          cropPaddingPx: inkSendCropPaddingPxRef.current,
+          downscaleEnabled: inkSendDownscaleEnabledRef.current,
+          maxPixels: inkSendMaxPixelsRef.current,
+          maxDimPx: inkSendMaxDimPxRef.current,
+        },
+      };
+      startXaiGeneration({
+        chatId,
+        userNodeId: res.userNodeId,
+        assistantNodeId: res.assistantNodeId,
+        settings,
+      });
     } else {
       const modelSettings = modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
       const settings: OpenAIChatSettings = {
@@ -4231,6 +4394,24 @@ export default function App() {
         assistantNodeId: res.assistantNodeId,
         settings,
       });
+    } else if (provider === 'xai') {
+      const settings: XaiChatSettings = {
+        modelId: selectedModelId,
+        webSearchEnabled: composerWebSearch,
+        inkExport: {
+          cropEnabled: inkSendCropEnabledRef.current,
+          cropPaddingPx: inkSendCropPaddingPxRef.current,
+          downscaleEnabled: inkSendDownscaleEnabledRef.current,
+          maxPixels: inkSendMaxPixelsRef.current,
+          maxDimPx: inkSendMaxDimPxRef.current,
+        },
+      };
+      startXaiGeneration({
+        chatId,
+        userNodeId: res.userNodeId,
+        assistantNodeId: res.assistantNodeId,
+        settings,
+      });
     } else {
       const modelSettings = modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
       const settings: OpenAIChatSettings = {
@@ -4382,6 +4563,24 @@ export default function App() {
           },
         };
         startGeminiGeneration({
+          chatId,
+          userNodeId,
+          assistantNodeId: res.assistantNodeId,
+          settings,
+        });
+      } else if (provider === 'xai') {
+        const settings: XaiChatSettings = {
+          modelId: selectedModelId,
+          webSearchEnabled: composerWebSearch,
+          inkExport: {
+            cropEnabled: inkSendCropEnabledRef.current,
+            cropPaddingPx: inkSendCropPaddingPxRef.current,
+            downscaleEnabled: inkSendDownscaleEnabledRef.current,
+            maxPixels: inkSendMaxPixelsRef.current,
+            maxDimPx: inkSendMaxDimPxRef.current,
+          },
+        };
+        startXaiGeneration({
           chatId,
           userNodeId,
           assistantNodeId: res.assistantNodeId,
@@ -4541,6 +4740,25 @@ export default function App() {
         },
       };
       startGeminiGeneration({
+        chatId,
+        userNodeId,
+        assistantNodeId: res.assistantNodeId,
+        settings,
+        nodesOverride,
+      });
+    } else if (provider === 'xai') {
+      const settings: XaiChatSettings = {
+        modelId: selectedModelId,
+        webSearchEnabled: composerWebSearch,
+        inkExport: {
+          cropEnabled: inkSendCropEnabledRef.current,
+          cropPaddingPx: inkSendCropPaddingPxRef.current,
+          downscaleEnabled: inkSendDownscaleEnabledRef.current,
+          maxPixels: inkSendMaxPixelsRef.current,
+          maxDimPx: inkSendMaxDimPxRef.current,
+        },
+      };
+      startXaiGeneration({
         chatId,
         userNodeId,
         assistantNodeId: res.assistantNodeId,

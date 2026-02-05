@@ -1,4 +1,4 @@
-export type ProviderId = 'openai' | 'gemini';
+export type ProviderId = 'openai' | 'gemini' | 'xai';
 
 export type TextVerbosity = 'low' | 'medium' | 'high';
 
@@ -26,6 +26,36 @@ export interface ModelInfo {
 }
 
 const REGISTRY: ModelInfo[] = [
+  {
+    id: 'grok-4',
+    provider: 'xai',
+    apiModel: 'grok-4',
+    label: 'xAI - Grok 4',
+    shortLabel: 'Grok 4',
+    supportsImageInput: true,
+    parameters: { webSearch: true, streaming: false, background: false },
+    defaults: { webSearch: true, streaming: false, background: false },
+  },
+  {
+    id: 'grok-4-fast',
+    provider: 'xai',
+    apiModel: 'grok-4-fast',
+    label: 'xAI - Grok 4 Fast',
+    shortLabel: 'Grok 4 Fast',
+    supportsImageInput: true,
+    parameters: { webSearch: true, streaming: false, background: false },
+    defaults: { webSearch: true, streaming: false, background: false },
+  },
+  {
+    id: 'grok-4-1-fast',
+    provider: 'xai',
+    apiModel: 'grok-4-1-fast',
+    label: 'xAI - Grok 4.1 Fast',
+    shortLabel: 'Grok 4.1 Fast',
+    supportsImageInput: true,
+    parameters: { webSearch: true, streaming: false, background: false },
+    defaults: { webSearch: true, streaming: false, background: false },
+  },
   {
     id: 'gpt-5.2-xhigh',
     provider: 'openai',

@@ -136,7 +136,7 @@ export default function SettingsModal(props: Props) {
       list.push(m);
       byProvider.set(key, list);
     }
-    const labelFor = (p: string) => (p === 'openai' ? 'OpenAI' : p === 'gemini' ? 'Gemini' : p);
+    const labelFor = (p: string) => (p === 'openai' ? 'OpenAI' : p === 'gemini' ? 'Gemini' : p === 'xai' ? 'xAI' : p);
     return Array.from(byProvider.entries())
       .map(([providerId, models]) => ({
         providerId,
