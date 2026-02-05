@@ -128,8 +128,8 @@ const REGISTRY: ModelInfo[] = [
     label: 'Gemini - 3 Pro (High)',
     shortLabel: 'Gemini 3 Pro High',
     supportsImageInput: true,
-    parameters: { webSearch: true, streaming: false, background: false },
-    defaults: { webSearch: true, streaming: false, background: false },
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
     thinkingLevel: 'high',
   },
   {
@@ -139,8 +139,8 @@ const REGISTRY: ModelInfo[] = [
     label: 'Gemini - 3 Pro (Low)',
     shortLabel: 'Gemini 3 Pro Low',
     supportsImageInput: true,
-    parameters: { webSearch: true, streaming: false, background: false },
-    defaults: { webSearch: true, streaming: false, background: false },
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
     thinkingLevel: 'low',
   },
   {
@@ -150,8 +150,8 @@ const REGISTRY: ModelInfo[] = [
     label: 'Gemini - 3 Pro (High)',
     shortLabel: 'Gemini 3 Flash High',
     supportsImageInput: true,
-    parameters: { webSearch: true, streaming: false, background: false },
-    defaults: { webSearch: true, streaming: false, background: false },
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
     thinkingLevel: 'high',
   },
   {
@@ -161,8 +161,8 @@ const REGISTRY: ModelInfo[] = [
     label: 'Gemini - 3 Flash (Medium)',
     shortLabel: 'Gemini 3 Flash Medium',
     supportsImageInput: true,
-    parameters: { webSearch: true, streaming: false, background: false },
-    defaults: { webSearch: true, streaming: false, background: false },
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
     thinkingLevel: 'medium',
   },
   {
@@ -172,8 +172,8 @@ const REGISTRY: ModelInfo[] = [
     label: 'Gemini - 3 Flash (Low)',
     shortLabel: 'Gemini 3 Flash Low',
     supportsImageInput: true,
-    parameters: { webSearch: true, streaming: false, background: false },
-    defaults: { webSearch: true, streaming: false, background: false },
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
     thinkingLevel: 'low',
   },
   {
@@ -183,8 +183,8 @@ const REGISTRY: ModelInfo[] = [
     label: 'Gemini - 3 Flash (Minimal)',
     shortLabel: 'Gemini 3 Flash Minimal',
     supportsImageInput: true,
-    parameters: { webSearch: true, streaming: false, background: false },
-    defaults: { webSearch: true, streaming: false, background: false },
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
     thinkingLevel: 'minimal',
   },
   {
@@ -194,8 +194,8 @@ const REGISTRY: ModelInfo[] = [
     label: 'Gemini - 2.5 Pro',
     shortLabel: 'Gemini 2.5 Pro',
     supportsImageInput: true,
-    parameters: { webSearch: true, streaming: false, background: false },
-    defaults: { webSearch: true, streaming: false, background: false },
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
   },
   {
     id: 'gemini-2.5-flash',
@@ -204,8 +204,8 @@ const REGISTRY: ModelInfo[] = [
     label: 'Gemini - 2.5 Flash',
     shortLabel: 'Gemini 2.5 Flash',
     supportsImageInput: true,
-    parameters: { webSearch: true, streaming: false, background: false },
-    defaults: { webSearch: true, streaming: false, background: false },
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
   },
 ];
 

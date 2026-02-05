@@ -24,6 +24,7 @@ export type BuiltGeminiContext = {
 export type GeminiChatSettings = {
   modelId: string;
   webSearchEnabled?: boolean;
+  stream?: boolean;
   inkExport?: InkExportOptions;
 };
 
