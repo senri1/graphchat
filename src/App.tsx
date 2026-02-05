@@ -4199,6 +4199,7 @@ export default function App() {
         modelId: selectedModelId,
         webSearchEnabled: composerWebSearch,
         stream: modelSettings?.streaming,
+        maxTokens: modelSettings?.maxTokens,
         inkExport: {
           cropEnabled: inkSendCropEnabledRef.current,
           cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -4434,6 +4435,7 @@ export default function App() {
         modelId: selectedModelId,
         webSearchEnabled: composerWebSearch,
         stream: modelSettings?.streaming,
+        maxTokens: modelSettings?.maxTokens,
         inkExport: {
           cropEnabled: inkSendCropEnabledRef.current,
           cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -4610,6 +4612,7 @@ export default function App() {
           modelId: selectedModelId,
           webSearchEnabled: composerWebSearch,
           stream: modelSettings?.streaming,
+          maxTokens: modelSettings?.maxTokens,
           inkExport: {
             cropEnabled: inkSendCropEnabledRef.current,
             cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -4790,6 +4793,7 @@ export default function App() {
         modelId: selectedModelId,
         webSearchEnabled: composerWebSearch,
         stream: modelSettings?.streaming,
+        maxTokens: modelSettings?.maxTokens,
         inkExport: {
           cropEnabled: inkSendCropEnabledRef.current,
           cropPaddingPx: inkSendCropPaddingPxRef.current,

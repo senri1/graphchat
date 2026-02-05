@@ -8,6 +8,7 @@ export type ModelUserSettings = {
   background: boolean;
   verbosity: TextVerbosity;
   reasoningSummary: ReasoningSummarySetting;
+  maxTokens?: number;
 };
 
 export type ModelUserSettingsById = Record<string, ModelUserSettings>;
@@ -24,6 +25,7 @@ export function defaultModelUserSettings(model: ModelInfo): ModelUserSettings {
       ? model.defaults.verbosity
       : 'medium';
   const reasoningSummaryDefault: ReasoningSummarySetting = model.effort && model.reasoningSummary ? 'auto' : 'off';
+  const maxTokensDefault = model.provider === 'anthropic' ? 4096 : undefined;
 
   return {
     includeInComposer: true,
@@ -31,6 +33,7 @@ export function defaultModelUserSettings(model: ModelInfo): ModelUserSettings {
     background: model.parameters.background ? backgroundDefault : false,
     verbosity: verbosityDefault,
     reasoningSummary: reasoningSummaryDefault,
+    ...(maxTokensDefault != null ? { maxTokens: maxTokensDefault } : {}),
   };
 }
 
@@ -52,12 +55,27 @@ export function normalizeModelUserSettings(model: ModelInfo, raw: unknown): Mode
   const reasoningSummary: ReasoningSummarySetting =
     summaryRaw === 'auto' || summaryRaw === 'detailed' || summaryRaw === 'off' ? summaryRaw : defaults.reasoningSummary;
 
+  const maxTokens = (() => {
+    if (model.provider !== 'anthropic') return undefined;
+    const rawVal = obj.maxTokens;
+    const n =
+      typeof rawVal === 'number'
+        ? rawVal
+        : typeof rawVal === 'string' && rawVal.trim()
+          ? Number(rawVal)
+          : undefined;
+    if (typeof n !== 'number' || !Number.isFinite(n)) return defaults.maxTokens ?? 4096;
+    const clamped = Math.max(1, Math.min(200000, Math.floor(n)));
+    return clamped;
+  })();
+
   return {
     includeInComposer,
     streaming: model.parameters.streaming ? streaming : false,
     background: model.parameters.background ? background : false,
     verbosity,
     reasoningSummary: model.effort ? reasoningSummary : 'off',
+    ...(model.provider === 'anthropic' ? { maxTokens } : {}),
   };
 }
 

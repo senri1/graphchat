@@ -699,6 +699,14 @@ export default function SettingsModal(props: Props) {
                           const raw = typeof s?.reasoningSummary === 'string' ? s.reasoningSummary : model.reasoningSummary ? 'auto' : 'off';
                           return raw === 'auto' || raw === 'detailed' || raw === 'off' ? raw : model.reasoningSummary ? 'auto' : 'off';
                         })();
+                        const supportsMaxTokens = model.provider === 'anthropic';
+                        const maxTokens = (() => {
+                          if (!supportsMaxTokens) return 0;
+                          const raw = s?.maxTokens;
+                          const n = typeof raw === 'number' ? raw : undefined;
+                          if (typeof n !== 'number' || !Number.isFinite(n)) return 4096;
+                          return Math.max(1, Math.min(200000, Math.floor(n)));
+                        })();
 
                         const setSummary = (next: ReasoningSummarySetting) => {
                           if (!supportsSummary) return;
@@ -777,6 +785,27 @@ export default function SettingsModal(props: Props) {
 	                                  </button>
 	                                </div>
 	                              </div>
+
+                              {supportsMaxTokens ? (
+                                <div className="settingsRow">
+                                  <div className="settingsRow__text">
+                                    <div className="settingsRow__title">Max output tokens</div>
+                                    <div className="settingsRow__desc">Maximum length of the assistant reply.</div>
+                                  </div>
+                                  <div className="settingsRow__actions">
+                                    <input
+                                      className="settingsInput"
+                                      type="number"
+                                      min={1}
+                                      max={200000}
+                                      step={1}
+                                      value={maxTokens}
+                                      onChange={(e) => props.onUpdateModelUserSettings(model.id, { maxTokens: Number(e.currentTarget.value) })}
+                                      aria-label="Max output tokens"
+                                    />
+                                  </div>
+                                </div>
+                              ) : null}
 
 	                              <div className="settingsRow">
 	                                <div className="settingsRow__text">

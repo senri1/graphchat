@@ -253,7 +253,8 @@ export async function buildAnthropicMessageRequest(args: {
   const info = getModelInfo(modelId);
   const apiModel = info?.apiModel || modelId;
 
-  const maxTokens = Math.max(1, Math.floor(args.settings.maxTokens ?? 4096));
+  const rawMaxTokens = args.settings.maxTokens;
+  const maxTokens = typeof rawMaxTokens === 'number' && Number.isFinite(rawMaxTokens) ? Math.max(1, Math.floor(rawMaxTokens)) : 4096;
   const messages = await buildAnthropicMessagesFromChatNodes(args.nodes, args.leafUserNodeId, { inkExport: args.settings.inkExport });
 
   const body: any = {
