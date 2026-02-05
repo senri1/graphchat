@@ -33,8 +33,8 @@ const REGISTRY: ModelInfo[] = [
     label: 'xAI - Grok 4',
     shortLabel: 'Grok 4',
     supportsImageInput: true,
-    parameters: { webSearch: true, streaming: false, background: false },
-    defaults: { webSearch: true, streaming: false, background: false },
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
   },
   {
     id: 'grok-4-fast',
@@ -43,8 +43,8 @@ const REGISTRY: ModelInfo[] = [
     label: 'xAI - Grok 4 Fast',
     shortLabel: 'Grok 4 Fast',
     supportsImageInput: true,
-    parameters: { webSearch: true, streaming: false, background: false },
-    defaults: { webSearch: true, streaming: false, background: false },
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
   },
   {
     id: 'grok-4-1-fast',
@@ -53,8 +53,8 @@ const REGISTRY: ModelInfo[] = [
     label: 'xAI - Grok 4.1 Fast',
     shortLabel: 'Grok 4.1 Fast',
     supportsImageInput: true,
-    parameters: { webSearch: true, streaming: false, background: false },
-    defaults: { webSearch: true, streaming: false, background: false },
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
   },
   {
     id: 'gpt-5.2-xhigh',

@@ -43,7 +43,7 @@ import {
   streamOpenAIResponseById,
 } from './services/openaiService';
 import { getGeminiApiKey, sendGeminiResponse } from './services/geminiService';
-import { getXaiApiKey, sendXaiResponse } from './services/xaiService';
+import { getXaiApiKey, retrieveXaiResponse, sendXaiResponse, streamXaiResponse } from './services/xaiService';
 import type { ChatAttachment, ChatNode, InkStroke, ThinkingSummaryChunk } from './model/chat';
 import { normalizeBackgroundLibrary, type BackgroundLibraryItem } from './model/backgrounds';
 import { buildOpenAIResponseRequest, type OpenAIChatSettings } from './llm/openai';
@@ -2082,39 +2082,155 @@ export default function App() {
       }
       if (job.closed || job.abortController.signal.aborted) return;
 
-      const storedRequest = cloneRawPayloadForDisplay(request);
+      const streamingEnabled = typeof settings.stream === 'boolean' ? settings.stream : true;
+      const sentRequest: Record<string, unknown> = streamingEnabled ? { ...(request ?? {}), stream: true } : { ...(request ?? {}) };
+      const include = Array.isArray((sentRequest as any).include) ? [...((sentRequest as any).include as unknown[])] : [];
+      const hasEncryptedInclude = include.some((v) => String(v ?? '') === 'reasoning.encrypted_content');
+      if (!hasEncryptedInclude) include.push('reasoning.encrypted_content');
+      (sentRequest as any).include = include;
+      const storedRequest = cloneRawPayloadForDisplay(sentRequest);
       updateStoredTextNode(chatId, job.userNodeId, { apiRequest: storedRequest });
       if (activeChatIdRef.current === chatId) {
         engineRef.current?.setTextNodeApiPayload(job.userNodeId, { apiRequest: storedRequest });
       }
       try {
         const key = `${chatId}/${job.userNodeId}/req`;
-        await putPayload({ key, json: request });
+        await putPayload({ key, json: sentRequest });
         updateStoredTextNode(chatId, job.userNodeId, { apiRequestKey: key });
       } catch {
         // ignore
       }
       schedulePersistSoon();
 
-      const res = await sendXaiResponse({ apiKey, request, signal: job.abortController.signal });
+      const callbacks = {
+        onDelta: (_delta: string, fullText: string) => {
+          if (job.closed) return;
+          job.fullText = fullText;
+          scheduleJobFlush(job);
+        },
+        onEvent: (evt: any) => {
+          if (job.closed) return;
+          const t = typeof evt?.type === 'string' ? String(evt.type) : '';
+          if (t === 'response.created') {
+            const responseId = typeof evt?.response?.id === 'string' ? String(evt.response.id) : '';
+            if (responseId) job.taskId = responseId;
+          }
+          const idxRaw =
+            typeof evt?.summary_index === 'number'
+              ? evt.summary_index
+              : typeof evt?.index === 'number'
+                ? evt.index
+                : 0;
+          const idx = Number.isFinite(Number(idxRaw)) ? Number(idxRaw) : 0;
+          const isSummaryDelta =
+            (t === 'response.reasoning_summary_text.delta' || t === 'response.reasoning.summary.delta') &&
+            typeof evt?.delta === 'string';
+          const isSummaryDone =
+            t === 'response.reasoning_summary_text.done' ||
+            t === 'response.reasoning.summary.done' ||
+            ((t.includes('reasoning') && t.includes('summary')) && typeof evt?.done === 'boolean' && evt.done === true);
+
+          if (isSummaryDelta) {
+            const delta = typeof evt?.delta === 'string' ? evt.delta : '';
+            if (!delta) return;
+
+            const chunks = job.thinkingSummary ?? [];
+            const existing = chunks.find((c) => c.summaryIndex === idx);
+            const nextChunks: ThinkingSummaryChunk[] = existing
+              ? chunks.map((c) => (c.summaryIndex === idx ? { ...c, text: c.text + delta } : c))
+              : [...chunks, { summaryIndex: idx, text: delta, done: false }];
+            job.thinkingSummary = nextChunks;
+            updateStoredTextNode(chatId, job.assistantNodeId, { thinkingSummary: nextChunks });
+            if (activeChatIdRef.current === chatId) {
+              engineRef.current?.setTextNodeThinkingSummary(job.assistantNodeId, nextChunks);
+            }
+          } else if (isSummaryDone) {
+            const chunks = job.thinkingSummary ?? [];
+            if (!chunks.length) return;
+            const nextChunks = chunks.map((c) => (c.summaryIndex === idx ? { ...c, done: true } : c));
+            job.thinkingSummary = nextChunks;
+            updateStoredTextNode(chatId, job.assistantNodeId, { thinkingSummary: nextChunks });
+            if (activeChatIdRef.current === chatId) {
+              engineRef.current?.setTextNodeThinkingSummary(job.assistantNodeId, nextChunks);
+            }
+          }
+        },
+      };
+
+      const res = streamingEnabled
+        ? await streamXaiResponse({ apiKey, request: sentRequest, signal: job.abortController.signal, callbacks })
+        : await sendXaiResponse({ apiKey, request: sentRequest, signal: job.abortController.signal });
       if (job.closed || job.abortController.signal.aborted) return;
       if (!generationJobsByAssistantIdRef.current.has(job.assistantNodeId)) return;
 
+      const hasEncryptedReasoningObject = (raw: unknown): boolean => {
+        if (!raw || typeof raw !== 'object') return false;
+        const output = (raw as any).output;
+        if (!Array.isArray(output)) return false;
+        return output.some(
+          (item: any) =>
+            item &&
+            item.type === 'reasoning' &&
+            typeof item.encrypted_content === 'string' &&
+            item.encrypted_content.length > 0,
+        );
+      };
+
+      let finalResponse = res.response;
+      const responseIdFromRaw = typeof (res.response as any)?.id === 'string' ? String((res.response as any).id) : '';
+      const responseId = responseIdFromRaw || (typeof job.taskId === 'string' ? job.taskId : '');
+      const shouldHydrateFinalResponse =
+        streamingEnabled &&
+        res.ok &&
+        Boolean(responseId) &&
+        (!Array.isArray((res.response as any)?.output) || !hasEncryptedReasoningObject(res.response));
+      if (shouldHydrateFinalResponse) {
+        const got = await retrieveXaiResponse({ apiKey, responseId, signal: job.abortController.signal });
+        if (got.ok) finalResponse = got.response;
+      }
+
       const usedWebSearch =
         Array.isArray((request as any)?.tools) && (request as any).tools.some((tool: any) => tool && tool.type === 'web_search');
-      const canonicalMeta = extractCanonicalMeta(res.response, { usedWebSearch });
+      const baseCanonicalMeta = extractCanonicalMeta(finalResponse, { usedWebSearch });
+      const streamed = job.thinkingSummary ?? [];
+      const canonicalMeta = (() => {
+        const hasBlocks = Array.isArray((baseCanonicalMeta as any)?.reasoningSummaryBlocks) && (baseCanonicalMeta as any).reasoningSummaryBlocks.length > 0;
+        const withSummary = hasBlocks || streamed.length === 0
+          ? baseCanonicalMeta
+          : {
+              ...(baseCanonicalMeta ?? {}),
+              reasoningSummaryBlocks: [...streamed]
+                .sort((a, b) => (a.summaryIndex ?? 0) - (b.summaryIndex ?? 0))
+                .map((c) => ({ type: 'summary_text' as const, text: c?.text ?? '' })),
+            };
+
+        const usage = (finalResponse as any)?.usage;
+        const reasoningTokensRaw =
+          usage?.completion_tokens_details?.reasoning_tokens ??
+          usage?.output_tokens_details?.reasoning_tokens ??
+          usage?.reasoning_tokens;
+        const reasoningTokens = Number.isFinite(Number(reasoningTokensRaw)) ? Number(reasoningTokensRaw) : undefined;
+        const hasEncryptedReasoning = hasEncryptedReasoningObject(finalResponse);
+
+        if (reasoningTokens === undefined && !hasEncryptedReasoning) return withSummary;
+        return {
+          ...(withSummary ?? {}),
+          ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+          ...(hasEncryptedReasoning ? { hasEncryptedReasoning: true } : {}),
+        };
+      })();
       const canonicalMessage = extractCanonicalMessage(
-        res.response,
+        finalResponse,
         typeof res.text === 'string' ? res.text : job.fullText,
       );
       const finalText = (typeof res.text === 'string' ? res.text : '') || canonicalMessage?.text || job.fullText || '';
-      const storedResponse = res.response !== undefined ? cloneRawPayloadForDisplay(res.response) : undefined;
+      const storedResponse = finalResponse !== undefined ? cloneRawPayloadForDisplay(finalResponse) : undefined;
 
       let responseKey: string | undefined = undefined;
-      if (res.response !== undefined) {
+      if (finalResponse !== undefined) {
         try {
           const key = `${chatId}/${job.assistantNodeId}/res`;
-          await putPayload({ key, json: res.response });
+          await putPayload({ key, json: finalResponse });
           responseKey = key;
         } catch {
           // ignore
@@ -4162,9 +4278,11 @@ export default function App() {
         settings,
       });
     } else if (provider === 'xai') {
+      const modelSettings = modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
       const settings: XaiChatSettings = {
         modelId: selectedModelId,
         webSearchEnabled: composerWebSearch,
+        stream: modelSettings?.streaming,
         inkExport: {
           cropEnabled: inkSendCropEnabledRef.current,
           cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -4395,9 +4513,11 @@ export default function App() {
         settings,
       });
     } else if (provider === 'xai') {
+      const modelSettings = modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
       const settings: XaiChatSettings = {
         modelId: selectedModelId,
         webSearchEnabled: composerWebSearch,
+        stream: modelSettings?.streaming,
         inkExport: {
           cropEnabled: inkSendCropEnabledRef.current,
           cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -4569,9 +4689,12 @@ export default function App() {
           settings,
         });
       } else if (provider === 'xai') {
+        const modelSettings =
+          modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
         const settings: XaiChatSettings = {
           modelId: selectedModelId,
           webSearchEnabled: composerWebSearch,
+          stream: modelSettings?.streaming,
           inkExport: {
             cropEnabled: inkSendCropEnabledRef.current,
             cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -4747,9 +4870,11 @@ export default function App() {
         nodesOverride,
       });
     } else if (provider === 'xai') {
+      const modelSettings = modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
       const settings: XaiChatSettings = {
         modelId: selectedModelId,
         webSearchEnabled: composerWebSearch,
+        stream: modelSettings?.streaming,
         inkExport: {
           cropEnabled: inkSendCropEnabledRef.current,
           cropPaddingPx: inkSendCropPaddingPxRef.current,

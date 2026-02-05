@@ -2,6 +2,15 @@ export type XaiResult =
   | { ok: true; text: string; response: unknown }
   | { ok: false; text: string; error: string; cancelled?: boolean; response?: unknown };
 
+export type XaiRetrieveResult =
+  | { ok: true; response: unknown; status?: string }
+  | { ok: false; error: string; cancelled?: boolean; response?: unknown };
+
+export type XaiStreamCallbacks = {
+  onDelta?: (delta: string, fullText: string) => void;
+  onEvent?: (evt: unknown) => void;
+};
+
 export function getXaiApiKey(): string | null {
   const trimmed = String(import.meta.env.XAI_API_KEY ?? import.meta.env.VITE_XAI_API_KEY ?? '').trim();
   return trimmed ? trimmed : null;
@@ -41,12 +50,88 @@ async function readErrorMessage(res: Response): Promise<string> {
   return `${fallback}: ${snippet}`;
 }
 
-function buildHeaders(args: { apiKey: string; json?: boolean }): Record<string, string> {
+function buildHeaders(args: { apiKey: string; acceptSse?: boolean; json?: boolean }): Record<string, string> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${args.apiKey}`,
   };
+  if (args.acceptSse) headers.Accept = 'text/event-stream';
   if (args.json) headers['Content-Type'] = 'application/json';
   return headers;
+}
+
+type SseMessage = { event: string | null; data: string };
+
+function parseSseBlock(block: string): SseMessage | null {
+  const trimmed = block.trim();
+  if (!trimmed) return null;
+  const lines = trimmed.split('\n');
+  let event: string | null = null;
+  const dataLines: string[] = [];
+
+  for (const line of lines) {
+    if (!line) continue;
+    if (line.startsWith(':')) continue;
+    const idx = line.indexOf(':');
+    const field = idx === -1 ? line : line.slice(0, idx);
+    let value = idx === -1 ? '' : line.slice(idx + 1);
+    if (value.startsWith(' ')) value = value.slice(1);
+
+    if (field === 'event') {
+      event = value || null;
+    } else if (field === 'data') {
+      dataLines.push(value);
+    }
+  }
+
+  const data = dataLines.join('\n');
+  if (!data) return null;
+  return { event, data };
+}
+
+async function* iterateSseMessages(args: {
+  res: Response;
+  signal?: AbortSignal;
+}): AsyncGenerator<SseMessage, void, void> {
+  if (!args.res.body) return;
+  const reader = args.res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  try {
+    while (true) {
+      if (args.signal?.aborted) return;
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+
+      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+      while (true) {
+        const delim = buffer.indexOf('\n\n');
+        if (delim === -1) break;
+        const block = buffer.slice(0, delim);
+        buffer = buffer.slice(delim + 2);
+        const msg = parseSseBlock(block);
+        if (msg) yield msg;
+      }
+    }
+
+    buffer += decoder.decode();
+    buffer = buffer.replace(/\r\n/g, '\n');
+    while (true) {
+      const delim = buffer.indexOf('\n\n');
+      if (delim === -1) break;
+      const block = buffer.slice(0, delim);
+      buffer = buffer.slice(delim + 2);
+      const msg = parseSseBlock(block);
+      if (msg) yield msg;
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // ignore
+    }
+  }
 }
 
 function extractText(raw: any): string {
@@ -102,3 +187,98 @@ export async function sendXaiResponse(args: {
   }
 }
 
+export async function streamXaiResponse(args: {
+  apiKey: string;
+  request: Record<string, unknown>;
+  signal?: AbortSignal;
+  callbacks?: XaiStreamCallbacks;
+}): Promise<XaiResult> {
+  const req = { ...(args.request ?? {}), stream: true };
+  let fullText = '';
+  let rawFinal: unknown = null;
+  let streamError: string | null = null;
+
+  try {
+    const res = await fetch(`${XAI_API_BASE_URL}/responses`, {
+      method: 'POST',
+      headers: buildHeaders({ apiKey: args.apiKey, json: true, acceptSse: true }),
+      body: JSON.stringify(req),
+      signal: args.signal,
+    });
+
+    if (!res.ok) return { ok: false, text: fullText, error: await readErrorMessage(res), response: rawFinal ?? undefined };
+    if (!res.body) return { ok: false, text: fullText, error: 'Streaming response had no body', response: rawFinal ?? undefined };
+
+    for await (const msg of iterateSseMessages({ res, signal: args.signal })) {
+      if (args.signal?.aborted) break;
+      const data = typeof msg.data === 'string' ? msg.data : '';
+      if (!data) continue;
+      if (data.trim() === '[DONE]') break;
+
+      let evt: any = null;
+      try {
+        evt = JSON.parse(data);
+      } catch {
+        continue;
+      }
+
+      args.callbacks?.onEvent?.(evt);
+      const t =
+        typeof evt?.type === 'string'
+          ? String(evt.type)
+          : typeof msg.event === 'string'
+            ? String(msg.event)
+            : '';
+
+      if (t === 'response.output_text.delta' || t === 'response.refusal.delta') {
+        const delta = typeof evt?.delta === 'string' ? String(evt.delta) : '';
+        if (delta) {
+          fullText += delta;
+          args.callbacks?.onDelta?.(delta, fullText);
+        }
+      } else if (t === 'error') {
+        const msg = typeof evt?.error?.message === 'string' ? String(evt.error.message) : '';
+        streamError = msg || 'Streaming error';
+      }
+
+      if ((t === 'response.completed' || t === 'response.failed' || t === 'response.incomplete') && evt?.response) {
+        rawFinal = evt.response;
+      }
+
+      if (streamError) break;
+    }
+
+    if (streamError) return { ok: false, text: fullText, error: streamError, response: rawFinal ?? undefined };
+    const raw = rawFinal ?? { output_text: fullText };
+    const outputText = typeof (raw as any)?.output_text === 'string' ? String((raw as any).output_text) : '';
+    const text = fullText || outputText || extractText(raw);
+    return { ok: true, text, response: raw };
+  } catch (err) {
+    if (isAbortError(err)) return { ok: false, text: fullText, error: 'Canceled', cancelled: true, response: rawFinal ?? undefined };
+    const msg = err instanceof Error ? err.message : `Unknown error: ${String(err)}`;
+    return { ok: false, text: fullText, error: msg, response: rawFinal ?? undefined };
+  }
+}
+
+export async function retrieveXaiResponse(args: {
+  apiKey: string;
+  responseId: string;
+  signal?: AbortSignal;
+}): Promise<XaiRetrieveResult> {
+  try {
+    const res = await fetch(`${XAI_API_BASE_URL}/responses/${encodeURIComponent(args.responseId)}`, {
+      method: 'GET',
+      headers: buildHeaders({ apiKey: args.apiKey }),
+      signal: args.signal,
+    });
+    if (!res.ok) return { ok: false, error: await readErrorMessage(res) };
+
+    const raw = (await res.json()) as any;
+    const status = typeof raw?.status === 'string' ? String(raw.status) : undefined;
+    return { ok: true, response: raw, status };
+  } catch (err) {
+    if (isAbortError(err)) return { ok: false, error: 'Canceled', cancelled: true };
+    const msg = err instanceof Error ? err.message : `Unknown error: ${String(err)}`;
+    return { ok: false, error: msg };
+  }
+}

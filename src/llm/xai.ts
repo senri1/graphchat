@@ -3,10 +3,12 @@ import type { ChatAttachment, ChatNode } from '../model/chat';
 import { DEFAULT_MODEL_ID, getModelInfo } from './registry';
 import { inkNodeToPngBase64, type InkExportOptions } from './inkExport';
 import { blobToDataUrl, getAttachment as getStoredAttachment } from '../storage/attachments';
+import { getPayload } from '../storage/payloads';
 
 export type XaiChatSettings = {
   modelId: string;
   webSearchEnabled?: boolean;
+  stream?: boolean;
   inkExport?: InkExportOptions;
 };
 
@@ -192,6 +194,28 @@ async function buildXaiInputFromChatNodes(args: {
     }
 
     const text = typeof n.content === 'string' ? n.content : String((n as any)?.content ?? '');
+    const modelId = typeof (n as any)?.modelId === 'string' ? String((n as any).modelId) : '';
+    const info = modelId ? getModelInfo(modelId) : undefined;
+    const provider = info?.provider ?? 'openai';
+
+    if (provider === 'xai') {
+      let raw: any = null;
+      const responseKey = typeof (n as any)?.apiResponseKey === 'string' ? String((n as any).apiResponseKey).trim() : '';
+      if (responseKey) {
+        try {
+          raw = await getPayload(responseKey);
+        } catch {
+          raw = null;
+        }
+      }
+      if (!raw && (n as any).apiResponse !== undefined) raw = (n as any).apiResponse;
+
+      if (raw && Array.isArray(raw.output)) {
+        input.push(...raw.output);
+        continue;
+      }
+    }
+
     const canonical = (n as any).canonicalMessage;
     const canonicalText = canonical && typeof canonical.text === 'string' ? canonical.text : '';
     const assistantText = canonicalText || text;
@@ -220,6 +244,7 @@ export async function buildXaiResponseRequest(args: {
     model: apiModel,
     input,
     store: false,
+    include: ['reasoning.encrypted_content'],
   };
 
   if (args.settings.webSearchEnabled && info?.parameters.webSearch) {
@@ -229,4 +254,3 @@ export async function buildXaiResponseRequest(args: {
 
   return body as Record<string, unknown>;
 }
-
