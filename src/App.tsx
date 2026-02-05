@@ -43,10 +43,12 @@ import {
   streamOpenAIResponseById,
 } from './services/openaiService';
 import { getGeminiApiKey, sendGeminiResponse, streamGeminiResponse } from './services/geminiService';
+import { getAnthropicApiKey, sendAnthropicMessage, streamAnthropicMessage } from './services/anthropicService';
 import type { ChatAttachment, ChatNode, InkStroke, ThinkingSummaryChunk } from './model/chat';
 import { normalizeBackgroundLibrary, type BackgroundLibraryItem } from './model/backgrounds';
 import { buildOpenAIResponseRequest, type OpenAIChatSettings } from './llm/openai';
 import { buildGeminiContext, type GeminiChatSettings } from './llm/gemini';
+import { buildAnthropicMessageRequest, type AnthropicChatSettings } from './llm/anthropic';
 import { DEFAULT_MODEL_ID, getModelInfo, listModels } from './llm/registry';
 import { extractCanonicalMessage, extractCanonicalMeta } from './llm/openaiCanonical';
 import { buildModelUserSettings, normalizeModelUserSettings, type ModelUserSettingsById } from './llm/modelUserSettings';
@@ -269,6 +271,13 @@ function isProbablyDataUrl(value: string): boolean {
   return /^data:[^,]+,/.test(value);
 }
 
+function isProbablyBase64(value: string): boolean {
+  const s = String(value ?? '');
+  if (s.length < 256) return false;
+  // Base64 (or base64url) payloads are typically long and restricted to this charset.
+  return /^[A-Za-z0-9+/_=-]+$/.test(s);
+}
+
 function truncateDataUrlForDisplay(value: string, maxChars: number): string {
   const s = String(value ?? '');
   if (s.length <= maxChars) return s;
@@ -278,6 +287,12 @@ function truncateDataUrlForDisplay(value: string, maxChars: number): string {
   const data = s.slice(comma + 1);
   const keep = Math.max(0, maxChars - prefix.length);
   return `${prefix}${data.slice(0, keep)}… (${data.length} chars)`;
+}
+
+function truncateBase64ForDisplay(value: string, maxChars: number): string {
+  const s = String(value ?? '');
+  if (s.length <= maxChars) return s;
+  return `${s.slice(0, maxChars)}… (${s.length} chars)`;
 }
 
 function cloneRawPayloadForDisplay(payload: unknown, opts?: { maxDepth?: number; maxStringChars?: number; maxDataUrlChars?: number }): unknown {
@@ -290,6 +305,7 @@ function cloneRawPayloadForDisplay(payload: unknown, opts?: { maxDepth?: number;
     if (depth > maxDepth) return '[Max depth]';
     if (typeof value === 'string') {
       if (isProbablyDataUrl(value)) return truncateDataUrlForDisplay(value, maxDataUrlChars);
+      if (isProbablyBase64(value)) return truncateBase64ForDisplay(value, maxDataUrlChars);
       if (value.length > maxStringChars) return `${value.slice(0, maxStringChars)}… (${value.length} chars)`;
       return value;
     }
@@ -2209,6 +2225,255 @@ export default function App() {
     })();
   };
 
+  const startAnthropicGeneration = (args: {
+    chatId: string;
+    userNodeId: string;
+    assistantNodeId: string;
+    settings: AnthropicChatSettings;
+    nodesOverride?: ChatNode[];
+  }) => {
+    const chatId = args.chatId;
+    if (!chatId) return;
+    if (generationJobsByAssistantIdRef.current.has(args.assistantNodeId)) return;
+
+    const apiKey = getAnthropicApiKey();
+    if (!apiKey) {
+      const msg = 'Anthropic API key missing. Set ANTHROPIC_API_KEY in graphchatv1/.env.local';
+      updateStoredTextNode(chatId, args.assistantNodeId, { content: msg, isGenerating: false, llmError: msg });
+      if (activeChatIdRef.current === chatId) {
+        engineRef.current?.setTextNodeContent(args.assistantNodeId, msg, { streaming: false });
+        engineRef.current?.setTextNodeLlmState(args.assistantNodeId, {
+          isGenerating: false,
+          modelId: args.settings.modelId,
+          llmError: msg,
+        });
+      }
+      return;
+    }
+
+    const state = chatStatesRef.current.get(chatId);
+    const settings = args.settings;
+    const llmParams = { webSearchEnabled: settings.webSearchEnabled };
+
+    const job: GenerationJob = {
+      chatId,
+      userNodeId: args.userNodeId,
+      assistantNodeId: args.assistantNodeId,
+      modelId: settings.modelId,
+      llmParams,
+      startedAt: Date.now(),
+      abortController: new AbortController(),
+      background: false,
+      taskId: null,
+      lastEventSeq: null,
+      fullText: '',
+      thinkingSummary: [],
+      lastFlushedText: '',
+      lastFlushAt: 0,
+      flushTimer: null,
+      closed: false,
+    };
+
+    generationJobsByAssistantIdRef.current.set(job.assistantNodeId, job);
+    updateStoredTextNode(chatId, job.assistantNodeId, {
+      isGenerating: true,
+      modelId: job.modelId,
+      llmParams: job.llmParams,
+      llmError: null,
+    });
+    if (activeChatIdRef.current === chatId) {
+      engineRef.current?.setTextNodeLlmState(job.assistantNodeId, {
+        isGenerating: true,
+        modelId: job.modelId,
+        llmParams: job.llmParams,
+        llmError: null,
+      });
+    }
+
+    void (async () => {
+      let request: Record<string, unknown>;
+      try {
+        request = await buildAnthropicMessageRequest({
+          nodes: args.nodesOverride ?? state?.nodes ?? [],
+          leafUserNodeId: args.userNodeId,
+          settings,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        finishJob(job.assistantNodeId, { finalText: job.fullText, error: msg });
+        return;
+      }
+      if (job.closed || job.abortController.signal.aborted) return;
+
+      const streamingEnabled = typeof settings.stream === 'boolean' ? settings.stream : true;
+      const sentRequest = streamingEnabled ? { ...(request ?? {}), stream: true } : { ...(request ?? {}) };
+
+      const storedRequest = cloneRawPayloadForDisplay(sentRequest);
+      updateStoredTextNode(chatId, job.userNodeId, { apiRequest: storedRequest });
+      if (activeChatIdRef.current === chatId) {
+        engineRef.current?.setTextNodeApiPayload(job.userNodeId, { apiRequest: storedRequest });
+      }
+      try {
+        const key = `${chatId}/${job.userNodeId}/req`;
+        await putPayload({ key, json: sentRequest });
+        updateStoredTextNode(chatId, job.userNodeId, { apiRequestKey: key });
+      } catch {
+        // ignore
+      }
+	      schedulePersistSoon();
+
+	      const callbacks = {
+	        onDelta: (_delta: string, fullText: string) => {
+	          if (job.closed) return;
+	          job.fullText = fullText;
+	          scheduleJobFlush(job);
+	        },
+	        onEvent: (evt: any) => {
+	          if (job.closed) return;
+
+	          const t = typeof evt?.type === 'string' ? String(evt.type) : '';
+	          if (t === 'content_block_start') {
+	            const idx = typeof evt?.index === 'number' ? evt.index : 0;
+	            const block = evt?.content_block;
+	            if (block && typeof block === 'object' && block.type === 'thinking') {
+	              const initial = typeof block?.thinking === 'string' ? block.thinking : '';
+	              if (!initial) return;
+
+	              const chunks = job.thinkingSummary ?? [];
+	              const existing = chunks.find((c) => c.summaryIndex === idx);
+	              const nextChunks: ThinkingSummaryChunk[] = existing
+	                ? chunks.map((c) => (c.summaryIndex === idx ? { ...c, text: initial, done: false } : c))
+	                : [...chunks, { summaryIndex: idx, text: initial, done: false }];
+	              job.thinkingSummary = nextChunks;
+
+	              updateStoredTextNode(chatId, job.assistantNodeId, { thinkingSummary: nextChunks });
+	              if (activeChatIdRef.current === chatId) {
+	                engineRef.current?.setTextNodeThinkingSummary(job.assistantNodeId, nextChunks);
+	              }
+	            }
+	            return;
+	          }
+
+	          if (t !== 'content_block_delta') return;
+
+	          const idx = typeof evt?.index === 'number' ? evt.index : 0;
+	          const delta = evt?.delta;
+	          const deltaType = typeof delta?.type === 'string' ? String(delta.type) : '';
+
+	          if (deltaType === 'thinking_delta') {
+	            const text = typeof delta?.thinking === 'string' ? delta.thinking : '';
+	            if (!text) return;
+
+	            const chunks = job.thinkingSummary ?? [];
+	            const existing = chunks.find((c) => c.summaryIndex === idx);
+	            const nextChunks: ThinkingSummaryChunk[] = existing
+	              ? chunks.map((c) => (c.summaryIndex === idx ? { ...c, text: c.text + text } : c))
+	              : [...chunks, { summaryIndex: idx, text, done: false }];
+	            job.thinkingSummary = nextChunks;
+
+	            updateStoredTextNode(chatId, job.assistantNodeId, { thinkingSummary: nextChunks });
+	            if (activeChatIdRef.current === chatId) {
+	              engineRef.current?.setTextNodeThinkingSummary(job.assistantNodeId, nextChunks);
+	            }
+	            return;
+	          }
+
+	          if (deltaType === 'signature_delta') {
+	            const chunks = job.thinkingSummary ?? [];
+	            if (!chunks.length) return;
+	            const nextChunks: ThinkingSummaryChunk[] = chunks.map((c) =>
+	              c.summaryIndex === idx ? { ...c, done: true } : c,
+	            );
+	            job.thinkingSummary = nextChunks;
+
+	            updateStoredTextNode(chatId, job.assistantNodeId, { thinkingSummary: nextChunks });
+	            if (activeChatIdRef.current === chatId) {
+	              engineRef.current?.setTextNodeThinkingSummary(job.assistantNodeId, nextChunks);
+	            }
+	          }
+	        },
+	      };
+
+      const res = streamingEnabled
+        ? await streamAnthropicMessage({
+            apiKey,
+            request: sentRequest,
+            signal: job.abortController.signal,
+            callbacks,
+          })
+        : await sendAnthropicMessage({ apiKey, request: sentRequest, signal: job.abortController.signal });
+
+      if (job.closed || job.abortController.signal.aborted) return;
+      if (!generationJobsByAssistantIdRef.current.has(job.assistantNodeId)) return;
+
+	      const finalText = (typeof res.text === 'string' ? res.text : '') || job.fullText;
+	      const usedWebSearch = Boolean(job.llmParams?.webSearchEnabled);
+	      const canonicalMessage =
+	        finalText && finalText.trim() ? ({ role: 'assistant', text: finalText.trim() } as any) : undefined;
+	      const canonicalMeta = (() => {
+	        const base = { usedWebSearch } as any;
+	        const chunksFromResponse = (() => {
+	          if (job.thinkingSummary && job.thinkingSummary.length > 0) return job.thinkingSummary;
+	          const raw = res.response;
+	          if (!raw || typeof raw !== 'object') return [];
+	          const content = Array.isArray((raw as any)?.content) ? ((raw as any).content as any[]) : [];
+	          const out: ThinkingSummaryChunk[] = [];
+	          for (let i = 0; i < content.length; i += 1) {
+	            const block = content[i];
+	            if (!block || typeof block !== 'object') continue;
+	            if (block.type !== 'thinking') continue;
+	            const text = typeof (block as any)?.thinking === 'string' ? (block as any).thinking : String((block as any)?.thinking ?? '');
+	            if (!text.trim()) continue;
+	            out.push({ summaryIndex: i, text, done: true });
+	          }
+	          return out;
+	        })();
+
+	        if (chunksFromResponse.length === 0) return base;
+	        return {
+	          ...base,
+	          reasoningSummaryBlocks: [...chunksFromResponse]
+	            .sort((a, b) => (a.summaryIndex ?? 0) - (b.summaryIndex ?? 0))
+	            .map((c) => ({ type: 'summary_text' as const, text: c?.text ?? '' })),
+	        };
+	      })();
+
+	      const storedResponse = res.response !== undefined ? cloneRawPayloadForDisplay(res.response) : undefined;
+	      let responseKey: string | undefined = undefined;
+	      if (res.response !== undefined) {
+        try {
+          const key = `${chatId}/${job.assistantNodeId}/res`;
+          await putPayload({ key, json: res.response });
+          responseKey = key;
+        } catch {
+          // ignore
+        }
+      }
+
+      if (res.ok) {
+        finishJob(job.assistantNodeId, {
+          finalText,
+          error: null,
+          apiResponse: storedResponse,
+          apiResponseKey: responseKey,
+          canonicalMessage,
+          canonicalMeta,
+        });
+      } else {
+        const error = res.cancelled ? 'Canceled' : res.error;
+        finishJob(job.assistantNodeId, {
+          finalText,
+          error,
+          cancelled: res.cancelled,
+          apiResponse: storedResponse,
+          apiResponseKey: responseKey,
+          canonicalMessage,
+          canonicalMeta,
+        });
+      }
+    })();
+  };
+
 	  const resumeOpenAIBackgroundJob = (args: {
 	    chatId: string;
 	    assistantNode: Extract<ChatNode, { kind: 'text' }>;
@@ -2519,17 +2784,19 @@ export default function App() {
 	          continue;
 	        }
 
-	        const modelId = typeof textNode.modelId === 'string' && textNode.modelId ? textNode.modelId : DEFAULT_MODEL_ID;
-	        const info = getModelInfo(modelId);
-	        if (info?.provider !== 'openai') continue;
-
-	        const msg = 'Interrupted (refresh). Enable Background mode to resume long-running requests.';
-	        updateStoredTextNode(chatId, textNode.id, { isGenerating: false, llmError: msg, llmTask: undefined });
-	        if (activeChatIdRef.current === chatId) {
-	          engineRef.current?.setTextNodeLlmState(textNode.id, { isGenerating: false, llmError: msg, llmTask: null } as any);
-	        }
-	      }
-	    }
+		        const modelId = typeof textNode.modelId === 'string' && textNode.modelId ? textNode.modelId : DEFAULT_MODEL_ID;
+		        const info = getModelInfo(modelId);
+		        const provider = info?.provider ?? 'openai';
+		        const msg =
+		          provider === 'openai'
+		            ? 'Interrupted (refresh). Enable Background mode to resume long-running requests.'
+		            : 'Interrupted (refresh). Request cannot be resumed.';
+		        updateStoredTextNode(chatId, textNode.id, { isGenerating: false, llmError: msg, llmTask: undefined });
+		        if (activeChatIdRef.current === chatId) {
+		          engineRef.current?.setTextNodeLlmState(textNode.id, { isGenerating: false, llmError: msg, llmTask: null } as any);
+		        }
+		      }
+		    }
 
 	    schedulePersistSoon();
 	  };
@@ -4105,6 +4372,29 @@ export default function App() {
         assistantNodeId: res.assistantNodeId,
         settings,
       });
+    } else if (provider === 'anthropic') {
+      const modelSettings = modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
+      const settings: AnthropicChatSettings = {
+        modelId: selectedModelId,
+        webSearchEnabled: composerWebSearch,
+        stream: modelSettings?.streaming,
+        maxTokens: modelSettings?.maxTokens,
+        thinkingEnabled: modelSettings?.thinkingEnabled,
+        thinkingBudgetTokens: modelSettings?.thinkingBudgetTokens,
+        inkExport: {
+          cropEnabled: inkSendCropEnabledRef.current,
+          cropPaddingPx: inkSendCropPaddingPxRef.current,
+          downscaleEnabled: inkSendDownscaleEnabledRef.current,
+          maxPixels: inkSendMaxPixelsRef.current,
+          maxDimPx: inkSendMaxDimPxRef.current,
+        },
+      };
+      startAnthropicGeneration({
+        chatId,
+        userNodeId: res.userNodeId,
+        assistantNodeId: res.assistantNodeId,
+        settings,
+      });
     } else {
       const modelSettings = modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
       const settings: OpenAIChatSettings = {
@@ -4322,6 +4612,29 @@ export default function App() {
         assistantNodeId: res.assistantNodeId,
         settings,
       });
+    } else if (provider === 'anthropic') {
+      const modelSettings = modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
+      const settings: AnthropicChatSettings = {
+        modelId: selectedModelId,
+        webSearchEnabled: composerWebSearch,
+        stream: modelSettings?.streaming,
+        maxTokens: modelSettings?.maxTokens,
+        thinkingEnabled: modelSettings?.thinkingEnabled,
+        thinkingBudgetTokens: modelSettings?.thinkingBudgetTokens,
+        inkExport: {
+          cropEnabled: inkSendCropEnabledRef.current,
+          cropPaddingPx: inkSendCropPaddingPxRef.current,
+          downscaleEnabled: inkSendDownscaleEnabledRef.current,
+          maxPixels: inkSendMaxPixelsRef.current,
+          maxDimPx: inkSendMaxDimPxRef.current,
+        },
+      };
+      startAnthropicGeneration({
+        chatId,
+        userNodeId: res.userNodeId,
+        assistantNodeId: res.assistantNodeId,
+        settings,
+      });
     } else {
       const modelSettings = modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
       const settings: OpenAIChatSettings = {
@@ -4475,6 +4788,29 @@ export default function App() {
           },
         };
         startGeminiGeneration({
+          chatId,
+          userNodeId,
+          assistantNodeId: res.assistantNodeId,
+          settings,
+        });
+      } else if (provider === 'anthropic') {
+        const modelSettings = modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
+        const settings: AnthropicChatSettings = {
+          modelId: selectedModelId,
+          webSearchEnabled: composerWebSearch,
+          stream: modelSettings?.streaming,
+          maxTokens: modelSettings?.maxTokens,
+          thinkingEnabled: modelSettings?.thinkingEnabled,
+          thinkingBudgetTokens: modelSettings?.thinkingBudgetTokens,
+          inkExport: {
+            cropEnabled: inkSendCropEnabledRef.current,
+            cropPaddingPx: inkSendCropPaddingPxRef.current,
+            downscaleEnabled: inkSendDownscaleEnabledRef.current,
+            maxPixels: inkSendMaxPixelsRef.current,
+            maxDimPx: inkSendMaxDimPxRef.current,
+          },
+        };
+        startAnthropicGeneration({
           chatId,
           userNodeId,
           assistantNodeId: res.assistantNodeId,
@@ -4636,6 +4972,30 @@ export default function App() {
         },
       };
       startGeminiGeneration({
+        chatId,
+        userNodeId,
+        assistantNodeId: res.assistantNodeId,
+        settings,
+        nodesOverride,
+      });
+    } else if (provider === 'anthropic') {
+      const modelSettings = modelUserSettingsRef.current[selectedModelId] ?? modelUserSettingsRef.current[DEFAULT_MODEL_ID];
+      const settings: AnthropicChatSettings = {
+        modelId: selectedModelId,
+        webSearchEnabled: composerWebSearch,
+        stream: modelSettings?.streaming,
+        maxTokens: modelSettings?.maxTokens,
+        thinkingEnabled: modelSettings?.thinkingEnabled,
+        thinkingBudgetTokens: modelSettings?.thinkingBudgetTokens,
+        inkExport: {
+          cropEnabled: inkSendCropEnabledRef.current,
+          cropPaddingPx: inkSendCropPaddingPxRef.current,
+          downscaleEnabled: inkSendDownscaleEnabledRef.current,
+          maxPixels: inkSendMaxPixelsRef.current,
+          maxDimPx: inkSendMaxDimPxRef.current,
+        },
+      };
+      startAnthropicGeneration({
         chatId,
         userNodeId,
         assistantNodeId: res.assistantNodeId,

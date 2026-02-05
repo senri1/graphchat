@@ -136,7 +136,7 @@ export default function SettingsModal(props: Props) {
       list.push(m);
       byProvider.set(key, list);
     }
-    const labelFor = (p: string) => (p === 'openai' ? 'OpenAI' : p === 'gemini' ? 'Gemini' : p);
+    const labelFor = (p: string) => (p === 'openai' ? 'OpenAI' : p === 'gemini' ? 'Gemini' : p === 'anthropic' ? 'Anthropic' : p);
     return Array.from(byProvider.entries())
       .map(([providerId, models]) => ({
         providerId,
@@ -694,16 +694,36 @@ export default function SettingsModal(props: Props) {
 	                          const raw = typeof s?.verbosity === 'string' ? s.verbosity : String(model.defaults?.verbosity ?? 'medium');
 	                          return raw === 'low' || raw === 'medium' || raw === 'high' ? raw : 'medium';
 	                        })();
-                        const reasoningSummary: ReasoningSummarySetting = (() => {
-                          if (!supportsSummary) return 'off';
-                          const raw = typeof s?.reasoningSummary === 'string' ? s.reasoningSummary : model.reasoningSummary ? 'auto' : 'off';
-                          return raw === 'auto' || raw === 'detailed' || raw === 'off' ? raw : model.reasoningSummary ? 'auto' : 'off';
-                        })();
+	                        const reasoningSummary: ReasoningSummarySetting = (() => {
+	                          if (!supportsSummary) return 'off';
+	                          const raw = typeof s?.reasoningSummary === 'string' ? s.reasoningSummary : model.reasoningSummary ? 'auto' : 'off';
+	                          return raw === 'auto' || raw === 'detailed' || raw === 'off' ? raw : model.reasoningSummary ? 'auto' : 'off';
+	                        })();
+	                        const supportsMaxTokens = model.provider === 'anthropic';
+	                        const maxTokens = (() => {
+	                          if (!supportsMaxTokens) return 0;
+	                          const raw = s?.maxTokens;
+	                          const n = typeof raw === 'number' ? raw : undefined;
+	                          if (typeof n !== 'number' || !Number.isFinite(n)) return 4096;
+	                          return Math.max(1, Math.min(200000, Math.floor(n)));
+	                        })();
+	                        const thinkingBudgetMin = 1024;
+	                        const thinkingBudgetMax = supportsMaxTokens ? Math.max(0, maxTokens - 1) : 0;
+	                        const canEnableThinking = supportsMaxTokens && maxTokens > thinkingBudgetMin && thinkingBudgetMax >= thinkingBudgetMin;
+	                        const thinkingEnabled = canEnableThinking ? Boolean(s?.thinkingEnabled) : false;
+	                        const thinkingBudgetTokens = (() => {
+	                          if (!supportsMaxTokens) return 0;
+	                          const raw = s?.thinkingBudgetTokens;
+	                          const n = typeof raw === 'number' ? raw : undefined;
+	                          if (!canEnableThinking) return thinkingBudgetMin;
+	                          if (typeof n !== 'number' || !Number.isFinite(n)) return Math.min(thinkingBudgetMin, thinkingBudgetMax);
+	                          return Math.max(thinkingBudgetMin, Math.min(thinkingBudgetMax, Math.floor(n)));
+	                        })();
 
-                        const setSummary = (next: ReasoningSummarySetting) => {
-                          if (!supportsSummary) return;
-                          props.onUpdateModelUserSettings(model.id, { reasoningSummary: next });
-                        };
+	                        const setSummary = (next: ReasoningSummarySetting) => {
+	                          if (!supportsSummary) return;
+	                          props.onUpdateModelUserSettings(model.id, { reasoningSummary: next });
+	                        };
 
                         return (
                           <details key={model.id} className="settingsCard settingsDetails">
@@ -777,6 +797,78 @@ export default function SettingsModal(props: Props) {
 	                                  </button>
 	                                </div>
 	                              </div>
+
+	                              {supportsMaxTokens ? (
+	                                <div className="settingsRow">
+	                                  <div className="settingsRow__text">
+	                                    <div className="settingsRow__title">Max output tokens</div>
+	                                    <div className="settingsRow__desc">Maximum length of the assistant reply.</div>
+	                                  </div>
+	                                  <div className="settingsRow__actions">
+	                                    <input
+	                                      className="settingsInput"
+	                                      type="number"
+	                                      min={1}
+	                                      max={200000}
+	                                      step={1}
+	                                      value={maxTokens}
+	                                      onChange={(e) => props.onUpdateModelUserSettings(model.id, { maxTokens: Number(e.currentTarget.value) })}
+	                                      aria-label="Max output tokens"
+	                                    />
+	                                  </div>
+	                                </div>
+	                              ) : null}
+
+                              {supportsMaxTokens ? (
+                                <div className="settingsRow">
+                                  <div className="settingsRow__text">
+                                    <div className="settingsRow__title">Extended reasoning</div>
+                                    <div className="settingsRow__desc">
+                                      Enable Claude “thinking” with a token budget (must be less than max output tokens).
+                                    </div>
+                                  </div>
+                                  <div className="settingsRow__actions">
+                                    <button
+                                      className={`settingsToggle ${thinkingEnabled ? 'settingsToggle--on' : ''}`}
+                                      type="button"
+                                      aria-pressed={thinkingEnabled}
+                                      disabled={!canEnableThinking}
+                                      onClick={() =>
+                                        canEnableThinking
+                                          ? props.onUpdateModelUserSettings(model.id, { thinkingEnabled: !thinkingEnabled })
+                                          : undefined
+                                      }
+                                    >
+                                      {thinkingEnabled ? 'On' : 'Off'}
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : null}
+
+                              {supportsMaxTokens && thinkingEnabled ? (
+                                <div className="settingsRow">
+                                  <div className="settingsRow__text">
+                                    <div className="settingsRow__title">Reasoning budget tokens</div>
+                                    <div className="settingsRow__desc">
+                                      Must be between {thinkingBudgetMin} and {thinkingBudgetMax} (max output tokens − 1).
+                                    </div>
+                                  </div>
+                                  <div className="settingsRow__actions">
+                                    <input
+                                      className="settingsInput"
+                                      type="number"
+                                      min={thinkingBudgetMin}
+                                      max={thinkingBudgetMax}
+                                      step={1}
+                                      value={thinkingBudgetTokens}
+                                      onChange={(e) =>
+                                        props.onUpdateModelUserSettings(model.id, { thinkingBudgetTokens: Number(e.currentTarget.value) })
+                                      }
+                                      aria-label="Reasoning budget tokens"
+                                    />
+                                  </div>
+                                </div>
+                              ) : null}
 
 	                              <div className="settingsRow">
 	                                <div className="settingsRow__text">

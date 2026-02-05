@@ -20,12 +20,36 @@ export function getOpenAIApiKey(): string | null {
   return trimmed ? trimmed : null;
 }
 
-const OPENAI_API_BASE_URL = 'https://api.openai.com/v1';
+const OPENAI_API_BASE_URL = (() => {
+  const trimmed = String(import.meta.env.VITE_OPENAI_API_BASE_URL ?? '').trim();
+  return trimmed ? trimmed : 'https://api.openai.com/v1';
+})();
 
 function isAbortError(err: unknown): boolean {
   if (err instanceof DOMException && err.name === 'AbortError') return true;
   if (!err || typeof err !== 'object') return false;
   return (err as any).name === 'AbortError';
+}
+
+function formatFetchErrorMessage(args: { providerLabel: string; baseUrl: string; rawMessage: string }): string {
+  const raw = String(args.rawMessage ?? '').trim();
+  if (!raw) return 'Network error';
+
+  const lower = raw.toLowerCase();
+  const isFetchFailure =
+    lower === 'failed to fetch' ||
+    lower.includes('failed to fetch') ||
+    lower.includes('networkerror when attempting to fetch') ||
+    lower.includes('load failed');
+
+  if (!isFetchFailure) return raw;
+
+  const hint = args.baseUrl.startsWith('/')
+    ? `Check that the app is running via \`npm run dev\` or \`npm run preview\` (the \`${args.baseUrl}\` proxy route must be available).`
+    : `This is often caused by browser CORS restrictions when calling ${args.providerLabel}; use a same-origin proxy (default: \`/api/openai/v1\`).`;
+
+  const base = raw.endsWith('.') ? raw : `${raw}.`;
+  return `${base} ${hint}`;
 }
 
 async function readErrorMessage(res: Response): Promise<string> {
@@ -158,7 +182,7 @@ export async function sendOpenAIResponse(args: {
   } catch (err) {
     if (isAbortError(err)) return { ok: false, text: '', error: 'Canceled', cancelled: true };
     const msg = err instanceof Error ? err.message : `Unknown error: ${String(err)}`;
-    return { ok: false, text: '', error: msg };
+    return { ok: false, text: '', error: formatFetchErrorMessage({ providerLabel: 'OpenAI', baseUrl: OPENAI_API_BASE_URL, rawMessage: msg }) };
   }
 }
 
@@ -231,7 +255,12 @@ export async function streamOpenAIResponse(args: {
   } catch (err) {
     if (isAbortError(err)) return { ok: false, text: fullText, error: 'Canceled', cancelled: true, response: rawFinal ?? undefined };
     const msg = err instanceof Error ? err.message : `Unknown error: ${String(err)}`;
-    return { ok: false, text: fullText, error: msg, response: rawFinal ?? undefined };
+    return {
+      ok: false,
+      text: fullText,
+      error: formatFetchErrorMessage({ providerLabel: 'OpenAI', baseUrl: OPENAI_API_BASE_URL, rawMessage: msg }),
+      response: rawFinal ?? undefined,
+    };
   }
 }
 
@@ -259,7 +288,7 @@ export async function startOpenAIBackgroundResponse(args: {
   } catch (err) {
     if (isAbortError(err)) return { ok: false, error: 'Canceled', cancelled: true };
     const msg = err instanceof Error ? err.message : `Unknown error: ${String(err)}`;
-    return { ok: false, error: msg };
+    return { ok: false, error: formatFetchErrorMessage({ providerLabel: 'OpenAI', baseUrl: OPENAI_API_BASE_URL, rawMessage: msg }) };
   }
 }
 
@@ -282,7 +311,7 @@ export async function retrieveOpenAIResponse(args: {
   } catch (err) {
     if (isAbortError(err)) return { ok: false, error: 'Canceled', cancelled: true };
     const msg = err instanceof Error ? err.message : `Unknown error: ${String(err)}`;
-    return { ok: false, error: msg };
+    return { ok: false, error: formatFetchErrorMessage({ providerLabel: 'OpenAI', baseUrl: OPENAI_API_BASE_URL, rawMessage: msg }) };
   }
 }
 
@@ -306,7 +335,7 @@ export async function cancelOpenAIResponse(args: {
   } catch (err) {
     if (isAbortError(err)) return { ok: false, error: 'Canceled', cancelled: true };
     const msg = err instanceof Error ? err.message : `Unknown error: ${String(err)}`;
-    return { ok: false, error: msg };
+    return { ok: false, error: formatFetchErrorMessage({ providerLabel: 'OpenAI', baseUrl: OPENAI_API_BASE_URL, rawMessage: msg }) };
   }
 }
 
@@ -386,6 +415,11 @@ export async function streamOpenAIResponseById(args: {
   } catch (err) {
     if (isAbortError(err)) return { ok: false, text: fullText, error: 'Canceled', cancelled: true, response: rawFinal ?? undefined };
     const msg = err instanceof Error ? err.message : `Unknown error: ${String(err)}`;
-    return { ok: false, text: fullText, error: msg, response: rawFinal ?? undefined };
+    return {
+      ok: false,
+      text: fullText,
+      error: formatFetchErrorMessage({ providerLabel: 'OpenAI', baseUrl: OPENAI_API_BASE_URL, rawMessage: msg }),
+      response: rawFinal ?? undefined,
+    };
   }
 }
