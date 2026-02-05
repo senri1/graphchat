@@ -756,6 +756,13 @@ export class WorldEngine {
   private readonly attachmentThumbDataUrlMaxEntries = 220;
   private readonly attachmentThumbDataUrlMaxBytes = 32 * 1024 * 1024;
 
+  private readonly inlineThumbDataUrlByKey = new Map<string, { key: string; dataUrl: string; rev: number; size: number }>();
+  private inlineThumbDataUrlBytes = 0;
+  private readonly inlineThumbDataUrlInFlight = new Set<string>();
+  private readonly inlineThumbDataUrlFailed = new Set<string>();
+  private readonly inlineThumbDataUrlMaxEntries = 220;
+  private readonly inlineThumbDataUrlMaxBytes = 32 * 1024 * 1024;
+
   private readonly textRasterCache = new Map<
     string,
     {
@@ -4564,30 +4571,37 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     const atts = Array.isArray(node.attachments) ? node.attachments : [];
     if (atts.length > 0) {
-      const attSig = atts
-        .map((a) => {
-          if (!a || typeof a !== 'object') return '';
-          if (a.kind === 'image') {
-            const storageKey = typeof a.storageKey === 'string' ? a.storageKey : '';
-            const rev = storageKey ? (this.attachmentThumbDataUrlByKey.get(storageKey)?.rev ?? 0) : 0;
-            const dataLen = typeof a.data === 'string' ? a.data.length : 0;
-            const name = typeof a.name === 'string' ? a.name.trim() : '';
-            return `i:${storageKey}:${rev}:${dataLen}:${name}`;
-          }
-          if (a.kind === 'pdf') {
-            const storageKey = typeof a.storageKey === 'string' ? a.storageKey : '';
-            const dataLen = typeof a.data === 'string' ? a.data.length : 0;
-            const name = typeof a.name === 'string' ? a.name.trim() : '';
-            const size = Number.isFinite(a.size) ? a.size : '';
-            return `p:${storageKey}:${dataLen}:${name}:${size}`;
-          }
-          if (a.kind === 'ink') {
-            const storageKey = typeof a.storageKey === 'string' ? a.storageKey : '';
-            const rev = Number.isFinite(a.rev) ? a.rev : '';
-            return `k:${storageKey}:${rev}`;
-          }
-          return '';
-        })
+	      const attSig = atts
+	        .map((a) => {
+	          if (!a || typeof a !== 'object') return '';
+	          if (a.kind === 'image') {
+	            const storageKey = typeof a.storageKey === 'string' ? a.storageKey.trim() : '';
+	            const data = typeof a.data === 'string' ? a.data : '';
+	            const dataLen = data.length;
+	            const storageOk = Boolean(storageKey && !this.attachmentThumbDataUrlFailed.has(storageKey));
+	            const inlineKey = !storageOk && data ? this.inlineThumbKeyForImageData(data, a.mimeType) : '';
+	            const rev = storageOk
+	              ? (this.attachmentThumbDataUrlByKey.get(storageKey)?.rev ?? 0)
+	              : inlineKey
+	                ? (this.inlineThumbDataUrlByKey.get(inlineKey)?.rev ?? 0)
+                : 0;
+	            const name = typeof a.name === 'string' ? a.name.trim() : '';
+	            return `i:${storageOk ? storageKey : inlineKey}:${rev}:${dataLen}:${name}`;
+	          }
+	          if (a.kind === 'pdf') {
+	            const storageKey = typeof a.storageKey === 'string' ? a.storageKey.trim() : '';
+	            const dataLen = typeof a.data === 'string' ? a.data.length : 0;
+	            const name = typeof a.name === 'string' ? a.name.trim() : '';
+	            const size = Number.isFinite(a.size) ? a.size : '';
+	            return `p:${storageKey}:${dataLen}:${name}:${size}`;
+	          }
+	          if (a.kind === 'ink') {
+	            const storageKey = typeof a.storageKey === 'string' ? a.storageKey.trim() : '';
+	            const rev = Number.isFinite(a.rev) ? a.rev : '';
+	            return `k:${storageKey}:${rev}`;
+	          }
+	          return '';
+	        })
         .join('|');
       parts.push(`att:${attSig}`);
     }
@@ -4630,11 +4644,20 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return parts.join('\n');
   }
 
-  private touchAttachmentThumbDataUrl(storageKey: string): void {
-    const entry = this.attachmentThumbDataUrlByKey.get(storageKey);
+	  private touchAttachmentThumbDataUrl(storageKey: string): void {
+	    const key = typeof storageKey === 'string' ? storageKey.trim() : '';
+	    if (!key) return;
+	    const entry = this.attachmentThumbDataUrlByKey.get(key);
+	    if (!entry) return;
+	    this.attachmentThumbDataUrlByKey.delete(key);
+	    this.attachmentThumbDataUrlByKey.set(key, entry);
+	  }
+
+  private touchInlineThumbDataUrl(key: string): void {
+    const entry = this.inlineThumbDataUrlByKey.get(key);
     if (!entry) return;
-    this.attachmentThumbDataUrlByKey.delete(storageKey);
-    this.attachmentThumbDataUrlByKey.set(storageKey, entry);
+    this.inlineThumbDataUrlByKey.delete(key);
+    this.inlineThumbDataUrlByKey.set(key, entry);
   }
 
   private evictOldAttachmentThumbDataUrls(): void {
@@ -4652,6 +4675,16 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     }
   }
 
+  private evictOldInlineThumbDataUrls(): void {
+    while (this.inlineThumbDataUrlByKey.size > this.inlineThumbDataUrlMaxEntries || this.inlineThumbDataUrlBytes > this.inlineThumbDataUrlMaxBytes) {
+      const oldestKey = this.inlineThumbDataUrlByKey.keys().next().value as string | undefined;
+      if (!oldestKey) return;
+      const entry = this.inlineThumbDataUrlByKey.get(oldestKey);
+      if (entry) this.inlineThumbDataUrlBytes -= entry.size || 0;
+      this.inlineThumbDataUrlByKey.delete(oldestKey);
+    }
+  }
+
   private async prefetchAttachmentThumbDataUrl(storageKey: string): Promise<void> {
     const key = typeof storageKey === 'string' ? storageKey.trim() : '';
     if (!key) return;
@@ -4659,12 +4692,42 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (this.attachmentThumbDataUrlInFlight.has(key)) return;
     if (this.attachmentThumbDataUrlFailed.has(key)) return;
 
-    this.attachmentThumbDataUrlInFlight.add(key);
+	    this.attachmentThumbDataUrlInFlight.add(key);
+	    const refreshNodesUsingKey = () => {
+	      let anyTextChanged = false;
+	      let anyInkChanged = false;
+	      for (const node of this.nodes) {
+	        if (node.kind === 'text') {
+	          const atts = Array.isArray(node.attachments) ? node.attachments : [];
+	          const usesKey = atts.some(
+	            (a) => a?.kind === 'image' && typeof a.storageKey === 'string' && a.storageKey.trim() === key,
+	          );
+	          if (!usesKey) continue;
+	          const prevHash = node.displayHash;
+	          this.recomputeTextNodeDisplayHash(node);
+	          if (node.displayHash !== prevHash) anyTextChanged = true;
+	          continue;
+	        }
+
+	        if (node.kind === 'ink') {
+	          const atts = Array.isArray(node.attachments) ? node.attachments : [];
+	          const usesKey = atts.some(
+	            (a) => a?.kind === 'image' && typeof a.storageKey === 'string' && a.storageKey.trim() === key,
+	          );
+	          if (usesKey) anyInkChanged = true;
+	        }
+	      }
+
+      if (anyTextChanged) this.textRasterGeneration += 1;
+      if (anyInkChanged) this.inkPrefaceRasterGeneration += 1;
+      if (anyTextChanged || anyInkChanged) this.requestRender();
+    };
     try {
       const rec = await getStoredAttachment(key);
       const blob = rec?.blob ?? null;
       if (!blob) {
         this.attachmentThumbDataUrlFailed.add(key);
+        refreshNodesUsingKey();
         return;
       }
 
@@ -4719,6 +4782,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
       if (!thumbDataUrl) {
         this.attachmentThumbDataUrlFailed.add(key);
+        refreshNodesUsingKey();
         return;
       }
 
@@ -4733,23 +4797,125 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       this.touchAttachmentThumbDataUrl(key);
       this.evictOldAttachmentThumbDataUrls();
 
+      refreshNodesUsingKey();
+    } catch {
+      this.attachmentThumbDataUrlFailed.add(key);
+      try {
+        refreshNodesUsingKey();
+      } catch {
+        // ignore
+      }
+    } finally {
+      this.attachmentThumbDataUrlInFlight.delete(key);
+    }
+  }
+
+  private inlineThumbKeyForImageData(base64: string, mimeType?: string): string {
+    const data = typeof base64 === 'string' ? base64 : '';
+    if (!data) return '';
+    const mt = typeof mimeType === 'string' && mimeType.trim() ? mimeType.trim() : 'image/png';
+    const sample = data.slice(0, 4096);
+    return `inline:${mt}:${data.length.toString(36)}:${fingerprintText(sample)}`;
+  }
+
+  private async prefetchInlineThumbDataUrl(key: string, base64: string, mimeType?: string): Promise<void> {
+    const k = typeof key === 'string' ? key.trim() : '';
+    if (!k) return;
+    if (this.inlineThumbDataUrlByKey.has(k)) return;
+    if (this.inlineThumbDataUrlInFlight.has(k)) return;
+    if (this.inlineThumbDataUrlFailed.has(k)) return;
+
+    this.inlineThumbDataUrlInFlight.add(k);
+    try {
+      if (typeof document === 'undefined') {
+        this.inlineThumbDataUrlFailed.add(k);
+        return;
+      }
+
+      const data = typeof base64 === 'string' ? base64.replace(/\s+/g, '') : '';
+      if (!data) {
+        this.inlineThumbDataUrlFailed.add(k);
+        return;
+      }
+      const mt = typeof mimeType === 'string' && mimeType.trim() ? mimeType.trim() : 'image/png';
+
+      const thumbDataUrl = await (async () => {
+        const img = new Image();
+        (img as any).decoding = 'async';
+        img.src = `data:${mt};base64,${data}`;
+        if (typeof (img as any).decode === 'function') {
+          await (img as any).decode();
+        } else {
+          await new Promise<void>((resolve, reject) => {
+            img.onload = () => resolve();
+            img.onerror = () => reject(new Error('Failed to load inline image.'));
+          });
+        }
+
+        const iw = Number.isFinite(img.naturalWidth) ? img.naturalWidth : 0;
+        const ih = Number.isFinite(img.naturalHeight) ? img.naturalHeight : 0;
+        if (iw <= 0 || ih <= 0) return null;
+
+        const THUMB_PX = 192;
+        const canvas = document.createElement('canvas');
+        canvas.width = THUMB_PX;
+        canvas.height = THUMB_PX;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+
+        const scale = Math.max(THUMB_PX / iw, THUMB_PX / ih);
+        const sw = THUMB_PX / scale;
+        const sh = THUMB_PX / scale;
+        const sx = Math.max(0, (iw - sw) * 0.5);
+        const sy = Math.max(0, (ih - sh) * 0.5);
+        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, THUMB_PX, THUMB_PX);
+
+        try {
+          return canvas.toDataURL('image/png');
+        } catch {
+          return null;
+        }
+      })();
+
+      if (!thumbDataUrl) {
+        this.inlineThumbDataUrlFailed.add(k);
+        return;
+      }
+
+      const size = Math.max(0, thumbDataUrl.length || 0);
+      const prev = this.inlineThumbDataUrlByKey.get(k);
+      const rev = (prev?.rev ?? 0) + 1;
+
+      if (prev) this.inlineThumbDataUrlBytes -= prev.size || 0;
+      this.inlineThumbDataUrlByKey.set(k, { key: k, dataUrl: thumbDataUrl, rev, size });
+      this.inlineThumbDataUrlBytes += size;
+      this.touchInlineThumbDataUrl(k);
+      this.evictOldInlineThumbDataUrls();
+
       let anyTextChanged = false;
       let anyInkChanged = false;
       for (const node of this.nodes) {
+        const atts = Array.isArray((node as any)?.attachments) ? ((node as any).attachments as any[]) : [];
+        const usesKey = atts.some((a) => {
+          if (!a || typeof a !== 'object') return false;
+          if (a.kind !== 'image') return false;
+          const storageKey = typeof a.storageKey === 'string' ? a.storageKey.trim() : '';
+          if (storageKey) return false;
+          const d = typeof a.data === 'string' ? a.data : '';
+          if (!d) return false;
+          const candidate = this.inlineThumbKeyForImageData(d, a.mimeType);
+          return candidate === k;
+        });
+        if (!usesKey) continue;
+
         if (node.kind === 'text') {
-          const atts = Array.isArray(node.attachments) ? node.attachments : [];
-          const usesKey = atts.some((a) => a?.kind === 'image' && typeof a.storageKey === 'string' && a.storageKey === key);
-          if (!usesKey) continue;
-          const prevHash = node.displayHash;
-          this.recomputeTextNodeDisplayHash(node);
-          if (node.displayHash !== prevHash) anyTextChanged = true;
+          const prevHash = (node as any).displayHash;
+          this.recomputeTextNodeDisplayHash(node as any);
+          if ((node as any).displayHash !== prevHash) anyTextChanged = true;
           continue;
         }
-
         if (node.kind === 'ink') {
-          const atts = Array.isArray(node.attachments) ? node.attachments : [];
-          const usesKey = atts.some((a) => a?.kind === 'image' && typeof a.storageKey === 'string' && a.storageKey === key);
-          if (usesKey) anyInkChanged = true;
+          anyInkChanged = true;
         }
       }
 
@@ -4757,30 +4923,45 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       if (anyInkChanged) this.inkPrefaceRasterGeneration += 1;
       if (anyTextChanged || anyInkChanged) this.requestRender();
     } catch {
-      this.attachmentThumbDataUrlFailed.add(key);
+      this.inlineThumbDataUrlFailed.add(k);
     } finally {
-      this.attachmentThumbDataUrlInFlight.delete(key);
+      this.inlineThumbDataUrlInFlight.delete(k);
     }
   }
 
   private resolveImageAttachmentThumbSrc(att: ChatAttachment): string | null {
     if (!att || att.kind !== 'image') return null;
 
-    if (typeof att.data === 'string' && att.data) {
-      const mimeType = typeof att.mimeType === 'string' && att.mimeType ? att.mimeType : 'image/png';
-      return `data:${mimeType};base64,${att.data}`;
+    const storageKey = typeof att.storageKey === 'string' ? att.storageKey.trim() : '';
+    const dataRaw = typeof att.data === 'string' ? att.data : '';
+    const data = dataRaw ? dataRaw.replace(/\s+/g, '') : '';
+
+    if (storageKey && !this.attachmentThumbDataUrlFailed.has(storageKey)) {
+      const entry = this.attachmentThumbDataUrlByKey.get(storageKey);
+      if (entry?.dataUrl) {
+        this.touchAttachmentThumbDataUrl(storageKey);
+        return entry.dataUrl;
+      }
+      void this.prefetchAttachmentThumbDataUrl(storageKey);
+      return null;
     }
 
-    const storageKey = typeof att.storageKey === 'string' ? att.storageKey : '';
-    if (!storageKey) return null;
+    if (!data) return null;
 
-    const entry = this.attachmentThumbDataUrlByKey.get(storageKey);
+    const mimeType = typeof att.mimeType === 'string' && att.mimeType.trim() ? att.mimeType.trim() : 'image/png';
+    const MAX_INLINE_B64_CHARS = 100_000;
+    if (data.length <= MAX_INLINE_B64_CHARS) {
+      return `data:${mimeType};base64,${data}`;
+    }
+
+    const inlineKey = this.inlineThumbKeyForImageData(data, mimeType);
+    const entry = this.inlineThumbDataUrlByKey.get(inlineKey);
     if (entry?.dataUrl) {
-      this.touchAttachmentThumbDataUrl(storageKey);
+      this.touchInlineThumbDataUrl(inlineKey);
       return entry.dataUrl;
     }
 
-    void this.prefetchAttachmentThumbDataUrl(storageKey);
+    void this.prefetchInlineThumbDataUrl(inlineKey, data, mimeType);
     return null;
   }
 

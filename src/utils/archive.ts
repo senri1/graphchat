@@ -5,7 +5,7 @@ import type { WorkspaceFolder } from '../workspace/tree';
 import { blobToDataUrl, getAttachment as getStoredAttachment, putAttachment } from '../storage/attachments';
 import { getPayload, putPayload } from '../storage/payloads';
 import { DEFAULT_MODEL_ID } from '../llm/registry';
-import { splitDataUrl } from './files';
+import { base64ToBlob, splitDataUrl } from './files';
 
 export type ArchiveV1 = {
   format: 'graphchatv1';
@@ -140,27 +140,6 @@ function cloneRawPayloadForArchive(
   return visit(payload, 0);
 }
 
-function base64ToBlob(base64: string, mimeType: string): Blob {
-  const mt = safeString(mimeType).trim() || 'application/octet-stream';
-  let b64 = safeString(base64).replace(/\s+/g, '');
-  if (!b64) return new Blob([], { type: mt });
-  const mod = b64.length % 4;
-  if (mod) b64 += '='.repeat(4 - mod);
-  if (typeof atob !== 'function') throw new Error('Base64 decoding is not available in this environment.');
-
-  // Decode in chunks to avoid atob() size limits on large attachments/PDFs.
-  const chunkSize = 1024 * 1024; // base64 chars; must be divisible by 4
-  const parts: Uint8Array[] = [];
-  for (let offset = 0; offset < b64.length; offset += chunkSize) {
-    const slice = b64.slice(offset, offset + chunkSize);
-    const bin = atob(slice);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
-    parts.push(bytes);
-  }
-  return new Blob(parts, { type: mt });
-}
-
 async function blobToBase64(blob: Blob, mimeTypeHint?: string): Promise<{ base64: string; mimeType: string } | null> {
   try {
     const mt = safeString(mimeTypeHint).trim() || blob.type || 'application/octet-stream';
@@ -225,32 +204,14 @@ async function rehydrateAttachmentsInPlace(value: any, warnings: string[], conte
 
     if (kind === 'image') {
       await embedBlob('image/png');
-      if (typeof att.data === 'string' && att.data) {
-        try {
-          delete att.storageKey;
-        } catch {
-          // ignore
-        }
-      }
+      // Keep storageKey as a best-effort hint for same-device imports (importer will ignore if missing).
     } else if (kind === 'pdf') {
       await embedBlob('application/pdf');
-      if (typeof att.data === 'string' && att.data) {
-        try {
-          delete att.storageKey;
-        } catch {
-          // ignore
-        }
-      }
+      // Keep storageKey as a best-effort hint for same-device imports (importer will ignore if missing).
     } else if (kind === 'ink') {
       // Ink attachments are rare in v1, but keep best-effort portability.
       await embedBlob('application/octet-stream');
-      if (typeof att.data === 'string' && att.data) {
-        try {
-          delete att.storageKey;
-        } catch {
-          // ignore
-        }
-      }
+      // Keep storageKey as a best-effort hint for same-device imports (importer will ignore if missing).
     }
   }
 }
@@ -349,14 +310,6 @@ async function rehydratePdfNodeFilesInPlace(nodes: any[], warnings: string[]) {
       embedded = true;
     } catch {
       warnings.push(`Failed to fetch PDF blob for key ${storageKey}`);
-    } finally {
-      if (embedded) {
-        try {
-          delete node.storageKey;
-        } catch {
-          // ignore
-        }
-      }
     }
   }
 }
@@ -559,6 +512,31 @@ export async function importArchive(
   const nodes = Array.isArray(rawState?.nodes) ? (safeClone(rawState.nodes) as any[]) : [];
   const worldInkStrokes = Array.isArray(rawState?.worldInkStrokes) ? (safeClone(rawState.worldInkStrokes) as InkStroke[]) : [];
 
+  const existingAttachmentMetaByKey = new Map<string, { mimeType: string; name?: string; size?: number } | null>();
+  const lookupExistingAttachmentMeta = async (
+    storageKeyRaw: string,
+  ): Promise<{ mimeType: string; name?: string; size?: number } | null> => {
+    const storageKey = safeString(storageKeyRaw).trim();
+    if (!storageKey) return null;
+    if (existingAttachmentMetaByKey.has(storageKey)) return existingAttachmentMetaByKey.get(storageKey) ?? null;
+    try {
+      const rec = await getStoredAttachment(storageKey);
+      const meta =
+        rec?.blob != null
+          ? {
+              mimeType: safeString(rec.mimeType).trim(),
+              ...(safeString(rec.name).trim() ? { name: safeString(rec.name).trim() } : {}),
+              ...(Number.isFinite(Number(rec.size)) ? { size: Number(rec.size) } : {}),
+            }
+          : null;
+      existingAttachmentMetaByKey.set(storageKey, meta);
+      return meta;
+    } catch {
+      existingAttachmentMetaByKey.set(storageKey, null);
+      return null;
+    }
+  };
+
   // Normalize nodes and migrate embedded data to IDB.
   for (const raw of nodes) {
     const node = raw as any;
@@ -571,30 +549,51 @@ export async function importArchive(
         // ignore
       }
 
-      const atts = Array.isArray(node.attachments) ? (node.attachments as any[]) : [];
-      for (let i = 0; i < atts.length; i += 1) {
-        const att = atts[i];
-        if (!att || typeof att !== 'object') continue;
-        const kind = safeString(att.kind);
-        const data = typeof att.data === 'string' ? att.data : '';
-        const mimeType = safeString(att.mimeType).trim();
-        if ((kind === 'image' || kind === 'pdf' || kind === 'ink') && data) {
-          const fallbackMt = kind === 'pdf' ? 'application/pdf' : kind === 'image' ? 'image/png' : 'application/octet-stream';
-          const mt = mimeType || fallbackMt;
-          try {
-            const blob = base64ToBlob(data, mt);
-            const storageKey = await putAttachment({
-              blob,
-              mimeType: mt,
-              name: safeString(att.name).trim() || undefined,
-              size: Number.isFinite(Number(att.size)) ? Number(att.size) : undefined,
-            });
-            const next = { ...att, storageKey, mimeType: mt } as any;
-            delete next.data;
-            atts[i] = next;
-          } catch {
-            warnings.push(`Failed to import attachment for node ${safeString(node.id)}`);
-          }
+	      const atts = Array.isArray(node.attachments) ? (node.attachments as any[]) : [];
+	      for (let i = 0; i < atts.length; i += 1) {
+	        const att = atts[i];
+	        if (!att || typeof att !== 'object') continue;
+	        let kind = safeString(att.kind).trim();
+	        const name = safeString(att.name).trim();
+	        const lowerName = name.toLowerCase();
+	        const data = typeof att.data === 'string' ? att.data : '';
+	        const existingKey = typeof att.storageKey === 'string' ? att.storageKey.trim() : '';
+	        const mimeTypeRaw = safeString(att.mimeType).trim();
+	        if (kind === 'image' && (mimeTypeRaw === 'application/pdf' || lowerName.endsWith('.pdf'))) kind = 'pdf';
+	        const mimeType = kind === 'pdf' ? 'application/pdf' : mimeTypeRaw;
+	        if (kind === 'image' || kind === 'pdf' || kind === 'ink') {
+	          const fallbackMt = kind === 'pdf' ? 'application/pdf' : kind === 'image' ? 'image/png' : 'application/octet-stream';
+
+	          if (existingKey) {
+	            const meta = await lookupExistingAttachmentMeta(existingKey);
+	            if (meta) {
+	              const mt = mimeType || meta.mimeType || fallbackMt;
+	              const next = { ...att, kind, storageKey: existingKey, mimeType: mt } as any;
+	              if (next.size == null && meta.size != null) next.size = meta.size;
+	              if (!safeString(next.name).trim() && safeString(meta.name).trim()) next.name = meta.name;
+	              delete next.data;
+	              atts[i] = next;
+	              continue;
+	            }
+	          }
+
+	          if (data) {
+	            const mt = mimeType || fallbackMt;
+	            try {
+	              const blob = base64ToBlob(data, mt);
+	              const storageKey = await putAttachment({
+	                blob,
+	                mimeType: mt,
+	                name: safeString(att.name).trim() || undefined,
+	                size: Number.isFinite(Number(att.size)) ? Number(att.size) : undefined,
+	              });
+	              const next = { ...att, kind, storageKey, mimeType: mt } as any;
+	              delete next.data;
+	              atts[i] = next;
+	            } catch (err: any) {
+	              warnings.push(`Failed to import attachment for node ${safeString(node.id)} (${err?.message || String(err)})`);
+	            }
+	          }
         }
       }
       if (atts.length) node.attachments = atts;
@@ -632,31 +631,52 @@ export async function importArchive(
           warnings.push(`Failed to persist raw response payload for node ${safeString(node.id)}`);
         }
       }
-    } else if (node.kind === 'ink') {
-      const atts = Array.isArray(node.attachments) ? (node.attachments as any[]) : [];
-      for (let i = 0; i < atts.length; i += 1) {
-        const att = atts[i];
-        if (!att || typeof att !== 'object') continue;
-        const kind = safeString(att.kind);
-        const data = typeof att.data === 'string' ? att.data : '';
-        const mimeType = safeString(att.mimeType).trim();
-        if ((kind === 'image' || kind === 'pdf' || kind === 'ink') && data) {
-          const fallbackMt = kind === 'pdf' ? 'application/pdf' : kind === 'image' ? 'image/png' : 'application/octet-stream';
-          const mt = mimeType || fallbackMt;
-          try {
-            const blob = base64ToBlob(data, mt);
-            const storageKey = await putAttachment({
-              blob,
-              mimeType: mt,
-              name: safeString(att.name).trim() || undefined,
-              size: Number.isFinite(Number(att.size)) ? Number(att.size) : undefined,
-            });
-            const next = { ...att, storageKey, mimeType: mt } as any;
-            delete next.data;
-            atts[i] = next;
-          } catch {
-            warnings.push(`Failed to import attachment for node ${safeString(node.id)}`);
-          }
+	    } else if (node.kind === 'ink') {
+	      const atts = Array.isArray(node.attachments) ? (node.attachments as any[]) : [];
+	      for (let i = 0; i < atts.length; i += 1) {
+	        const att = atts[i];
+	        if (!att || typeof att !== 'object') continue;
+	        let kind = safeString(att.kind).trim();
+	        const name = safeString(att.name).trim();
+	        const lowerName = name.toLowerCase();
+	        const data = typeof att.data === 'string' ? att.data : '';
+	        const existingKey = typeof att.storageKey === 'string' ? att.storageKey.trim() : '';
+	        const mimeTypeRaw = safeString(att.mimeType).trim();
+	        if (kind === 'image' && (mimeTypeRaw === 'application/pdf' || lowerName.endsWith('.pdf'))) kind = 'pdf';
+	        const mimeType = kind === 'pdf' ? 'application/pdf' : mimeTypeRaw;
+	        if (kind === 'image' || kind === 'pdf' || kind === 'ink') {
+	          const fallbackMt = kind === 'pdf' ? 'application/pdf' : kind === 'image' ? 'image/png' : 'application/octet-stream';
+
+	          if (existingKey) {
+	            const meta = await lookupExistingAttachmentMeta(existingKey);
+	            if (meta) {
+	              const mt = mimeType || meta.mimeType || fallbackMt;
+	              const next = { ...att, kind, storageKey: existingKey, mimeType: mt } as any;
+	              if (next.size == null && meta.size != null) next.size = meta.size;
+	              if (!safeString(next.name).trim() && safeString(meta.name).trim()) next.name = meta.name;
+	              delete next.data;
+	              atts[i] = next;
+	              continue;
+	            }
+	          }
+
+	          if (data) {
+	            const mt = mimeType || fallbackMt;
+	            try {
+	              const blob = base64ToBlob(data, mt);
+	              const storageKey = await putAttachment({
+	                blob,
+	                mimeType: mt,
+	                name: safeString(att.name).trim() || undefined,
+	                size: Number.isFinite(Number(att.size)) ? Number(att.size) : undefined,
+	              });
+	              const next = { ...att, kind, storageKey, mimeType: mt } as any;
+	              delete next.data;
+	              atts[i] = next;
+	            } catch (err: any) {
+	              warnings.push(`Failed to import attachment for node ${safeString(node.id)} (${err?.message || String(err)})`);
+	            }
+	          }
         }
       }
       if (atts.length) node.attachments = atts;
@@ -682,9 +702,25 @@ export async function importArchive(
     } else if (node.kind === 'pdf') {
       const fileData = node.fileData as any;
       const data = fileData && typeof fileData === 'object' ? safeString(fileData.data) : '';
+      const existingKey = typeof node.storageKey === 'string' ? node.storageKey.trim() : '';
+      if (existingKey) {
+        const meta = await lookupExistingAttachmentMeta(existingKey);
+        if (meta) {
+          node.storageKey = existingKey;
+          if (!safeString(node.fileName).trim() && safeString(meta.name).trim()) node.fileName = meta.name ?? null;
+          node.status = 'empty';
+          node.error = null;
+          try {
+            delete node.fileData;
+          } catch {
+            // ignore
+          }
+          continue;
+        }
+      }
+
       if (data) {
         const mt = safeString(fileData.mimeType).trim() || 'application/pdf';
-        let imported = false;
         try {
           const blob = base64ToBlob(data, mt);
           const storageKey = await putAttachment({
@@ -698,19 +734,16 @@ export async function importArchive(
           if (!safeString(node.fileName).trim() && importedName) node.fileName = importedName;
           node.status = 'empty';
           node.error = null;
-          imported = true;
-        } catch {
-          warnings.push(`Failed to import PDF node ${safeString(node.id)}`);
-          node.status = 'error';
-          node.error = safeString(node.error).trim() || 'Import failed';
-        } finally {
-          if (imported) {
-            try {
-              delete node.fileData;
-            } catch {
-              // ignore
-            }
+          try {
+            delete node.fileData;
+          } catch {
+            // ignore
           }
+        } catch (err: any) {
+          warnings.push(`Failed to import PDF node ${safeString(node.id)} (${err?.message || String(err)})`);
+          node.storageKey = null;
+          node.status = 'empty';
+          node.error = null;
         }
       } else {
         // fileData is archive-only; remove if it exists but has no embedded content.
@@ -758,30 +791,48 @@ export async function importArchive(
   };
 
   // Migrate draft attachments (embedded base64) to IDB.
-  if (Array.isArray(meta.draftAttachments)) {
-    const arr = meta.draftAttachments as any[];
-    for (let i = 0; i < arr.length; i += 1) {
-      const att = arr[i];
-      if (!att || typeof att !== 'object') continue;
-      const kind = safeString(att.kind);
-      const data = typeof att.data === 'string' ? att.data : '';
+	  if (Array.isArray(meta.draftAttachments)) {
+	    const arr = meta.draftAttachments as any[];
+	    for (let i = 0; i < arr.length; i += 1) {
+	      const att = arr[i];
+	      if (!att || typeof att !== 'object') continue;
+	      let kind = safeString(att.kind).trim();
+	      const data = typeof att.data === 'string' ? att.data : '';
+	      const existingKey = typeof att.storageKey === 'string' ? att.storageKey.trim() : '';
+	      const name = safeString(att.name).trim();
+	      const lowerName = name.toLowerCase();
+	      const mimeTypeRaw = safeString(att.mimeType).trim();
+	      if (kind === 'image' && (mimeTypeRaw === 'application/pdf' || lowerName.endsWith('.pdf'))) kind = 'pdf';
+	      const fallbackMt = kind === 'pdf' ? 'application/pdf' : kind === 'image' ? 'image/png' : 'application/octet-stream';
+	      const mt = (kind === 'pdf' ? 'application/pdf' : mimeTypeRaw) || fallbackMt;
+
+	      if (existingKey) {
+	        const meta = await lookupExistingAttachmentMeta(existingKey);
+	        if (meta) {
+	          const next = { ...att, kind, storageKey: existingKey, mimeType: mt || meta.mimeType || fallbackMt } as any;
+	          if (next.size == null && meta.size != null) next.size = meta.size;
+	          if (!safeString(next.name).trim() && safeString(meta.name).trim()) next.name = meta.name;
+	          delete next.data;
+	          arr[i] = next;
+	          continue;
+	        }
+	      }
+
       if (!data) continue;
-      const fallbackMt = kind === 'pdf' ? 'application/pdf' : kind === 'image' ? 'image/png' : 'application/octet-stream';
-      const mt = safeString(att.mimeType).trim() || fallbackMt;
-      try {
-        const blob = base64ToBlob(data, mt);
-        const storageKey = await putAttachment({
-          blob,
-          mimeType: mt,
-          name: safeString(att.name).trim() || undefined,
-          size: Number.isFinite(Number(att.size)) ? Number(att.size) : undefined,
-        });
-        const next = { ...att, storageKey, mimeType: mt } as any;
-        delete next.data;
-        arr[i] = next;
-      } catch {
-        warnings.push('Failed to import draft attachment');
-      }
+	      try {
+	        const blob = base64ToBlob(data, mt);
+	        const storageKey = await putAttachment({
+	          blob,
+	          mimeType: mt,
+	          name: safeString(att.name).trim() || undefined,
+	          size: Number.isFinite(Number(att.size)) ? Number(att.size) : undefined,
+	        });
+	        const next = { ...att, kind, storageKey, mimeType: mt } as any;
+	        delete next.data;
+	        arr[i] = next;
+	      } catch (err: any) {
+	        warnings.push(`Failed to import draft attachment (${err?.message || String(err)})`);
+	      }
     }
     meta.draftAttachments = arr;
   }

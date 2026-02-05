@@ -50,7 +50,7 @@ import { buildGeminiContext, type GeminiChatSettings } from './llm/gemini';
 import { DEFAULT_MODEL_ID, getModelInfo, listModels } from './llm/registry';
 import { extractCanonicalMessage, extractCanonicalMeta } from './llm/openaiCanonical';
 import { buildModelUserSettings, normalizeModelUserSettings, type ModelUserSettingsById } from './llm/modelUserSettings';
-import { readFileAsDataUrl, splitDataUrl } from './utils/files';
+import { base64ToBlob, readFileAsDataUrl, splitDataUrl } from './utils/files';
 import type { ArchiveV1, ArchiveV2 } from './utils/archive';
 import { deleteAttachment, deleteAttachments, getAttachment, listAttachmentKeys, putAttachment } from './storage/attachments';
 import { clearAllStores } from './storage/db';
@@ -1325,42 +1325,98 @@ export default function App() {
     })();
   };
 
-  const hydratePdfNodesForChat = (chatId: string, state: WorldEngineChatState) => {
-    const cid = chatId;
-    if (!cid) return;
-    if (hydratingPdfChatsRef.current.has(cid)) return;
+	  const hydratePdfNodesForChat = (chatId: string, state: WorldEngineChatState) => {
+	    const cid = chatId;
+	    if (!cid) return;
+	    if (hydratingPdfChatsRef.current.has(cid)) return;
 
-    const pdfNodes = (state?.nodes ?? []).filter(
-      (n): n is Extract<ChatNode, { kind: 'pdf' }> =>
-        n.kind === 'pdf' && typeof (n as any)?.storageKey === 'string' && Boolean(String((n as any).storageKey).trim()),
-    );
-    if (pdfNodes.length === 0) return;
+	    const pdfNodes = (state?.nodes ?? []).filter((n): n is Extract<ChatNode, { kind: 'pdf' }> => n.kind === 'pdf');
+	    const candidates = pdfNodes.filter((n) => {
+	      const storageKey = typeof (n as any)?.storageKey === 'string' ? String((n as any).storageKey).trim() : '';
+	      if (storageKey) return true;
+	      const fileData = (n as any)?.fileData;
+	      const data = fileData && typeof fileData === 'object' ? String((fileData as any).data ?? '').trim() : '';
+	      return Boolean(data);
+	    });
+	    if (candidates.length === 0) return;
 
-    hydratingPdfChatsRef.current.add(cid);
-    void (async () => {
-      try {
-        const engine = engineRef.current;
-        if (!engine) return;
+	    hydratingPdfChatsRef.current.add(cid);
+	    void (async () => {
+	      try {
+	        const engine = engineRef.current;
+	        if (!engine) return;
 
-        for (const node of pdfNodes) {
-          const storageKey = String((node as any).storageKey ?? '').trim();
-          if (!storageKey) continue;
-          const rec = await getAttachment(storageKey);
-          if (!rec?.blob) continue;
-          const buf = await rec.blob.arrayBuffer();
-          await engine.hydratePdfNodeFromArrayBuffer({
-            nodeId: node.id,
-            buffer: buf,
-            fileName: node.fileName ?? null,
-            storageKey,
-          });
-        }
-      } finally {
-        hydratingPdfChatsRef.current.delete(cid);
-        schedulePersistSoon();
-      }
-    })();
-  };
+	        for (const node of candidates) {
+	          const storageKey = typeof (node as any)?.storageKey === 'string' ? String((node as any).storageKey).trim() : '';
+
+	          if (storageKey) {
+	            try {
+	              const rec = await getAttachment(storageKey);
+	              if (rec?.blob) {
+	                const buf = await rec.blob.arrayBuffer();
+	                await engine.hydratePdfNodeFromArrayBuffer({
+	                  nodeId: node.id,
+	                  buffer: buf,
+	                  fileName: node.fileName ?? null,
+	                  storageKey,
+	                });
+	                continue;
+	              }
+	            } catch {
+	              // fall through to embedded fileData
+	            }
+	          }
+
+	          const fileData = (node as any)?.fileData;
+	          const data = fileData && typeof fileData === 'object' ? String((fileData as any).data ?? '').trim() : '';
+	          if (!data) continue;
+
+	          const mt = String((fileData as any)?.mimeType ?? '').trim() || 'application/pdf';
+	          const name = String((fileData as any)?.name ?? '').trim() || String(node.fileName ?? '').trim() || 'document.pdf';
+	          const sizeRaw = Number((fileData as any)?.size);
+	          const size = Number.isFinite(sizeRaw) ? sizeRaw : undefined;
+
+	          try {
+	            const blob = base64ToBlob(data, mt);
+	            const buf = await blob.arrayBuffer();
+
+	            let storedKey: string | null = null;
+	            try {
+	              storedKey = await putAttachment({
+	                blob,
+	                mimeType: mt,
+	                name,
+	                size,
+	              });
+	            } catch {
+	              storedKey = null;
+	            }
+
+	            if (storedKey) {
+	              (node as any).storageKey = storedKey;
+	              try {
+	                delete (node as any).fileData;
+	              } catch {
+	                // ignore
+	              }
+	            }
+
+	            await engine.hydratePdfNodeFromArrayBuffer({
+	              nodeId: node.id,
+	              buffer: buf,
+	              fileName: node.fileName ?? name ?? null,
+	              storageKey: storedKey,
+	            });
+	          } catch {
+	            // ignore
+	          }
+	        }
+	      } finally {
+	        hydratingPdfChatsRef.current.delete(cid);
+	        schedulePersistSoon();
+	      }
+	    })();
+	  };
 
   const updateStoredTextNode = (chatId: string, nodeId: string, patch: Partial<Extract<ChatNode, { kind: 'text' }>>) => {
     const state = chatStatesRef.current.get(chatId);
