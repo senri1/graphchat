@@ -17,12 +17,12 @@ const INK_NODE_IMAGE_PREFACE =
 
 async function attachmentToXaiContent(att: ChatAttachment): Promise<any | null> {
   if (!att) return null;
-  if (att.kind !== 'image') return null;
+  if (att.kind === 'ink') return null;
 
   const materializeDataUrl = async (fallbackMimeType: string): Promise<string | null> => {
-    if (typeof (att as any).data === 'string' && (att as any).data) {
+    if (typeof att.data === 'string' && att.data) {
       const mimeType = typeof att.mimeType === 'string' && att.mimeType ? att.mimeType : fallbackMimeType;
-      return `data:${mimeType};base64,${(att as any).data}`;
+      return `data:${mimeType};base64,${att.data}`;
     }
     const storageKey = typeof (att as any).storageKey === 'string' ? String((att as any).storageKey).trim() : '';
     if (!storageKey) return null;
@@ -39,10 +39,22 @@ async function attachmentToXaiContent(att: ChatAttachment): Promise<any | null> 
     }
   };
 
-  const dataUrl = await materializeDataUrl('image/png');
-  if (!dataUrl) return null;
-  const detail = typeof (att as any).detail === 'string' ? (att as any).detail : 'auto';
-  return { type: 'input_image', image_url: dataUrl, detail };
+  if (att.kind === 'image') {
+    const dataUrl = await materializeDataUrl('image/png');
+    if (!dataUrl) return null;
+    const detail = typeof (att as any).detail === 'string' ? (att as any).detail : 'auto';
+    return { type: 'input_image', image_url: dataUrl, detail };
+  }
+
+  if (att.kind === 'pdf') {
+    const dataUrl = await materializeDataUrl('application/pdf');
+    if (!dataUrl) return null;
+    const fileBlock: any = { type: 'input_file', file_data: dataUrl };
+    if (typeof att.name === 'string' && att.name.trim()) fileBlock.filename = att.name.trim();
+    return fileBlock;
+  }
+
+  return null;
 }
 
 function buildUserTurnText(node: Extract<ChatNode, { kind: 'text' }>): string {
@@ -120,9 +132,17 @@ async function buildXaiInputFromChatNodes(args: {
     if (n.kind === 'pdf') {
       const key = `pdf:${n.id}`;
       if (!leafSelection.has(key)) continue;
-      const fileName = typeof (n as any)?.fileName === 'string' ? String((n as any).fileName).trim() : '';
-      const label = fileName ? `PDF attachment omitted for xAI: ${fileName}` : 'PDF attachment omitted for xAI.';
-      input.push({ role: 'user', content: [{ type: 'input_text', text: `[${label}]` }] });
+      const storageKey = typeof (n as any)?.storageKey === 'string' ? String((n as any).storageKey).trim() : '';
+      if (!storageKey) continue;
+      const name = typeof (n as any)?.fileName === 'string' ? String((n as any).fileName).trim() : '';
+      const att: ChatAttachment = {
+        kind: 'pdf',
+        mimeType: 'application/pdf',
+        storageKey,
+        ...(name ? { name } : {}),
+      };
+      const part = await attachmentToXaiContent(att);
+      if (part) input.push({ role: 'user', content: [part] });
       continue;
     }
 
@@ -149,14 +169,8 @@ async function buildXaiInputFromChatNodes(args: {
         const includeOwn = n.id === leafUserNodeId;
         if (!includeOwn && !leafSelection.has(key)) continue;
 
-        if (nodeAtt.kind === 'image') {
-          const p = await attachmentToXaiContent(nodeAtt);
-          if (p) content.push(p);
-        } else if (nodeAtt.kind === 'pdf') {
-          const name = typeof (nodeAtt as any)?.name === 'string' ? String((nodeAtt as any).name).trim() : '';
-          const label = name ? `PDF attachment omitted for xAI: ${name}` : 'PDF attachment omitted for xAI.';
-          content.push({ type: 'input_text', text: `[${label}]` });
-        }
+        const p = await attachmentToXaiContent(nodeAtt);
+        if (p) content.push(p);
       }
 
       if (content.length) input.push({ role: 'user', content });
@@ -179,14 +193,8 @@ async function buildXaiInputFromChatNodes(args: {
         const includeOwn = n.id === leafUserNodeId;
         if (!includeOwn && !leafSelection.has(key)) continue;
 
-        if (att.kind === 'image') {
-          const part = await attachmentToXaiContent(att);
-          if (part) content.push(part);
-        } else if (att.kind === 'pdf') {
-          const name = typeof (att as any)?.name === 'string' ? String((att as any).name).trim() : '';
-          const label = name ? `PDF attachment omitted for xAI: ${name}` : 'PDF attachment omitted for xAI.';
-          content.push({ type: 'input_text', text: `[${label}]` });
-        }
+        const part = await attachmentToXaiContent(att);
+        if (part) content.push(part);
       }
 
       if (content.length) input.push({ role: 'user', content });
