@@ -20,6 +20,13 @@ GEMINI_API_KEY=...
 ANTHROPIC_API_KEY=...
 ```
 
+### Provider API access (browser vs proxy)
+
+GraphChat calls provider APIs from the browser (BYO API key).
+
+- Anthropic requires the `anthropic-dangerous-direct-browser-access: true` header for CORS browser requests (GraphChat sets this automatically).
+- Optional proxy: Vite can proxy `/api/openai/v1/*` and `/api/anthropic/v1/*` in `npm run dev` / `npm run preview`. To use it, set `VITE_OPENAI_API_BASE_URL=/api/openai/v1` and/or `VITE_ANTHROPIC_API_BASE_URL=/api/anthropic/v1` in `.env.local`.
+
 ## Controls (current skeleton)
 
 - Drag to pan

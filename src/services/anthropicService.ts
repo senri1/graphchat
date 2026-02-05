@@ -12,7 +12,10 @@ export function getAnthropicApiKey(): string | null {
   return trimmed ? trimmed : null;
 }
 
-const ANTHROPIC_API_BASE_URL = 'https://api.anthropic.com/v1';
+const ANTHROPIC_API_BASE_URL = (() => {
+  const trimmed = String(import.meta.env.VITE_ANTHROPIC_API_BASE_URL ?? '').trim();
+  return trimmed ? trimmed : 'https://api.anthropic.com/v1';
+})();
 const ANTHROPIC_VERSION = '2023-06-01';
 
 function getAnthropicBetaHeader(): string | null {
@@ -24,6 +27,27 @@ function isAbortError(err: unknown): boolean {
   if (err instanceof DOMException && err.name === 'AbortError') return true;
   if (!err || typeof err !== 'object') return false;
   return (err as any).name === 'AbortError';
+}
+
+function formatFetchErrorMessage(args: { providerLabel: string; baseUrl: string; rawMessage: string }): string {
+  const raw = String(args.rawMessage ?? '').trim();
+  if (!raw) return 'Network error';
+
+  const lower = raw.toLowerCase();
+  const isFetchFailure =
+    lower === 'failed to fetch' ||
+    lower.includes('failed to fetch') ||
+    lower.includes('networkerror when attempting to fetch') ||
+    lower.includes('load failed');
+
+  if (!isFetchFailure) return raw;
+
+  const hint = args.baseUrl.startsWith('/')
+    ? `Check that the app is running via \`npm run dev\` or \`npm run preview\` (the \`${args.baseUrl}\` proxy route must be available).`
+    : `This is often caused by browser CORS restrictions when calling ${args.providerLabel}; use a same-origin proxy (default: \`/api/anthropic/v1\`).`;
+
+  const base = raw.endsWith('.') ? raw : `${raw}.`;
+  return `${base} ${hint}`;
 }
 
 async function readErrorMessage(res: Response): Promise<string> {
@@ -56,6 +80,7 @@ function buildHeaders(args: { apiKey: string; acceptSse?: boolean; json?: boolea
   const headers: Record<string, string> = {
     'x-api-key': args.apiKey,
     'anthropic-version': ANTHROPIC_VERSION,
+    'anthropic-dangerous-direct-browser-access': 'true',
   };
   const beta = getAnthropicBetaHeader();
   if (beta) headers['anthropic-beta'] = beta;
@@ -173,7 +198,7 @@ export async function sendAnthropicMessage(args: {
   } catch (err) {
     if (isAbortError(err)) return { ok: false, text: '', error: 'Canceled', cancelled: true };
     const msg = err instanceof Error ? err.message : `Unknown error: ${String(err)}`;
-    return { ok: false, text: '', error: msg };
+    return { ok: false, text: '', error: formatFetchErrorMessage({ providerLabel: 'Anthropic', baseUrl: ANTHROPIC_API_BASE_URL, rawMessage: msg }) };
   }
 }
 
@@ -280,7 +305,11 @@ export async function streamAnthropicMessage(args: {
   } catch (err) {
     if (isAbortError(err)) return { ok: false, text: fullText, error: 'Canceled', cancelled: true, response: message ?? undefined };
     const msg = err instanceof Error ? err.message : `Unknown error: ${String(err)}`;
-    return { ok: false, text: fullText, error: msg, response: message ?? undefined };
+    return {
+      ok: false,
+      text: fullText,
+      error: formatFetchErrorMessage({ providerLabel: 'Anthropic', baseUrl: ANTHROPIC_API_BASE_URL, rawMessage: msg }),
+      response: message ?? undefined,
+    };
   }
 }
-

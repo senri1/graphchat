@@ -264,10 +264,15 @@ export async function buildAnthropicMessageRequest(args: {
   };
 
   if (args.settings.webSearchEnabled && info?.parameters.webSearch) {
-    body.tools = [{ type: 'web_search_20250305' }];
+    body.tools = [
+      {
+        type: 'web_search_20250305',
+        name: 'web_search',
+        max_uses: 5,
+      },
+    ];
     body.tool_choice = { type: 'auto' };
   }
 
   return body as Record<string, unknown>;
 }
-
