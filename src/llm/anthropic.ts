@@ -1,6 +1,7 @@
 import systemInstructions from './SystemInstructions.md?raw';
 import type { ChatAttachment, ChatNode } from '../model/chat';
 import { DEFAULT_MODEL_ID, getModelInfo } from './registry';
+import { normalizeAnthropicEffort, type AnthropicEffortSetting } from './modelUserSettings';
 import { inkNodeToPngBase64, type InkExportOptions } from './inkExport';
 import { blobToDataUrl, getAttachment as getStoredAttachment } from '../storage/attachments';
 import { getPayload } from '../storage/payloads';
@@ -11,8 +12,7 @@ export type AnthropicChatSettings = {
   webSearchEnabled?: boolean;
   stream?: boolean;
   maxTokens?: number;
-  thinkingEnabled?: boolean;
-  thinkingBudgetTokens?: number;
+  effort?: AnthropicEffortSetting;
   inkExport?: InkExportOptions;
 };
 
@@ -262,6 +262,7 @@ export async function buildAnthropicMessageRequest(args: {
 
   const rawMaxTokens = args.settings.maxTokens;
   const maxTokens = typeof rawMaxTokens === 'number' && Number.isFinite(rawMaxTokens) ? Math.max(1, Math.floor(rawMaxTokens)) : 4096;
+  const effort = normalizeAnthropicEffort(info, args.settings.effort);
   const messages = await buildAnthropicMessagesFromChatNodes(args.nodes, args.leafUserNodeId, { inkExport: args.settings.inkExport });
 
   const body: any = {
@@ -269,19 +270,9 @@ export async function buildAnthropicMessageRequest(args: {
     max_tokens: maxTokens,
     system: systemInstructions,
     messages,
+    thinking: { type: 'adaptive' },
+    output_config: { effort },
   };
-
-  if (args.settings.thinkingEnabled) {
-    const budgetMin = 1024;
-    const budgetMax = Math.max(0, Math.floor(maxTokens) - 1);
-    if (budgetMax >= budgetMin) {
-      const rawBudget = args.settings.thinkingBudgetTokens;
-      const fallback = budgetMin;
-      const picked = typeof rawBudget === 'number' && Number.isFinite(rawBudget) ? Math.floor(rawBudget) : fallback;
-      const budget = Math.max(budgetMin, Math.min(budgetMax, picked));
-      body.thinking = { type: 'enabled', budget_tokens: budget };
-    }
-  }
 
   if (args.settings.webSearchEnabled && info?.parameters.webSearch) {
     body.tools = [

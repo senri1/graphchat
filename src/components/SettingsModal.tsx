@@ -4,7 +4,14 @@ import type { BackgroundLibraryItem } from '../model/backgrounds';
 import { FONT_FAMILY_OPTIONS, type FontFamilyKey } from '../ui/typography';
 import { useAttachmentObjectUrls } from '../ui/useAttachmentObjectUrls';
 import type { ModelInfo } from '../llm/registry';
-import type { ModelUserSettings, ModelUserSettingsById, ReasoningSummarySetting } from '../llm/modelUserSettings';
+import {
+  getAnthropicEffortOptions,
+  normalizeAnthropicEffort,
+  type AnthropicEffortSetting,
+  type ModelUserSettings,
+  type ModelUserSettingsById,
+  type ReasoningSummarySetting,
+} from '../llm/modelUserSettings';
 
 export type SettingsPanelId = 'appearance' | 'models' | 'debug' | 'data' | 'reset';
 
@@ -708,18 +715,11 @@ export default function SettingsModal(props: Props) {
 	                          if (typeof n !== 'number' || !Number.isFinite(n)) return 4096;
 	                          return Math.max(1, Math.min(200000, Math.floor(n)));
 	                        })();
-	                        const thinkingBudgetMin = 1024;
-	                        const thinkingBudgetMax = supportsMaxTokens ? Math.max(0, maxTokens - 1) : 0;
-	                        const canEnableThinking = supportsMaxTokens && maxTokens > thinkingBudgetMin && thinkingBudgetMax >= thinkingBudgetMin;
-	                        const thinkingEnabled = canEnableThinking ? Boolean(s?.thinkingEnabled) : false;
-	                        const thinkingBudgetTokens = (() => {
-	                          if (!supportsMaxTokens) return 0;
-	                          const raw = s?.thinkingBudgetTokens;
-	                          const n = typeof raw === 'number' ? raw : undefined;
-	                          if (!canEnableThinking) return thinkingBudgetMin;
-	                          if (typeof n !== 'number' || !Number.isFinite(n)) return Math.min(thinkingBudgetMin, thinkingBudgetMax);
-	                          return Math.max(thinkingBudgetMin, Math.min(thinkingBudgetMax, Math.floor(n)));
-	                        })();
+	                        const supportsAnthropicEffort = model.provider === 'anthropic';
+	                        const anthropicEffortOptions = supportsAnthropicEffort ? getAnthropicEffortOptions(model) : [];
+	                        const anthropicEffort = supportsAnthropicEffort
+	                          ? normalizeAnthropicEffort(model, s?.anthropicEffort)
+	                          : 'high';
 
 	                        const setSummary = (next: ReasoningSummarySetting) => {
 	                          if (!supportsSummary) return;
@@ -820,53 +820,33 @@ export default function SettingsModal(props: Props) {
 	                                </div>
 	                              ) : null}
 
-                              {supportsMaxTokens ? (
+                              {supportsAnthropicEffort ? (
                                 <div className="settingsRow">
                                   <div className="settingsRow__text">
-                                    <div className="settingsRow__title">Extended reasoning</div>
+                                    <div className="settingsRow__title">Thinking effort</div>
                                     <div className="settingsRow__desc">
-                                      Enable Claude “thinking” with a token budget (must be less than max output tokens).
+                                      Uses adaptive thinking mode and controls how much reasoning Claude spends before final output.
                                     </div>
                                   </div>
                                   <div className="settingsRow__actions">
-                                    <button
-                                      className={`settingsToggle ${thinkingEnabled ? 'settingsToggle--on' : ''}`}
-                                      type="button"
-                                      aria-pressed={thinkingEnabled}
-                                      disabled={!canEnableThinking}
-                                      onClick={() =>
-                                        canEnableThinking
-                                          ? props.onUpdateModelUserSettings(model.id, { thinkingEnabled: !thinkingEnabled })
-                                          : undefined
-                                      }
-                                    >
-                                      {thinkingEnabled ? 'On' : 'Off'}
-                                    </button>
-                                  </div>
-                                </div>
-                              ) : null}
-
-                              {supportsMaxTokens && thinkingEnabled ? (
-                                <div className="settingsRow">
-                                  <div className="settingsRow__text">
-                                    <div className="settingsRow__title">Reasoning budget tokens</div>
-                                    <div className="settingsRow__desc">
-                                      Must be between {thinkingBudgetMin} and {thinkingBudgetMax} (max output tokens − 1).
-                                    </div>
-                                  </div>
-                                  <div className="settingsRow__actions">
-                                    <input
-                                      className="settingsInput"
-                                      type="number"
-                                      min={thinkingBudgetMin}
-                                      max={thinkingBudgetMax}
-                                      step={1}
-                                      value={thinkingBudgetTokens}
+                                    <select
+                                      className="settingsSelect"
+                                      value={anthropicEffort}
                                       onChange={(e) =>
-                                        props.onUpdateModelUserSettings(model.id, { thinkingBudgetTokens: Number(e.currentTarget.value) })
+                                        props.onUpdateModelUserSettings(model.id, {
+                                          anthropicEffort: e.currentTarget.value as AnthropicEffortSetting,
+                                        })
                                       }
-                                      aria-label="Reasoning budget tokens"
-                                    />
+                                      aria-label="Claude thinking effort"
+                                    >
+                                      {anthropicEffortOptions.map((effortOption) => (
+                                        <option key={effortOption} value={effortOption}>
+                                          {effortOption === 'max'
+                                            ? 'Max'
+                                            : effortOption.charAt(0).toUpperCase() + effortOption.slice(1)}
+                                        </option>
+                                      ))}
+                                    </select>
                                   </div>
                                 </div>
                               ) : null}

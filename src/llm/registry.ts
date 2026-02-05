@@ -267,6 +267,16 @@ const REGISTRY: ModelInfo[] = [
     parameters: { webSearch: true, streaming: true, background: false },
     defaults: { webSearch: true, streaming: true, background: false },
   },
+  {
+    id: 'claude-opus-4-6',
+    provider: 'anthropic',
+    apiModel: 'claude-opus-4-6',
+    label: 'Anthropic - Claude Opus 4.6',
+    shortLabel: 'Opus 4.6',
+    supportsImageInput: true,
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
+  },
 ];
 
 export function getModelInfo(modelId: string): ModelInfo | undefined {

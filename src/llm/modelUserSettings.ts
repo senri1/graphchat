@@ -1,6 +1,35 @@
 import type { ModelInfo, TextVerbosity } from './registry';
 
 export type ReasoningSummarySetting = 'auto' | 'detailed' | 'off';
+export type AnthropicEffortSetting = 'low' | 'medium' | 'high' | 'max';
+
+const BASE_ANTHROPIC_EFFORT_OPTIONS: AnthropicEffortSetting[] = ['low', 'medium', 'high'];
+
+function supportsAnthropicMaxEffort(model: ModelInfo | null | undefined): boolean {
+  if (!model || model.provider !== 'anthropic') return false;
+  const id = String(model.id ?? '').toLowerCase();
+  const apiModel = String(model.apiModel ?? '').toLowerCase();
+  return id.includes('opus-4-6') || apiModel.includes('opus-4-6');
+}
+
+export function getAnthropicEffortOptions(model: ModelInfo | null | undefined): AnthropicEffortSetting[] {
+  if (!supportsAnthropicMaxEffort(model)) return BASE_ANTHROPIC_EFFORT_OPTIONS.slice();
+  return [...BASE_ANTHROPIC_EFFORT_OPTIONS, 'max'];
+}
+
+export function getDefaultAnthropicEffort(model: ModelInfo | null | undefined): AnthropicEffortSetting {
+  return supportsAnthropicMaxEffort(model) ? 'max' : 'high';
+}
+
+export function normalizeAnthropicEffort(model: ModelInfo | null | undefined, raw: unknown): AnthropicEffortSetting {
+  const options = getAnthropicEffortOptions(model);
+  const fallback = getDefaultAnthropicEffort(model);
+  const value = typeof raw === 'string' ? raw.toLowerCase().trim() : '';
+  if (value === 'low' || value === 'medium' || value === 'high' || value === 'max') {
+    if (options.includes(value as AnthropicEffortSetting)) return value as AnthropicEffortSetting;
+  }
+  return fallback;
+}
 
 export type ModelUserSettings = {
   includeInComposer: boolean;
@@ -9,8 +38,7 @@ export type ModelUserSettings = {
   verbosity: TextVerbosity;
   reasoningSummary: ReasoningSummarySetting;
   maxTokens?: number;
-  thinkingEnabled?: boolean;
-  thinkingBudgetTokens?: number;
+  anthropicEffort?: AnthropicEffortSetting;
 };
 
 export type ModelUserSettingsById = Record<string, ModelUserSettings>;
@@ -34,7 +62,12 @@ export function defaultModelUserSettings(model: ModelInfo): ModelUserSettings {
     background: model.parameters.background ? backgroundDefault : false,
     verbosity: verbosityDefault,
     reasoningSummary: reasoningSummaryDefault,
-    ...(model.provider === 'anthropic' ? { maxTokens: 4096, thinkingEnabled: false, thinkingBudgetTokens: 1024 } : {}),
+    ...(model.provider === 'anthropic'
+      ? {
+          maxTokens: 4096,
+          anthropicEffort: getDefaultAnthropicEffort(model),
+        }
+      : {}),
   };
 }
 
@@ -70,32 +103,11 @@ export function normalizeModelUserSettings(model: ModelInfo, raw: unknown): Mode
     return clamped;
   })();
 
-  const thinkingEnabled = (() => {
+  const anthropicEffort = (() => {
     if (model.provider !== 'anthropic') return undefined;
-    const maxOut = typeof maxTokens === 'number' && Number.isFinite(maxTokens) ? Math.floor(maxTokens) : 4096;
-    if (maxOut <= 1024) return false;
-    const rawVal = obj.thinkingEnabled;
-    if (typeof rawVal === 'boolean') return rawVal;
-    return typeof defaults.thinkingEnabled === 'boolean' ? defaults.thinkingEnabled : false;
-  })();
-
-  const thinkingBudgetTokens = (() => {
-    if (model.provider !== 'anthropic') return undefined;
-    const maxOut = typeof maxTokens === 'number' && Number.isFinite(maxTokens) ? maxTokens : 4096;
-    const maxBudget = Math.max(0, Math.floor(maxOut) - 1);
-    const minBudget = 1024;
-    if (maxBudget < minBudget) return minBudget;
-
-    const rawVal = obj.thinkingBudgetTokens;
-    const n =
-      typeof rawVal === 'number'
-        ? rawVal
-        : typeof rawVal === 'string' && rawVal.trim()
-          ? Number(rawVal)
-          : undefined;
-    const fallback = typeof defaults.thinkingBudgetTokens === 'number' && Number.isFinite(defaults.thinkingBudgetTokens) ? defaults.thinkingBudgetTokens : 1024;
-    const picked = typeof n === 'number' && Number.isFinite(n) ? n : fallback;
-    return Math.max(minBudget, Math.min(maxBudget, Math.floor(picked)));
+    const rawVal = obj.anthropicEffort;
+    const fallback = defaults.anthropicEffort;
+    return normalizeAnthropicEffort(model, typeof rawVal === 'string' ? rawVal : fallback);
   })();
 
   return {
@@ -107,9 +119,7 @@ export function normalizeModelUserSettings(model: ModelInfo, raw: unknown): Mode
     ...(model.provider === 'anthropic'
       ? {
           maxTokens,
-          thinkingEnabled:
-            typeof maxTokens === 'number' && Number.isFinite(maxTokens) && maxTokens > 1024 ? thinkingEnabled : false,
-          thinkingBudgetTokens,
+          anthropicEffort,
         }
       : {}),
   };
