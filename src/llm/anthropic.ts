@@ -268,7 +268,6 @@ export async function buildAnthropicMessageRequest(args: {
       {
         type: 'web_search_20250305',
         name: 'web_search',
-        max_uses: 5,
       },
     ];
     body.tool_choice = { type: 'auto' };

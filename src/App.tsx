@@ -271,6 +271,13 @@ function isProbablyDataUrl(value: string): boolean {
   return /^data:[^,]+,/.test(value);
 }
 
+function isProbablyBase64(value: string): boolean {
+  const s = String(value ?? '');
+  if (s.length < 256) return false;
+  // Base64 (or base64url) payloads are typically long and restricted to this charset.
+  return /^[A-Za-z0-9+/_=-]+$/.test(s);
+}
+
 function truncateDataUrlForDisplay(value: string, maxChars: number): string {
   const s = String(value ?? '');
   if (s.length <= maxChars) return s;
@@ -280,6 +287,12 @@ function truncateDataUrlForDisplay(value: string, maxChars: number): string {
   const data = s.slice(comma + 1);
   const keep = Math.max(0, maxChars - prefix.length);
   return `${prefix}${data.slice(0, keep)}… (${data.length} chars)`;
+}
+
+function truncateBase64ForDisplay(value: string, maxChars: number): string {
+  const s = String(value ?? '');
+  if (s.length <= maxChars) return s;
+  return `${s.slice(0, maxChars)}… (${s.length} chars)`;
 }
 
 function cloneRawPayloadForDisplay(payload: unknown, opts?: { maxDepth?: number; maxStringChars?: number; maxDataUrlChars?: number }): unknown {
@@ -292,6 +305,7 @@ function cloneRawPayloadForDisplay(payload: unknown, opts?: { maxDepth?: number;
     if (depth > maxDepth) return '[Max depth]';
     if (typeof value === 'string') {
       if (isProbablyDataUrl(value)) return truncateDataUrlForDisplay(value, maxDataUrlChars);
+      if (isProbablyBase64(value)) return truncateBase64ForDisplay(value, maxDataUrlChars);
       if (value.length > maxStringChars) return `${value.slice(0, maxStringChars)}… (${value.length} chars)`;
       return value;
     }
