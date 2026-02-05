@@ -1,4 +1,4 @@
-export type ProviderId = 'openai' | 'gemini' | 'xai';
+export type ProviderId = 'openai' | 'gemini' | 'anthropic' | 'xai';
 
 export type TextVerbosity = 'low' | 'medium' | 'high';
 
@@ -158,8 +158,8 @@ const REGISTRY: ModelInfo[] = [
     label: 'Gemini - 3 Pro (High)',
     shortLabel: 'Gemini 3 Pro High',
     supportsImageInput: true,
-    parameters: { webSearch: true, streaming: false, background: false },
-    defaults: { webSearch: true, streaming: false, background: false },
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
     thinkingLevel: 'high',
   },
   {
@@ -169,8 +169,8 @@ const REGISTRY: ModelInfo[] = [
     label: 'Gemini - 3 Pro (Low)',
     shortLabel: 'Gemini 3 Pro Low',
     supportsImageInput: true,
-    parameters: { webSearch: true, streaming: false, background: false },
-    defaults: { webSearch: true, streaming: false, background: false },
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
     thinkingLevel: 'low',
   },
   {
@@ -180,8 +180,8 @@ const REGISTRY: ModelInfo[] = [
     label: 'Gemini - 3 Pro (High)',
     shortLabel: 'Gemini 3 Flash High',
     supportsImageInput: true,
-    parameters: { webSearch: true, streaming: false, background: false },
-    defaults: { webSearch: true, streaming: false, background: false },
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
     thinkingLevel: 'high',
   },
   {
@@ -191,8 +191,8 @@ const REGISTRY: ModelInfo[] = [
     label: 'Gemini - 3 Flash (Medium)',
     shortLabel: 'Gemini 3 Flash Medium',
     supportsImageInput: true,
-    parameters: { webSearch: true, streaming: false, background: false },
-    defaults: { webSearch: true, streaming: false, background: false },
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
     thinkingLevel: 'medium',
   },
   {
@@ -202,8 +202,8 @@ const REGISTRY: ModelInfo[] = [
     label: 'Gemini - 3 Flash (Low)',
     shortLabel: 'Gemini 3 Flash Low',
     supportsImageInput: true,
-    parameters: { webSearch: true, streaming: false, background: false },
-    defaults: { webSearch: true, streaming: false, background: false },
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
     thinkingLevel: 'low',
   },
   {
@@ -213,8 +213,8 @@ const REGISTRY: ModelInfo[] = [
     label: 'Gemini - 3 Flash (Minimal)',
     shortLabel: 'Gemini 3 Flash Minimal',
     supportsImageInput: true,
-    parameters: { webSearch: true, streaming: false, background: false },
-    defaults: { webSearch: true, streaming: false, background: false },
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
     thinkingLevel: 'minimal',
   },
   {
@@ -224,8 +224,8 @@ const REGISTRY: ModelInfo[] = [
     label: 'Gemini - 2.5 Pro',
     shortLabel: 'Gemini 2.5 Pro',
     supportsImageInput: true,
-    parameters: { webSearch: true, streaming: false, background: false },
-    defaults: { webSearch: true, streaming: false, background: false },
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
   },
   {
     id: 'gemini-2.5-flash',
@@ -234,8 +234,38 @@ const REGISTRY: ModelInfo[] = [
     label: 'Gemini - 2.5 Flash',
     shortLabel: 'Gemini 2.5 Flash',
     supportsImageInput: true,
-    parameters: { webSearch: true, streaming: false, background: false },
-    defaults: { webSearch: true, streaming: false, background: false },
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
+  },
+  {
+    id: 'claude-sonnet-4-5',
+    provider: 'anthropic',
+    apiModel: 'claude-sonnet-4-5',
+    label: 'Anthropic - Claude Sonnet 4.5',
+    shortLabel: 'Sonnet 4.5',
+    supportsImageInput: true,
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
+  },
+  {
+    id: 'claude-haiku-4-5',
+    provider: 'anthropic',
+    apiModel: 'claude-haiku-4-5',
+    label: 'Anthropic - Claude Haiku 4.5',
+    shortLabel: 'Haiku 4.5',
+    supportsImageInput: true,
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
+  },
+  {
+    id: 'claude-opus-4-5',
+    provider: 'anthropic',
+    apiModel: 'claude-opus-4-5',
+    label: 'Anthropic - Claude Opus 4.5',
+    shortLabel: 'Opus 4.5',
+    supportsImageInput: true,
+    parameters: { webSearch: true, streaming: true, background: false },
+    defaults: { webSearch: true, streaming: true, background: false },
   },
 ];
 

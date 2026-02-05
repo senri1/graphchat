@@ -5,7 +5,7 @@ import type { WorkspaceFolder } from '../workspace/tree';
 import { blobToDataUrl, getAttachment as getStoredAttachment, putAttachment } from '../storage/attachments';
 import { getPayload, putPayload } from '../storage/payloads';
 import { DEFAULT_MODEL_ID } from '../llm/registry';
-import { splitDataUrl } from './files';
+import { base64ToBlob, splitDataUrl } from './files';
 
 export type ArchiveV1 = {
   format: 'graphchatv1';
@@ -90,14 +90,54 @@ function filenameSafeBase(name: string): string {
   return base.replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 64) || 'graphchatv1-chat';
 }
 
-function base64ToBlob(base64: string, mimeType: string): Blob {
-  const mt = safeString(mimeType).trim() || 'application/octet-stream';
-  const b64 = safeString(base64).replace(/\s+/g, '');
-  if (typeof atob !== 'function') throw new Error('Base64 decoding is not available in this environment.');
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
-  return new Blob([bytes], { type: mt });
+function isProbablyDataUrl(value: string): boolean {
+  return /^data:[^,]+,/.test(value);
+}
+
+function truncateDataUrlForDisplay(value: string, maxChars: number): string {
+  const s = safeString(value);
+  if (s.length <= maxChars) return s;
+  const comma = s.indexOf(',');
+  if (comma === -1) return `${s.slice(0, maxChars)}… (${s.length} chars)`;
+  const prefix = s.slice(0, comma + 1);
+  const data = s.slice(comma + 1);
+  const keep = Math.max(0, maxChars - prefix.length);
+  return `${prefix}${data.slice(0, keep)}… (${data.length} chars)`;
+}
+
+function cloneRawPayloadForArchive(
+  payload: unknown,
+  opts?: { maxDepth?: number; maxStringChars?: number; maxDataUrlChars?: number },
+): unknown {
+  const maxDepth = Math.max(1, Math.floor(opts?.maxDepth ?? 30));
+  const maxStringChars = Math.max(256, Math.floor(opts?.maxStringChars ?? 20000));
+  const maxDataUrlChars = Math.max(64, Math.floor(opts?.maxDataUrlChars ?? 220));
+
+  const seen = new WeakMap<object, unknown>();
+  const visit = (value: unknown, depth: number): unknown => {
+    if (depth > maxDepth) return '[Max depth]';
+    if (typeof value === 'string') {
+      if (isProbablyDataUrl(value)) return truncateDataUrlForDisplay(value, maxDataUrlChars);
+      if (value.length > maxStringChars) return `${value.slice(0, maxStringChars)}… (${value.length} chars)`;
+      return value;
+    }
+    if (value == null || typeof value !== 'object') return value;
+    if (seen.has(value as object)) return seen.get(value as object);
+
+    if (Array.isArray(value)) {
+      const out: unknown[] = [];
+      seen.set(value as object, out);
+      for (const item of value) out.push(visit(item, depth + 1));
+      return out;
+    }
+
+    const out: Record<string, unknown> = {};
+    seen.set(value as object, out);
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = visit(v, depth + 1);
+    return out;
+  };
+
+  return visit(payload, 0);
 }
 
 async function blobToBase64(blob: Blob, mimeTypeHint?: string): Promise<{ base64: string; mimeType: string } | null> {
@@ -164,63 +204,78 @@ async function rehydrateAttachmentsInPlace(value: any, warnings: string[], conte
 
     if (kind === 'image') {
       await embedBlob('image/png');
-      try {
-        delete att.storageKey;
-      } catch {
-        // ignore
-      }
+      // Keep storageKey as a best-effort hint for same-device imports (importer will ignore if missing).
     } else if (kind === 'pdf') {
       await embedBlob('application/pdf');
-      try {
-        delete att.storageKey;
-      } catch {
-        // ignore
-      }
+      // Keep storageKey as a best-effort hint for same-device imports (importer will ignore if missing).
     } else if (kind === 'ink') {
       // Ink attachments are rare in v1, but keep best-effort portability.
       await embedBlob('application/octet-stream');
-      try {
-        delete att.storageKey;
-      } catch {
-        // ignore
-      }
+      // Keep storageKey as a best-effort hint for same-device imports (importer will ignore if missing).
     }
   }
 }
 
-async function rehydratePayloadsInPlace(nodes: any[], warnings: string[]) {
-  for (const raw of nodes) {
+async function rehydratePayloadsInPlace(args: { chatId: string; nodes: any[]; warnings: string[] }) {
+  const chatId = safeString(args.chatId).trim();
+  for (const raw of args.nodes) {
     const node = raw as any;
     if (!node || typeof node !== 'object') continue;
-    if (node.kind !== 'text') continue;
+    const nodeId = safeString(node.id).trim();
+    if (!nodeId) continue;
 
-    const reqKey = typeof node.apiRequestKey === 'string' ? node.apiRequestKey.trim() : '';
-    const resKey = typeof node.apiResponseKey === 'string' ? node.apiResponseKey.trim() : '';
-
-    if (reqKey) {
+    const fetchPayload = async (key: string, warnLabel: string, warnOnMissing: boolean): Promise<unknown | null> => {
+      if (!key) return null;
       try {
-        const payload = await getPayload(reqKey);
+        const payload = await getPayload(key);
+        if (payload == null) {
+          if (warnOnMissing) args.warnings.push(`Missing ${warnLabel} payload for key ${key}`);
+          return null;
+        }
+        return cloneRawPayloadForArchive(payload);
+      } catch {
+        args.warnings.push(`Failed to fetch ${warnLabel} payload for key ${key}`);
+        return null;
+      }
+    };
+
+    if (node.kind === 'text') {
+      const author = safeString(node.author).trim();
+
+      const reqKeyExplicit = typeof node.apiRequestKey === 'string' ? node.apiRequestKey.trim() : '';
+      const resKeyExplicit = typeof node.apiResponseKey === 'string' ? node.apiResponseKey.trim() : '';
+      const reqKeyDerived = chatId && author === 'user' ? `${chatId}/${nodeId}/req` : '';
+      const resKeyDerived = chatId && author === 'assistant' ? `${chatId}/${nodeId}/res` : '';
+
+      if (author === 'user' && node.apiRequest === undefined) {
+        const payload =
+          (await fetchPayload(reqKeyExplicit, 'raw request', Boolean(reqKeyExplicit))) ??
+          (await fetchPayload(reqKeyDerived, 'raw request', false));
         if (payload != null) node.apiRequest = payload;
-        else if (node.apiRequest === undefined) warnings.push(`Missing raw request payload for key ${reqKey}`);
-      } catch {
-        warnings.push(`Failed to fetch raw request payload for key ${reqKey}`);
       }
-    }
-    if (resKey) {
-      try {
-        const payload = await getPayload(resKey);
+      if (author === 'assistant' && node.apiResponse === undefined) {
+        const payload =
+          (await fetchPayload(resKeyExplicit, 'raw response', Boolean(resKeyExplicit))) ??
+          (await fetchPayload(resKeyDerived, 'raw response', false));
         if (payload != null) node.apiResponse = payload;
-        else if (node.apiResponse === undefined) warnings.push(`Missing raw response payload for key ${resKey}`);
-      } catch {
-        warnings.push(`Failed to fetch raw response payload for key ${resKey}`);
       }
+
+      try {
+        delete node.apiRequestKey;
+        delete node.apiResponseKey;
+      } catch {
+        // ignore
+      }
+      continue;
     }
 
-    try {
-      delete node.apiRequestKey;
-      delete node.apiResponseKey;
-    } catch {
-      // ignore
+    if (node.kind === 'ink') {
+      if (node.apiRequest === undefined && chatId) {
+        const key = `${chatId}/${nodeId}/req`;
+        const payload = await fetchPayload(key, 'raw request', false);
+        if (payload != null) node.apiRequest = payload;
+      }
+      continue;
     }
   }
 }
@@ -233,6 +288,7 @@ async function rehydratePdfNodeFilesInPlace(nodes: any[], warnings: string[]) {
     const storageKey = typeof node.storageKey === 'string' ? node.storageKey.trim() : '';
     if (!storageKey) continue;
 
+    let embedded = false;
     try {
       const rec = await getStoredAttachment(storageKey);
       if (!rec?.blob) {
@@ -251,14 +307,9 @@ async function rehydratePdfNodeFilesInPlace(nodes: any[], warnings: string[]) {
         name: safeString(rec.name).trim() || safeString(node.fileName).trim() || 'document.pdf',
         ...(Number.isFinite(Number(rec.size)) ? { size: Number(rec.size) } : {}),
       };
+      embedded = true;
     } catch {
       warnings.push(`Failed to fetch PDF blob for key ${storageKey}`);
-    } finally {
-      try {
-        delete node.storageKey;
-      } catch {
-        // ignore
-      }
     }
   }
 }
@@ -267,7 +318,7 @@ async function buildChatExport(args: ExportChatArgs): Promise<{ chat: ArchiveV1[
   const warnings: string[] = [];
 
   const nodesCopy = (args.state.nodes ?? []).map((n) => sanitizeNodeForExport(n));
-  await rehydratePayloadsInPlace(nodesCopy, warnings);
+  await rehydratePayloadsInPlace({ chatId: args.chatId, nodes: nodesCopy, warnings });
   for (const raw of nodesCopy) {
     const node = raw as any;
     if (!node || typeof node !== 'object') continue;
@@ -461,6 +512,31 @@ export async function importArchive(
   const nodes = Array.isArray(rawState?.nodes) ? (safeClone(rawState.nodes) as any[]) : [];
   const worldInkStrokes = Array.isArray(rawState?.worldInkStrokes) ? (safeClone(rawState.worldInkStrokes) as InkStroke[]) : [];
 
+  const existingAttachmentMetaByKey = new Map<string, { mimeType: string; name?: string; size?: number } | null>();
+  const lookupExistingAttachmentMeta = async (
+    storageKeyRaw: string,
+  ): Promise<{ mimeType: string; name?: string; size?: number } | null> => {
+    const storageKey = safeString(storageKeyRaw).trim();
+    if (!storageKey) return null;
+    if (existingAttachmentMetaByKey.has(storageKey)) return existingAttachmentMetaByKey.get(storageKey) ?? null;
+    try {
+      const rec = await getStoredAttachment(storageKey);
+      const meta =
+        rec?.blob != null
+          ? {
+              mimeType: safeString(rec.mimeType).trim(),
+              ...(safeString(rec.name).trim() ? { name: safeString(rec.name).trim() } : {}),
+              ...(Number.isFinite(Number(rec.size)) ? { size: Number(rec.size) } : {}),
+            }
+          : null;
+      existingAttachmentMetaByKey.set(storageKey, meta);
+      return meta;
+    } catch {
+      existingAttachmentMetaByKey.set(storageKey, null);
+      return null;
+    }
+  };
+
   // Normalize nodes and migrate embedded data to IDB.
   for (const raw of nodes) {
     const node = raw as any;
@@ -473,36 +549,51 @@ export async function importArchive(
         // ignore
       }
 
-      const atts = Array.isArray(node.attachments) ? (node.attachments as any[]) : [];
-      for (let i = 0; i < atts.length; i += 1) {
-        const att = atts[i];
-        if (!att || typeof att !== 'object') continue;
-        const kind = safeString(att.kind);
-        const data = typeof att.data === 'string' ? att.data : '';
-        const mimeType = safeString(att.mimeType).trim();
-        if ((kind === 'image' || kind === 'pdf' || kind === 'ink') && data) {
-          const fallbackMt = kind === 'pdf' ? 'application/pdf' : kind === 'image' ? 'image/png' : 'application/octet-stream';
-          const mt = mimeType || fallbackMt;
-          try {
-            const blob = base64ToBlob(data, mt);
-            const storageKey = await putAttachment({
-              blob,
-              mimeType: mt,
-              name: safeString(att.name).trim() || undefined,
-              size: Number.isFinite(Number(att.size)) ? Number(att.size) : undefined,
-            });
-            const next = { ...att, storageKey, mimeType: mt } as any;
-            delete next.data;
-            atts[i] = next;
-          } catch {
-            warnings.push(`Failed to import attachment for node ${safeString(node.id)}`);
-          }
-        }
-        // Drop any non-portable keys that slipped through.
-        try {
-          delete att.storageKey;
-        } catch {
-          // ignore
+	      const atts = Array.isArray(node.attachments) ? (node.attachments as any[]) : [];
+	      for (let i = 0; i < atts.length; i += 1) {
+	        const att = atts[i];
+	        if (!att || typeof att !== 'object') continue;
+	        let kind = safeString(att.kind).trim();
+	        const name = safeString(att.name).trim();
+	        const lowerName = name.toLowerCase();
+	        const data = typeof att.data === 'string' ? att.data : '';
+	        const existingKey = typeof att.storageKey === 'string' ? att.storageKey.trim() : '';
+	        const mimeTypeRaw = safeString(att.mimeType).trim();
+	        if (kind === 'image' && (mimeTypeRaw === 'application/pdf' || lowerName.endsWith('.pdf'))) kind = 'pdf';
+	        const mimeType = kind === 'pdf' ? 'application/pdf' : mimeTypeRaw;
+	        if (kind === 'image' || kind === 'pdf' || kind === 'ink') {
+	          const fallbackMt = kind === 'pdf' ? 'application/pdf' : kind === 'image' ? 'image/png' : 'application/octet-stream';
+
+	          if (existingKey) {
+	            const meta = await lookupExistingAttachmentMeta(existingKey);
+	            if (meta) {
+	              const mt = mimeType || meta.mimeType || fallbackMt;
+	              const next = { ...att, kind, storageKey: existingKey, mimeType: mt } as any;
+	              if (next.size == null && meta.size != null) next.size = meta.size;
+	              if (!safeString(next.name).trim() && safeString(meta.name).trim()) next.name = meta.name;
+	              delete next.data;
+	              atts[i] = next;
+	              continue;
+	            }
+	          }
+
+	          if (data) {
+	            const mt = mimeType || fallbackMt;
+	            try {
+	              const blob = base64ToBlob(data, mt);
+	              const storageKey = await putAttachment({
+	                blob,
+	                mimeType: mt,
+	                name: safeString(att.name).trim() || undefined,
+	                size: Number.isFinite(Number(att.size)) ? Number(att.size) : undefined,
+	              });
+	              const next = { ...att, kind, storageKey, mimeType: mt } as any;
+	              delete next.data;
+	              atts[i] = next;
+	            } catch (err: any) {
+	              warnings.push(`Failed to import attachment for node ${safeString(node.id)} (${err?.message || String(err)})`);
+	            }
+	          }
         }
       }
       if (atts.length) node.attachments = atts;
@@ -540,43 +631,94 @@ export async function importArchive(
           warnings.push(`Failed to persist raw response payload for node ${safeString(node.id)}`);
         }
       }
-    } else if (node.kind === 'ink') {
-      const atts = Array.isArray(node.attachments) ? (node.attachments as any[]) : [];
-      for (let i = 0; i < atts.length; i += 1) {
-        const att = atts[i];
-        if (!att || typeof att !== 'object') continue;
-        const kind = safeString(att.kind);
-        const data = typeof att.data === 'string' ? att.data : '';
-        const mimeType = safeString(att.mimeType).trim();
-        if ((kind === 'image' || kind === 'pdf' || kind === 'ink') && data) {
-          const fallbackMt = kind === 'pdf' ? 'application/pdf' : kind === 'image' ? 'image/png' : 'application/octet-stream';
-          const mt = mimeType || fallbackMt;
-          try {
-            const blob = base64ToBlob(data, mt);
-            const storageKey = await putAttachment({
-              blob,
-              mimeType: mt,
-              name: safeString(att.name).trim() || undefined,
-              size: Number.isFinite(Number(att.size)) ? Number(att.size) : undefined,
-            });
-            const next = { ...att, storageKey, mimeType: mt } as any;
-            delete next.data;
-            atts[i] = next;
-          } catch {
-            warnings.push(`Failed to import attachment for node ${safeString(node.id)}`);
-          }
-        }
-        // Drop any non-portable keys that slipped through.
-        try {
-          delete att.storageKey;
-        } catch {
-          // ignore
+	    } else if (node.kind === 'ink') {
+	      const atts = Array.isArray(node.attachments) ? (node.attachments as any[]) : [];
+	      for (let i = 0; i < atts.length; i += 1) {
+	        const att = atts[i];
+	        if (!att || typeof att !== 'object') continue;
+	        let kind = safeString(att.kind).trim();
+	        const name = safeString(att.name).trim();
+	        const lowerName = name.toLowerCase();
+	        const data = typeof att.data === 'string' ? att.data : '';
+	        const existingKey = typeof att.storageKey === 'string' ? att.storageKey.trim() : '';
+	        const mimeTypeRaw = safeString(att.mimeType).trim();
+	        if (kind === 'image' && (mimeTypeRaw === 'application/pdf' || lowerName.endsWith('.pdf'))) kind = 'pdf';
+	        const mimeType = kind === 'pdf' ? 'application/pdf' : mimeTypeRaw;
+	        if (kind === 'image' || kind === 'pdf' || kind === 'ink') {
+	          const fallbackMt = kind === 'pdf' ? 'application/pdf' : kind === 'image' ? 'image/png' : 'application/octet-stream';
+
+	          if (existingKey) {
+	            const meta = await lookupExistingAttachmentMeta(existingKey);
+	            if (meta) {
+	              const mt = mimeType || meta.mimeType || fallbackMt;
+	              const next = { ...att, kind, storageKey: existingKey, mimeType: mt } as any;
+	              if (next.size == null && meta.size != null) next.size = meta.size;
+	              if (!safeString(next.name).trim() && safeString(meta.name).trim()) next.name = meta.name;
+	              delete next.data;
+	              atts[i] = next;
+	              continue;
+	            }
+	          }
+
+	          if (data) {
+	            const mt = mimeType || fallbackMt;
+	            try {
+	              const blob = base64ToBlob(data, mt);
+	              const storageKey = await putAttachment({
+	                blob,
+	                mimeType: mt,
+	                name: safeString(att.name).trim() || undefined,
+	                size: Number.isFinite(Number(att.size)) ? Number(att.size) : undefined,
+	              });
+	              const next = { ...att, kind, storageKey, mimeType: mt } as any;
+	              delete next.data;
+	              atts[i] = next;
+	            } catch (err: any) {
+	              warnings.push(`Failed to import attachment for node ${safeString(node.id)} (${err?.message || String(err)})`);
+	            }
+	          }
         }
       }
       if (atts.length) node.attachments = atts;
+
+      // Preserve raw request payloads for ink turns (used by the raw viewer via a derived key).
+      const hadReq = Object.prototype.hasOwnProperty.call(node, 'apiRequest');
+      const req = node.apiRequest;
+      try {
+        delete node.apiRequestKey;
+        delete node.apiResponseKey;
+      } catch {
+        // ignore
+      }
+      if (hadReq && req !== undefined) {
+        const key = `${chatId}/${safeString(node.id)}/req`;
+        try {
+          await putPayload({ key, json: req });
+          delete node.apiRequest;
+        } catch {
+          warnings.push(`Failed to persist raw request payload for node ${safeString(node.id)}`);
+        }
+      }
     } else if (node.kind === 'pdf') {
       const fileData = node.fileData as any;
       const data = fileData && typeof fileData === 'object' ? safeString(fileData.data) : '';
+      const existingKey = typeof node.storageKey === 'string' ? node.storageKey.trim() : '';
+      if (existingKey) {
+        const meta = await lookupExistingAttachmentMeta(existingKey);
+        if (meta) {
+          node.storageKey = existingKey;
+          if (!safeString(node.fileName).trim() && safeString(meta.name).trim()) node.fileName = meta.name ?? null;
+          node.status = 'empty';
+          node.error = null;
+          try {
+            delete node.fileData;
+          } catch {
+            // ignore
+          }
+          continue;
+        }
+      }
+
       if (data) {
         const mt = safeString(fileData.mimeType).trim() || 'application/pdf';
         try {
@@ -588,16 +730,28 @@ export async function importArchive(
             size: Number.isFinite(Number(fileData.size)) ? Number(fileData.size) : undefined,
           });
           node.storageKey = storageKey;
+          const importedName = safeString(fileData.name).trim();
+          if (!safeString(node.fileName).trim() && importedName) node.fileName = importedName;
           node.status = 'empty';
           node.error = null;
-        } catch {
-          warnings.push(`Failed to import PDF node ${safeString(node.id)}`);
+          try {
+            delete node.fileData;
+          } catch {
+            // ignore
+          }
+        } catch (err: any) {
+          warnings.push(`Failed to import PDF node ${safeString(node.id)} (${err?.message || String(err)})`);
+          node.storageKey = null;
+          node.status = 'empty';
+          node.error = null;
         }
-      }
-      try {
-        delete node.fileData;
-      } catch {
-        // ignore
+      } else {
+        // fileData is archive-only; remove if it exists but has no embedded content.
+        try {
+          delete node.fileData;
+        } catch {
+          // ignore
+        }
       }
     }
   }
@@ -606,6 +760,19 @@ export async function importArchive(
   const rawMeta = rawChat.meta && typeof rawChat.meta === 'object' ? safeClone(rawChat.meta) : {};
   const meta: any = {
     draft: typeof rawMeta.draft === 'string' ? rawMeta.draft : '',
+    draftInkStrokes: Array.isArray((rawMeta as any)?.draftInkStrokes)
+      ? ((rawMeta as any).draftInkStrokes as any[]).map((s) => ({
+          width: Number.isFinite(Number((s as any)?.width)) ? Number((s as any).width) : 0,
+          color: typeof (s as any)?.color === 'string' ? ((s as any).color as string) : 'rgba(147,197,253,0.92)',
+          points: Array.isArray((s as any)?.points)
+            ? ((s as any).points as any[]).map((p) => ({
+                x: Number.isFinite(Number((p as any)?.x)) ? Number((p as any).x) : 0,
+                y: Number.isFinite(Number((p as any)?.y)) ? Number((p as any).y) : 0,
+              }))
+            : [],
+        }))
+      : [],
+    composerMode: (rawMeta as any)?.composerMode === 'ink' ? 'ink' : 'text',
     draftAttachments: Array.isArray(rawMeta.draftAttachments) ? rawMeta.draftAttachments : [],
     replyTo: rawMeta.replyTo && typeof rawMeta.replyTo === 'object' ? rawMeta.replyTo : null,
     contextSelections: Array.isArray(rawMeta.contextSelections)
@@ -624,30 +791,48 @@ export async function importArchive(
   };
 
   // Migrate draft attachments (embedded base64) to IDB.
-  if (Array.isArray(meta.draftAttachments)) {
-    const arr = meta.draftAttachments as any[];
-    for (let i = 0; i < arr.length; i += 1) {
-      const att = arr[i];
-      if (!att || typeof att !== 'object') continue;
-      const kind = safeString(att.kind);
-      const data = typeof att.data === 'string' ? att.data : '';
+	  if (Array.isArray(meta.draftAttachments)) {
+	    const arr = meta.draftAttachments as any[];
+	    for (let i = 0; i < arr.length; i += 1) {
+	      const att = arr[i];
+	      if (!att || typeof att !== 'object') continue;
+	      let kind = safeString(att.kind).trim();
+	      const data = typeof att.data === 'string' ? att.data : '';
+	      const existingKey = typeof att.storageKey === 'string' ? att.storageKey.trim() : '';
+	      const name = safeString(att.name).trim();
+	      const lowerName = name.toLowerCase();
+	      const mimeTypeRaw = safeString(att.mimeType).trim();
+	      if (kind === 'image' && (mimeTypeRaw === 'application/pdf' || lowerName.endsWith('.pdf'))) kind = 'pdf';
+	      const fallbackMt = kind === 'pdf' ? 'application/pdf' : kind === 'image' ? 'image/png' : 'application/octet-stream';
+	      const mt = (kind === 'pdf' ? 'application/pdf' : mimeTypeRaw) || fallbackMt;
+
+	      if (existingKey) {
+	        const meta = await lookupExistingAttachmentMeta(existingKey);
+	        if (meta) {
+	          const next = { ...att, kind, storageKey: existingKey, mimeType: mt || meta.mimeType || fallbackMt } as any;
+	          if (next.size == null && meta.size != null) next.size = meta.size;
+	          if (!safeString(next.name).trim() && safeString(meta.name).trim()) next.name = meta.name;
+	          delete next.data;
+	          arr[i] = next;
+	          continue;
+	        }
+	      }
+
       if (!data) continue;
-      const fallbackMt = kind === 'pdf' ? 'application/pdf' : kind === 'image' ? 'image/png' : 'application/octet-stream';
-      const mt = safeString(att.mimeType).trim() || fallbackMt;
-      try {
-        const blob = base64ToBlob(data, mt);
-        const storageKey = await putAttachment({
-          blob,
-          mimeType: mt,
-          name: safeString(att.name).trim() || undefined,
-          size: Number.isFinite(Number(att.size)) ? Number(att.size) : undefined,
-        });
-        const next = { ...att, storageKey, mimeType: mt } as any;
-        delete next.data;
-        arr[i] = next;
-      } catch {
-        warnings.push('Failed to import draft attachment');
-      }
+	      try {
+	        const blob = base64ToBlob(data, mt);
+	        const storageKey = await putAttachment({
+	          blob,
+	          mimeType: mt,
+	          name: safeString(att.name).trim() || undefined,
+	          size: Number.isFinite(Number(att.size)) ? Number(att.size) : undefined,
+	        });
+	        const next = { ...att, kind, storageKey, mimeType: mt } as any;
+	        delete next.data;
+	        arr[i] = next;
+	      } catch (err: any) {
+	        warnings.push(`Failed to import draft attachment (${err?.message || String(err)})`);
+	      }
     }
     meta.draftAttachments = arr;
   }

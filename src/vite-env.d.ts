@@ -4,8 +4,12 @@ interface ImportMetaEnv {
   readonly OPENAI_API_KEY?: string;
   readonly GEMINI_API_KEY?: string;
   readonly XAI_API_KEY?: string;
+  readonly ANTHROPIC_API_KEY?: string;
+  readonly ANTHROPIC_BETA?: string;
   readonly VITE_OPENAI_API_KEY?: string;
   readonly VITE_XAI_API_KEY?: string;
+  readonly VITE_ANTHROPIC_API_KEY?: string;
+  readonly VITE_ANTHROPIC_BETA?: string;
 }
 
 interface ImportMeta {
