@@ -4200,6 +4200,8 @@ export default function App() {
         webSearchEnabled: composerWebSearch,
         stream: modelSettings?.streaming,
         maxTokens: modelSettings?.maxTokens,
+        thinkingEnabled: modelSettings?.thinkingEnabled,
+        thinkingBudgetTokens: modelSettings?.thinkingBudgetTokens,
         inkExport: {
           cropEnabled: inkSendCropEnabledRef.current,
           cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -4436,6 +4438,8 @@ export default function App() {
         webSearchEnabled: composerWebSearch,
         stream: modelSettings?.streaming,
         maxTokens: modelSettings?.maxTokens,
+        thinkingEnabled: modelSettings?.thinkingEnabled,
+        thinkingBudgetTokens: modelSettings?.thinkingBudgetTokens,
         inkExport: {
           cropEnabled: inkSendCropEnabledRef.current,
           cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -4613,6 +4617,8 @@ export default function App() {
           webSearchEnabled: composerWebSearch,
           stream: modelSettings?.streaming,
           maxTokens: modelSettings?.maxTokens,
+          thinkingEnabled: modelSettings?.thinkingEnabled,
+          thinkingBudgetTokens: modelSettings?.thinkingBudgetTokens,
           inkExport: {
             cropEnabled: inkSendCropEnabledRef.current,
             cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -4794,6 +4800,8 @@ export default function App() {
         webSearchEnabled: composerWebSearch,
         stream: modelSettings?.streaming,
         maxTokens: modelSettings?.maxTokens,
+        thinkingEnabled: modelSettings?.thinkingEnabled,
+        thinkingBudgetTokens: modelSettings?.thinkingBudgetTokens,
         inkExport: {
           cropEnabled: inkSendCropEnabledRef.current,
           cropPaddingPx: inkSendCropPaddingPxRef.current,

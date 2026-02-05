@@ -9,6 +9,8 @@ export type ModelUserSettings = {
   verbosity: TextVerbosity;
   reasoningSummary: ReasoningSummarySetting;
   maxTokens?: number;
+  thinkingEnabled?: boolean;
+  thinkingBudgetTokens?: number;
 };
 
 export type ModelUserSettingsById = Record<string, ModelUserSettings>;
@@ -25,7 +27,6 @@ export function defaultModelUserSettings(model: ModelInfo): ModelUserSettings {
       ? model.defaults.verbosity
       : 'medium';
   const reasoningSummaryDefault: ReasoningSummarySetting = model.effort && model.reasoningSummary ? 'auto' : 'off';
-  const maxTokensDefault = model.provider === 'anthropic' ? 4096 : undefined;
 
   return {
     includeInComposer: true,
@@ -33,7 +34,7 @@ export function defaultModelUserSettings(model: ModelInfo): ModelUserSettings {
     background: model.parameters.background ? backgroundDefault : false,
     verbosity: verbosityDefault,
     reasoningSummary: reasoningSummaryDefault,
-    ...(maxTokensDefault != null ? { maxTokens: maxTokensDefault } : {}),
+    ...(model.provider === 'anthropic' ? { maxTokens: 4096, thinkingEnabled: false, thinkingBudgetTokens: 1024 } : {}),
   };
 }
 
@@ -69,13 +70,48 @@ export function normalizeModelUserSettings(model: ModelInfo, raw: unknown): Mode
     return clamped;
   })();
 
+  const thinkingEnabled = (() => {
+    if (model.provider !== 'anthropic') return undefined;
+    const maxOut = typeof maxTokens === 'number' && Number.isFinite(maxTokens) ? Math.floor(maxTokens) : 4096;
+    if (maxOut <= 1024) return false;
+    const rawVal = obj.thinkingEnabled;
+    if (typeof rawVal === 'boolean') return rawVal;
+    return typeof defaults.thinkingEnabled === 'boolean' ? defaults.thinkingEnabled : false;
+  })();
+
+  const thinkingBudgetTokens = (() => {
+    if (model.provider !== 'anthropic') return undefined;
+    const maxOut = typeof maxTokens === 'number' && Number.isFinite(maxTokens) ? maxTokens : 4096;
+    const maxBudget = Math.max(0, Math.floor(maxOut) - 1);
+    const minBudget = 1024;
+    if (maxBudget < minBudget) return minBudget;
+
+    const rawVal = obj.thinkingBudgetTokens;
+    const n =
+      typeof rawVal === 'number'
+        ? rawVal
+        : typeof rawVal === 'string' && rawVal.trim()
+          ? Number(rawVal)
+          : undefined;
+    const fallback = typeof defaults.thinkingBudgetTokens === 'number' && Number.isFinite(defaults.thinkingBudgetTokens) ? defaults.thinkingBudgetTokens : 1024;
+    const picked = typeof n === 'number' && Number.isFinite(n) ? n : fallback;
+    return Math.max(minBudget, Math.min(maxBudget, Math.floor(picked)));
+  })();
+
   return {
     includeInComposer,
     streaming: model.parameters.streaming ? streaming : false,
     background: model.parameters.background ? background : false,
     verbosity,
     reasoningSummary: model.effort ? reasoningSummary : 'off',
-    ...(model.provider === 'anthropic' ? { maxTokens } : {}),
+    ...(model.provider === 'anthropic'
+      ? {
+          maxTokens,
+          thinkingEnabled:
+            typeof maxTokens === 'number' && Number.isFinite(maxTokens) && maxTokens > 1024 ? thinkingEnabled : false,
+          thinkingBudgetTokens,
+        }
+      : {}),
   };
 }
 

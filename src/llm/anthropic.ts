@@ -11,6 +11,8 @@ export type AnthropicChatSettings = {
   webSearchEnabled?: boolean;
   stream?: boolean;
   maxTokens?: number;
+  thinkingEnabled?: boolean;
+  thinkingBudgetTokens?: number;
   inkExport?: InkExportOptions;
 };
 
@@ -263,6 +265,18 @@ export async function buildAnthropicMessageRequest(args: {
     system: systemInstructions,
     messages,
   };
+
+  if (args.settings.thinkingEnabled) {
+    const budgetMin = 1024;
+    const budgetMax = Math.max(0, Math.floor(maxTokens) - 1);
+    if (budgetMax >= budgetMin) {
+      const rawBudget = args.settings.thinkingBudgetTokens;
+      const fallback = budgetMin;
+      const picked = typeof rawBudget === 'number' && Number.isFinite(rawBudget) ? Math.floor(rawBudget) : fallback;
+      const budget = Math.max(budgetMin, Math.min(budgetMax, picked));
+      body.thinking = { type: 'enabled', budget_tokens: budget };
+    }
+  }
 
   if (args.settings.webSearchEnabled && info?.parameters.webSearch) {
     body.tools = [
