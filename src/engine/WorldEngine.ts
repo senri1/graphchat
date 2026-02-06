@@ -1057,7 +1057,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.canvas = opts.canvas;
     this.overlayHost = opts.overlayHost ?? this.canvas.parentElement;
     this.getEditingDraft = typeof opts.getEditingDraft === 'function' ? opts.getEditingDraft : null;
-    const ctx = this.canvas.getContext('2d', { alpha: false, desynchronized: true });
+    const nav = typeof navigator !== 'undefined' ? navigator : null;
+    const ua = (nav?.userAgent ?? '').toLowerCase();
+    const isAndroid = ua.includes('android');
+    const ctx = this.canvas.getContext('2d', { alpha: false, desynchronized: !isAndroid });
     if (!ctx) throw new Error('Missing 2D canvas context');
     this.ctx = ctx;
 
@@ -10060,6 +10063,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         const state = this.pdfStateByNodeId.get(node.id);
         if (state) this.updatePdfNodeDerivedHeight(node, state);
       }
+      if (!rectsIntersect(node.rect, view)) continue;
 
       if (node.kind === 'text' && this.isTextNodeEligibleForFullRaster(node)) {
         const sig = this.fullTextNodeRasterSigForNode(node).sig;
