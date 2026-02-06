@@ -630,6 +630,15 @@ export default function App() {
   const [replySpawnMenuId, setReplySpawnMenuId] = useState<string | null>(null);
   const [replySpawnMenuPos, setReplySpawnMenuPos] = useState<MenuPos | null>(null);
   const [pendingEditNodeSend, setPendingEditNodeSend] = useState<PendingEditNodeSend | null>(null);
+  const [editNodeSendMenuPointerLock, setEditNodeSendMenuPointerLock] = useState(false);
+  const editNodeSendModelDragRef = useRef<{
+    pointerId: number;
+    nodeId: string;
+    modelId: string;
+    startClient: { x: number; y: number };
+    lastClient: { x: number; y: number };
+    moved: boolean;
+  } | null>(null);
 	  const [confirmDelete, setConfirmDelete] = useState<ConfirmDeleteState | null>(null);
 	  const [confirmApplyBackground, setConfirmApplyBackground] = useState<ConfirmApplyBackgroundState | null>(null);
 	  const [confirmExport, setConfirmExport] = useState<ConfirmExportState | null>(null);
@@ -5524,6 +5533,134 @@ export default function App() {
     schedulePersistSoon();
   };
 
+  const applyComposerModelSelection = React.useCallback(
+    (nextModelId: string) => {
+      const value = String(nextModelId || DEFAULT_MODEL_ID).trim() || DEFAULT_MODEL_ID;
+      setComposerModelId(value);
+      ensureChatMeta(activeChatIdRef.current).llm.modelId = value;
+    },
+    [ensureChatMeta],
+  );
+
+  const clearEditNodeSendModelPreview = React.useCallback(() => {
+    engineRef.current?.clearExternalHeaderPlacementPreview();
+  }, []);
+
+  const closeEditNodeSendMenu = React.useCallback(() => {
+    editNodeSendModelDragRef.current = null;
+    setEditNodeSendMenuPointerLock(false);
+    clearEditNodeSendModelPreview();
+    setEditNodeSendMenuId(null);
+  }, [clearEditNodeSendModelPreview]);
+
+  const beginEditNodeSendModelDrag = React.useCallback((e: React.PointerEvent<HTMLButtonElement>, nodeId: string, modelId: string) => {
+    if (e.button !== 0) return;
+    const id = String(nodeId ?? '').trim();
+    const mid = String(modelId ?? '').trim();
+    if (!id || !mid) return;
+    e.preventDefault();
+    e.stopPropagation();
+    editNodeSendModelDragRef.current = {
+      pointerId: e.pointerId,
+      nodeId: id,
+      modelId: mid,
+      startClient: { x: e.clientX, y: e.clientY },
+      lastClient: { x: e.clientX, y: e.clientY },
+      moved: false,
+    };
+    setEditNodeSendMenuPointerLock(true);
+    clearEditNodeSendModelPreview();
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+  }, [clearEditNodeSendModelPreview]);
+
+  const onEditNodeSendModelDragPointerMove = React.useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    const active = editNodeSendModelDragRef.current;
+    if (!active || active.pointerId !== e.pointerId) return;
+
+    active.lastClient = { x: e.clientX, y: e.clientY };
+    if (!active.moved) {
+      const dx = active.lastClient.x - active.startClient.x;
+      const dy = active.lastClient.y - active.startClient.y;
+      if (dx * dx + dy * dy >= 16) active.moved = true;
+    }
+
+    if (!active.moved) {
+      clearEditNodeSendModelPreview();
+      return;
+    }
+
+    const engine = engineRef.current;
+    const canvas = canvasRef.current;
+    if (!engine || !canvas) {
+      clearEditNodeSendModelPreview();
+      return;
+    }
+
+    const canvasRect = canvas.getBoundingClientRect();
+    const screenX = active.lastClient.x - canvasRect.left;
+    const screenY = active.lastClient.y - canvasRect.top;
+    engine.setExternalHeaderPlacementPreview(active.nodeId, { x: screenX, y: screenY });
+    e.preventDefault();
+    e.stopPropagation();
+  }, [clearEditNodeSendModelPreview]);
+
+  const onEditNodeSendModelDragPointerUp = React.useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    const active = editNodeSendModelDragRef.current;
+    if (!active || active.pointerId !== e.pointerId) return;
+    editNodeSendModelDragRef.current = null;
+    setEditNodeSendMenuPointerLock(false);
+    clearEditNodeSendModelPreview();
+
+    active.lastClient = { x: e.clientX, y: e.clientY };
+    if (!active.moved) {
+      e.preventDefault();
+      e.stopPropagation();
+      setEditNodeSendMenuId(null);
+      applyComposerModelSelection(active.modelId);
+      return;
+    }
+
+    e.preventDefault();
+    e.stopPropagation();
+    setEditNodeSendMenuId(null);
+
+    const engine = engineRef.current;
+    const canvas = canvasRef.current;
+    if (!engine || !canvas) return;
+
+    const canvasRect = canvas.getBoundingClientRect();
+    const screenX = active.lastClient.x - canvasRect.left;
+    const screenY = active.lastClient.y - canvasRect.top;
+
+    const nodeScreenRect = engine.getNodeScreenRect(active.nodeId);
+    const inside = Boolean(
+      nodeScreenRect &&
+        screenX >= nodeScreenRect.x &&
+        screenX <= nodeScreenRect.x + nodeScreenRect.w &&
+        screenY >= nodeScreenRect.y &&
+        screenY <= nodeScreenRect.y + nodeScreenRect.h,
+    );
+    if (inside) return;
+
+    const assistantRect = engine.getNodeSendAssistantSpawnRectAtScreen(active.nodeId, { x: screenX, y: screenY });
+    setPendingEditNodeSend({ nodeId: active.nodeId, modelIdOverride: active.modelId, assistantRect: assistantRect ?? null });
+  }, [clearEditNodeSendModelPreview]);
+
+  const onEditNodeSendModelDragPointerCancel = React.useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    const active = editNodeSendModelDragRef.current;
+    if (!active || active.pointerId !== e.pointerId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    editNodeSendModelDragRef.current = null;
+    setEditNodeSendMenuPointerLock(false);
+    clearEditNodeSendModelPreview();
+    if (active.moved) return;
+  }, [clearEditNodeSendModelPreview]);
+
   const updateEditNodeSendMenuPosition = React.useCallback(() => {
     const nodeId = editNodeSendMenuId;
     if (!nodeId) {
@@ -5621,6 +5758,9 @@ export default function App() {
 
   useEffect(() => {
     if (!editNodeSendMenuId) {
+      editNodeSendModelDragRef.current = null;
+      setEditNodeSendMenuPointerLock(false);
+      clearEditNodeSendModelPreview();
       setEditNodeSendMenuPos(null);
       return;
     }
@@ -5647,8 +5787,11 @@ export default function App() {
       window.removeEventListener('wheel', onReposition);
       vv?.removeEventListener('resize', onReposition);
       vv?.removeEventListener('scroll', onReposition);
+      editNodeSendModelDragRef.current = null;
+      setEditNodeSendMenuPointerLock(false);
+      clearEditNodeSendModelPreview();
     };
-  }, [editNodeSendMenuId, updateEditNodeSendMenuPosition]);
+  }, [clearEditNodeSendModelPreview, editNodeSendMenuId, updateEditNodeSendMenuPosition]);
 
   useEffect(() => {
     const pending = pendingEditNodeSend;
@@ -5864,7 +6007,7 @@ export default function App() {
             {typeof document !== 'undefined' && editNodeSendMenuId && editNodeSendMenuPos
               ? createPortal(
                   <>
-                    <div className="composerMenuBackdrop" onPointerDown={() => setEditNodeSendMenuId(null)} aria-hidden="true" />
+                    <div className="composerMenuBackdrop" onPointerDown={closeEditNodeSendMenu} aria-hidden="true" />
                     <div
                       className="composerMenu"
                       style={{
@@ -5873,26 +6016,40 @@ export default function App() {
                         left: editNodeSendMenuPos.left,
                         width: 115,
                         maxHeight: editNodeSendMenuPos.maxHeight,
+                        overflowY: editNodeSendMenuPointerLock ? 'hidden' : undefined,
+                        touchAction: editNodeSendMenuPointerLock ? 'none' : undefined,
                       }}
                       role="menu"
                     >
-                      {composerModelOptions.map((m) => (
-                        <button
-                          key={m.id}
-                          type="button"
-                          className={`composerMenu__item ${m.id === composerModelId ? 'composerMenu__item--active' : ''}`}
-                          onClick={() => {
-                            const nodeId = String(editNodeSendMenuId ?? '').trim();
-                            setEditNodeSendMenuId(null);
-                            if (!nodeId) return;
-                            setPendingEditNodeSend({ nodeId, modelIdOverride: m.id, assistantRect: null });
-                          }}
-                          role="menuitem"
-                          title={m.label}
-                        >
-                          {String(m.shortLabel ?? m.label ?? m.id).trim()}
-                        </button>
-                      ))}
+                      {composerModelOptions.map((m) => {
+                        const active = m.id === composerModelId;
+                        return (
+                          <button
+                            key={m.id}
+                            type="button"
+                            className={`composerMenu__item composerMenu__item--withCheck ${active ? 'composerMenu__item--active' : ''}`}
+                            onPointerDown={(e) => {
+                              const nodeId = String(editNodeSendMenuId ?? '').trim();
+                              if (!nodeId) return;
+                              beginEditNodeSendModelDrag(e, nodeId, m.id);
+                            }}
+                            onPointerMove={onEditNodeSendModelDragPointerMove}
+                            onPointerUp={onEditNodeSendModelDragPointerUp}
+                            onPointerCancel={onEditNodeSendModelDragPointerCancel}
+                            onClick={() => {
+                              closeEditNodeSendMenu();
+                              applyComposerModelSelection(m.id);
+                            }}
+                            role="menuitem"
+                            title={m.label}
+                          >
+                            <span className="composerMenu__check" aria-hidden="true">
+                              {active ? '✓' : ''}
+                            </span>
+                            <span className="composerMenu__label">{String(m.shortLabel ?? m.label ?? m.id).trim()}</span>
+                          </button>
+                        );
+                      })}
                     </div>
                   </>,
                   document.body,
@@ -5938,6 +6095,28 @@ export default function App() {
                   assistantRect,
                   clearComposerText: false,
                 });
+              }}
+              onSelectModel={(nextModelId) => {
+                applyComposerModelSelection(nextModelId);
+              }}
+              onSendPreview={(opts) => {
+                const engine = engineRef.current;
+                if (!engine) return;
+                const id = String(ui.editingNodeId ?? '').trim();
+                const placementClient = opts?.placementClient ?? null;
+                if (!id || !placementClient) {
+                  engine.clearExternalHeaderPlacementPreview();
+                  return;
+                }
+                const canvas = canvasRef.current;
+                if (!canvas) {
+                  engine.clearExternalHeaderPlacementPreview();
+                  return;
+                }
+                const canvasRect = canvas.getBoundingClientRect();
+                const screenX = placementClient.clientX - canvasRect.left;
+                const screenY = placementClient.clientY - canvasRect.top;
+                engine.setExternalHeaderPlacementPreview(id, { x: screenX, y: screenY });
               }}
 	            onCommit={(next) => {
 	              engineRef.current?.commitEditing(next);
@@ -6098,9 +6277,7 @@ export default function App() {
           modelId={composerModelId}
           modelOptions={composerModelOptions}
           onChangeModelId={(next) => {
-            const value = next || DEFAULT_MODEL_ID;
-            setComposerModelId(value);
-            ensureChatMeta(activeChatId).llm.modelId = value;
+            applyComposerModelSelection(next || DEFAULT_MODEL_ID);
           }}
           webSearchEnabled={composerWebSearch}
           onChangeWebSearchEnabled={(next) => {

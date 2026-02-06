@@ -717,6 +717,7 @@ export class WorldEngine {
   private tool: Tool = 'select';
   private pendingSpawnByDraw: PendingSpawnByDraw | null = null;
   private activeGesture: ActiveGesture | null = null;
+  private externalHeaderPlacementPreview: { nodeId: string; endpointWorld: Vec2 } | null = null;
   private suppressTapPointerIds = new Set<number>();
   private readonly touchUi: boolean;
   private spawnEditNodeByDrawEnabled = false;
@@ -4268,6 +4269,49 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     const world = this.camera.screenToWorld({ x: sx, y: sy });
     return { x: world.x, y: world.y, w: node.rect.w, h: TEXT_NODE_SPAWN_MIN_H_PX };
+  }
+
+  setExternalHeaderPlacementPreview(nodeId: string, screen: Vec2 | null): void {
+    const id = typeof nodeId === 'string' ? nodeId.trim() : String(nodeId ?? '').trim();
+    if (!id || !screen) {
+      this.clearExternalHeaderPlacementPreview();
+      return;
+    }
+
+    const node =
+      this.nodes.find((n): n is TextNode | InkNode => (n.kind === 'text' || n.kind === 'ink') && n.id === id) ?? null;
+    if (!node) {
+      this.clearExternalHeaderPlacementPreview();
+      return;
+    }
+    if (node.kind === 'text' && !node.isEditNode) {
+      this.clearExternalHeaderPlacementPreview();
+      return;
+    }
+
+    const sx = Number(screen.x);
+    const sy = Number(screen.y);
+    if (!Number.isFinite(sx) || !Number.isFinite(sy)) {
+      this.clearExternalHeaderPlacementPreview();
+      return;
+    }
+
+    const endpointWorld = this.camera.screenToWorld({ x: sx, y: sy });
+    const prev = this.externalHeaderPlacementPreview;
+    const same =
+      prev != null &&
+      prev.nodeId === id &&
+      Math.abs(prev.endpointWorld.x - endpointWorld.x) < 0.01 &&
+      Math.abs(prev.endpointWorld.y - endpointWorld.y) < 0.01;
+    if (same) return;
+    this.externalHeaderPlacementPreview = { nodeId: id, endpointWorld };
+    this.requestRender();
+  }
+
+  clearExternalHeaderPlacementPreview(): void {
+    if (!this.externalHeaderPlacementPreview) return;
+    this.externalHeaderPlacementPreview = null;
+    this.requestRender();
   }
 
   setNodeScreenRect(nodeId: string, screenRect: Rect): void {
@@ -10723,10 +10767,18 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
   private drawHeaderPlacementPreview(): void {
     const g = this.activeGesture;
-    if (!g || g.kind !== 'header-place' || !g.hasDrag) return;
+    const preview = (() => {
+      if (g && g.kind === 'header-place' && g.hasDrag) {
+        return { nodeId: g.nodeId, endpoint: g.currentWorld };
+      }
+      const external = this.externalHeaderPlacementPreview;
+      if (!external) return null;
+      return { nodeId: external.nodeId, endpoint: external.endpointWorld };
+    })();
+    if (!preview) return;
 
-    const endpoint = g.currentWorld;
-    const parent = this.nodes.find((n) => n.id === g.nodeId) ?? null;
+    const endpoint = preview.endpoint;
+    const parent = this.nodes.find((n) => n.id === preview.nodeId) ?? null;
     if (!parent) return;
 
     const inside =

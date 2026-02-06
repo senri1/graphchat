@@ -29,6 +29,8 @@ type Props = {
   onCommit: (next: string) => void;
   onCancel: () => void;
   onSend: (text: string, opts?: SendOptions) => void;
+  onSelectModel?: (modelId: string) => void;
+  onSendPreview?: (opts?: { placementClient?: SendPlacementClientPoint | null }) => void;
 };
 
 type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
@@ -36,7 +38,7 @@ type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
 type MenuPos = { left: number; top?: number; bottom?: number; maxHeight: number };
 
 export default function TextNodeEditor(props: Props) {
-  const { nodeId, title, initialValue, userPreface, modelId, modelOptions, anchorRect, getScreenRect, getZoom, viewport, zoom, baseFontSizePx, onDraftChange, onResize, onResizeEnd, onTogglePrefaceContext, onCommit, onCancel, onSend } = props;
+  const { nodeId, title, initialValue, userPreface, modelId, modelOptions, anchorRect, getScreenRect, getZoom, viewport, zoom, baseFontSizePx, onDraftChange, onResize, onResizeEnd, onTogglePrefaceContext, onCommit, onCancel, onSend, onSelectModel, onSendPreview } = props;
   const [draft, setDraft] = useState(() => initialValue ?? '');
   const [previewEnabled, setPreviewEnabled] = useState(false);
   const [collapsedPrefaceContexts, setCollapsedPrefaceContexts] = useState<Record<number, boolean>>(() => userPreface?.collapsedPrefaceContexts ?? {});
@@ -50,6 +52,8 @@ export default function TextNodeEditor(props: Props) {
   const onResizeRef = useRef(onResize);
   const onResizeEndRef = useRef(onResizeEnd);
   const onSendRef = useRef(onSend);
+  const onSelectModelRef = useRef<Props['onSelectModel']>(onSelectModel);
+  const onSendPreviewRef = useRef<Props['onSendPreview']>(onSendPreview);
   const onDraftChangeRef = useRef<Props['onDraftChange']>(onDraftChange);
   const resizeRef = useRef<{
     pointerId: number;
@@ -74,6 +78,7 @@ export default function TextNodeEditor(props: Props) {
     startClient: { x: number; y: number };
     lastClient: { x: number; y: number };
     moved: boolean;
+    source: 'main' | 'model_menu';
   } | null>(null);
   const suppressSendClickRef = useRef(false);
   const deferredDraft = useDeferredValue(draft);
@@ -84,8 +89,10 @@ export default function TextNodeEditor(props: Props) {
     onResizeRef.current = onResize;
     onResizeEndRef.current = onResizeEnd;
     onSendRef.current = onSend;
+    onSelectModelRef.current = onSelectModel;
+    onSendPreviewRef.current = onSendPreview;
     onDraftChangeRef.current = onDraftChange;
-  }, [onCancel, onCommit, onDraftChange, onResize, onResizeEnd, onSend]);
+  }, [onCancel, onCommit, onDraftChange, onResize, onResizeEnd, onSend, onSelectModel, onSendPreview]);
 
   useEffect(() => {
     committedRef.current = false;
@@ -107,13 +114,16 @@ export default function TextNodeEditor(props: Props) {
   const modelMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modelMenuPos, setModelMenuPos] = useState<MenuPos | null>(null);
+  const [modelMenuPointerLock, setModelMenuPointerLock] = useState(false);
 
   useEffect(() => {
     setModelMenuOpen(false);
     setModelMenuPos(null);
+    setModelMenuPointerLock(false);
   }, [nodeId]);
 
   const closeModelMenu = useCallback(() => {
+    setModelMenuPointerLock(false);
     setModelMenuOpen(false);
   }, []);
 
@@ -146,6 +156,10 @@ export default function TextNodeEditor(props: Props) {
     updateModelMenuPosition();
     setModelMenuOpen(true);
   }, [modelOptions.length, updateModelMenuPosition]);
+
+  useEffect(() => {
+    if (!modelMenuOpen) setModelMenuPointerLock(false);
+  }, [modelMenuOpen]);
 
   useEffect(() => {
     if (!modelMenuOpen) return;
@@ -200,7 +214,16 @@ export default function TextNodeEditor(props: Props) {
   useEffect(() => {
     sendDragRef.current = null;
     suppressSendClickRef.current = false;
+    setModelMenuPointerLock(false);
+    onSendPreviewRef.current?.({ placementClient: null });
   }, [nodeId]);
+
+  useEffect(
+    () => () => {
+      onSendPreviewRef.current?.({ placementClient: null });
+    },
+    [],
+  );
 
   const followEnabled = typeof getScreenRect === 'function';
 
@@ -405,8 +428,15 @@ export default function TextNodeEditor(props: Props) {
     onSendRef.current(draftRef.current, { modelIdOverride: modelIdOverride ?? null });
   };
 
-  const beginSendDrag = (modelIdOverride?: string | null) => (e: React.PointerEvent<HTMLButtonElement>) => {
+  const setSendPreviewClient = (placementClient: SendPlacementClientPoint | null) => {
+    onSendPreviewRef.current?.({ placementClient });
+  };
+
+  const beginSendDrag =
+    (modelIdOverride?: string | null, source: 'main' | 'model_menu' = 'main') =>
+    (e: React.PointerEvent<HTMLButtonElement>) => {
     if (e.button !== 0) return;
+    if (source === 'model_menu') e.preventDefault();
     e.stopPropagation();
     sendDragRef.current = {
       pointerId: e.pointerId,
@@ -414,14 +444,17 @@ export default function TextNodeEditor(props: Props) {
       startClient: { x: e.clientX, y: e.clientY },
       lastClient: { x: e.clientX, y: e.clientY },
       moved: false,
+      source,
     };
+    if (source === 'model_menu') setModelMenuPointerLock(true);
+    setSendPreviewClient(null);
 
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch {
       // ignore
     }
-  };
+    };
 
   const onSendDragPointerMove = (e: React.PointerEvent<HTMLButtonElement>) => {
     const active = sendDragRef.current;
@@ -433,7 +466,11 @@ export default function TextNodeEditor(props: Props) {
       const dy = active.lastClient.y - active.startClient.y;
       if (dx * dx + dy * dy >= 16) active.moved = true;
     }
-    if (!active.moved) return;
+    if (!active.moved) {
+      setSendPreviewClient(null);
+      return;
+    }
+    setSendPreviewClient({ clientX: active.lastClient.x, clientY: active.lastClient.y });
     e.preventDefault();
     e.stopPropagation();
   };
@@ -442,15 +479,28 @@ export default function TextNodeEditor(props: Props) {
     const active = sendDragRef.current;
     if (!active || active.pointerId !== e.pointerId) return;
     sendDragRef.current = null;
+    setSendPreviewClient(null);
 
     active.lastClient = { x: e.clientX, y: e.clientY };
     if (!active.moved) {
+      if (active.source === 'model_menu') {
+        e.preventDefault();
+        e.stopPropagation();
+        closeModelMenu();
+        const modelId = String(active.modelIdOverride ?? '').trim();
+        if (modelId) onSelectModelRef.current?.(modelId);
+        return;
+      }
       e.stopPropagation();
       return;
     }
     e.preventDefault();
     e.stopPropagation();
-    suppressSendClickRef.current = true;
+    if (active.source === 'model_menu') {
+      closeModelMenu();
+    } else {
+      suppressSendClickRef.current = true;
+    }
 
     const rect = liveRectRef.current ?? anchorRectRef.current;
     if (!rect) return;
@@ -474,15 +524,26 @@ export default function TextNodeEditor(props: Props) {
     e.preventDefault();
     e.stopPropagation();
     sendDragRef.current = null;
+    setSendPreviewClient(null);
+    if (active.source === 'model_menu') {
+      setModelMenuPointerLock(false);
+      return;
+    }
     if (active.moved) suppressSendClickRef.current = true;
   };
 
   const onSendMainClick = () => {
+    setSendPreviewClient(null);
     if (suppressSendClickRef.current) {
       suppressSendClickRef.current = false;
       return;
     }
     send(null);
+  };
+
+  const onModelMenuItemClick = (nextModelId: string) => {
+    closeModelMenu();
+    onSelectModelRef.current?.(nextModelId);
   };
 
   const baseFontSize = Math.max(1, Math.round(Number.isFinite(baseFontSizePx) ? baseFontSizePx : 14));
@@ -839,24 +900,33 @@ export default function TextNodeEditor(props: Props) {
                   left: modelMenuPos.left,
                   width: 115,
                   maxHeight: modelMenuPos.maxHeight,
+                  overflowY: modelMenuPointerLock ? 'hidden' : undefined,
+                  touchAction: modelMenuPointerLock ? 'none' : undefined,
                 }}
                 role="menu"
               >
-                {modelOptions.map((m) => (
-                  <button
-                    key={m.id}
-                    type="button"
-                    className={`composerMenu__item ${m.id === modelId ? 'composerMenu__item--active' : ''}`}
-                    onClick={() => {
-                      closeModelMenu();
-                      send(m.id);
-                    }}
-                    role="menuitem"
-                    title={m.label}
-                  >
-                    {String(m.shortLabel ?? m.label ?? m.id).trim()}
-                  </button>
-                ))}
+                {modelOptions.map((m) => {
+                  const active = m.id === modelId;
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      className={`composerMenu__item composerMenu__item--withCheck ${active ? 'composerMenu__item--active' : ''}`}
+                      onPointerDown={beginSendDrag(m.id, 'model_menu')}
+                      onPointerMove={onSendDragPointerMove}
+                      onPointerUp={onSendDragPointerEnd}
+                      onPointerCancel={onSendDragPointerCancel}
+                      onClick={() => onModelMenuItemClick(m.id)}
+                      role="menuitem"
+                      title={m.label}
+                    >
+                      <span className="composerMenu__check" aria-hidden="true">
+                        {active ? '✓' : ''}
+                      </span>
+                      <span className="composerMenu__label">{String(m.shortLabel ?? m.label ?? m.id).trim()}</span>
+                    </button>
+                  );
+                })}
               </div>
             </>,
             document.body,
