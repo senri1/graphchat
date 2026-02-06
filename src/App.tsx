@@ -560,6 +560,8 @@ export default function App() {
   });
   const [inkHud, setInkHud] = useState<InkInputHudState | null>(null);
   const [debug, setDebug] = useState<WorldEngineDebug | null>(null);
+  const debugBridgeEnabledRef = useRef<boolean>(DEFAULT_DEBUG_HUD_VISIBLE);
+  const lastEngineInteractingRef = useRef<boolean | null>(null);
   const [engineReady, setEngineReady] = useState(false);
   const engineReadyRef = useRef(false);
   const bootedRef = useRef(false);
@@ -1221,11 +1223,26 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!bootedRef.current) return;
-    if (!debug) return;
-    if (debug.interacting) return;
-    schedulePersistSoon();
-  }, [debug?.interacting, schedulePersistSoon]);
+    const shouldReceiveDebugFrames =
+      debugHudVisible ||
+      ui.editingNodeId != null ||
+      rawViewer != null ||
+      nodeMenuId != null ||
+      editNodeSendMenuId != null ||
+      replySpawnMenuId != null;
+
+    const wasEnabled = debugBridgeEnabledRef.current;
+    debugBridgeEnabledRef.current = shouldReceiveDebugFrames;
+
+    if (!shouldReceiveDebugFrames) {
+      setDebug(null);
+      return;
+    }
+
+    if (!wasEnabled) {
+      engineRef.current?.requestRender();
+    }
+  }, [debugHudVisible, ui.editingNodeId, rawViewer, nodeMenuId, editNodeSendMenuId, replySpawnMenuId]);
 
   const applyVisualSettings = (chatId: string) => {
     const engine = engineRef.current;
@@ -3128,7 +3145,15 @@ export default function App() {
     engine.setSpawnEditNodeByDrawEnabled(spawnEditNodeByDrawRef.current);
     engine.setSpawnInkNodeByDrawEnabled(spawnInkNodeByDrawRef.current);
     engine.setReplySpawnKind(replySpawnKindRef.current);
-    engine.onDebug = setDebug;
+    lastEngineInteractingRef.current = null;
+    engine.onDebug = (next) => {
+      const nextInteracting = Boolean(next?.interacting);
+      if (lastEngineInteractingRef.current === true && !nextInteracting && bootedRef.current) {
+        schedulePersistSoon();
+      }
+      lastEngineInteractingRef.current = nextInteracting;
+      if (debugBridgeEnabledRef.current) setDebug(next);
+    };
     engine.onUiState = (next) => {
       setUi(next);
       const editingId = typeof next.editingNodeId === 'string' ? next.editingNodeId : null;
