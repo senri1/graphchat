@@ -7,6 +7,7 @@ import type { ModelInfo } from '../llm/registry';
 import {
   getAnthropicEffortOptions,
   normalizeAnthropicEffort,
+  supportsAnthropicEffort,
   type AnthropicEffortSetting,
   type ModelUserSettings,
   type ModelUserSettingsById,
@@ -786,10 +787,10 @@ export default function SettingsModal(props: Props) {
 	                          if (typeof n !== 'number' || !Number.isFinite(n)) return 4096;
 	                          return Math.max(1, Math.min(200000, Math.floor(n)));
 	                        })();
-	                        const supportsAnthropicEffort = model.provider === 'anthropic';
-	                        const anthropicEffortOptions = supportsAnthropicEffort ? getAnthropicEffortOptions(model) : [];
-	                        const anthropicEffort = supportsAnthropicEffort
-	                          ? normalizeAnthropicEffort(model, s?.anthropicEffort)
+	                        const supportsAnthropicEffortControl = supportsAnthropicEffort(model);
+	                        const anthropicEffortOptions = supportsAnthropicEffortControl ? getAnthropicEffortOptions(model) : [];
+	                        const anthropicEffort = supportsAnthropicEffortControl
+	                          ? normalizeAnthropicEffort(model, s?.anthropicEffort) ?? 'high'
 	                          : 'high';
 
 	                        const setSummary = (next: ReasoningSummarySetting) => {
@@ -891,7 +892,7 @@ export default function SettingsModal(props: Props) {
 	                                </div>
 	                              ) : null}
 
-                              {supportsAnthropicEffort ? (
+                              {supportsAnthropicEffortControl ? (
                                 <div className="settingsRow">
                                   <div className="settingsRow__text">
                                     <div className="settingsRow__title">Thinking effort</div>

@@ -5,23 +5,47 @@ export type AnthropicEffortSetting = 'low' | 'medium' | 'high' | 'max';
 
 const BASE_ANTHROPIC_EFFORT_OPTIONS: AnthropicEffortSetting[] = ['low', 'medium', 'high'];
 
+function isAnthropicModel(model: ModelInfo | null | undefined): model is ModelInfo {
+  return Boolean(model && model.provider === 'anthropic');
+}
+
+function modelIdHints(model: ModelInfo | null | undefined): string {
+  if (!isAnthropicModel(model)) return '';
+  return `${String(model.id ?? '').toLowerCase()} ${String(model.apiModel ?? '').toLowerCase()}`;
+}
+
+export function supportsAnthropicAdaptiveThinking(model: ModelInfo | null | undefined): boolean {
+  if (!isAnthropicModel(model)) return false;
+  return modelIdHints(model).includes('opus-4-6');
+}
+
+export function supportsAnthropicEffort(model: ModelInfo | null | undefined): boolean {
+  if (!isAnthropicModel(model)) return false;
+  const hints = modelIdHints(model);
+  return hints.includes('opus-4-6') || hints.includes('opus-4-5');
+}
+
 function supportsAnthropicMaxEffort(model: ModelInfo | null | undefined): boolean {
   if (!model || model.provider !== 'anthropic') return false;
-  const id = String(model.id ?? '').toLowerCase();
-  const apiModel = String(model.apiModel ?? '').toLowerCase();
-  return id.includes('opus-4-6') || apiModel.includes('opus-4-6');
+  return supportsAnthropicAdaptiveThinking(model);
 }
 
 export function getAnthropicEffortOptions(model: ModelInfo | null | undefined): AnthropicEffortSetting[] {
+  if (!supportsAnthropicEffort(model)) return [];
   if (!supportsAnthropicMaxEffort(model)) return BASE_ANTHROPIC_EFFORT_OPTIONS.slice();
   return [...BASE_ANTHROPIC_EFFORT_OPTIONS, 'max'];
 }
 
-export function getDefaultAnthropicEffort(model: ModelInfo | null | undefined): AnthropicEffortSetting {
+export function getDefaultAnthropicEffort(model: ModelInfo | null | undefined): AnthropicEffortSetting | undefined {
+  if (!supportsAnthropicEffort(model)) return undefined;
   return supportsAnthropicMaxEffort(model) ? 'max' : 'high';
 }
 
-export function normalizeAnthropicEffort(model: ModelInfo | null | undefined, raw: unknown): AnthropicEffortSetting {
+export function normalizeAnthropicEffort(
+  model: ModelInfo | null | undefined,
+  raw: unknown,
+): AnthropicEffortSetting | undefined {
+  if (!supportsAnthropicEffort(model)) return undefined;
   const options = getAnthropicEffortOptions(model);
   const fallback = getDefaultAnthropicEffort(model);
   const value = typeof raw === 'string' ? raw.toLowerCase().trim() : '';
@@ -65,7 +89,7 @@ export function defaultModelUserSettings(model: ModelInfo): ModelUserSettings {
     ...(model.provider === 'anthropic'
       ? {
           maxTokens: 4096,
-          anthropicEffort: getDefaultAnthropicEffort(model),
+          ...(supportsAnthropicEffort(model) ? { anthropicEffort: getDefaultAnthropicEffort(model) } : {}),
         }
       : {}),
   };
@@ -105,6 +129,7 @@ export function normalizeModelUserSettings(model: ModelInfo, raw: unknown): Mode
 
   const anthropicEffort = (() => {
     if (model.provider !== 'anthropic') return undefined;
+    if (!supportsAnthropicEffort(model)) return undefined;
     const rawVal = obj.anthropicEffort;
     const fallback = defaults.anthropicEffort;
     return normalizeAnthropicEffort(model, typeof rawVal === 'string' ? rawVal : fallback);
