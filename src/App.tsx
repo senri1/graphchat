@@ -195,6 +195,10 @@ const DEFAULT_UI_GLASS_SATURATE_PCT_WEBGL = 140;
 const DEFAULT_GLASS_UNDERLAY_ALPHA = 1;
 const DEFAULT_INK_SEND_CROP_ENABLED = false;
 const DEFAULT_INK_SEND_DOWNSCALE_ENABLED = false;
+const DEFAULT_SEND_ALL_ENABLED = false;
+const DEFAULT_SEND_ALL_COMPOSER_ENABLED = false;
+const MULTI_SEND_ASSISTANT_MAX_W_PX = 800;
+const MULTI_SEND_ASSISTANT_GAP_X_PX = 26;
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
   const n = Number(value);
@@ -219,6 +223,26 @@ function parseBoolParam(params: URLSearchParams, key: string, fallback: boolean)
   if (raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on') return true;
   if (raw === '0' || raw === 'false' || raw === 'no' || raw === 'off') return false;
   return fallback;
+}
+
+function normalizeSendAllModelIds(value: unknown, allModelIds: string[]): string[] {
+  const known = allModelIds
+    .map((id) => String(id ?? '').trim())
+    .filter(Boolean);
+  const knownSet = new Set(known);
+  const seen = new Set<string>();
+  const out: string[] = [];
+
+  if (Array.isArray(value)) {
+    for (const raw of value) {
+      const id = String(raw ?? '').trim();
+      if (!id || !knownSet.has(id) || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+  }
+
+  return out;
 }
 
 function fileSignature(file: File): string {
@@ -608,6 +632,9 @@ export default function App() {
       inkSendDownscaleEnabled: boolean;
       inkSendMaxPixels: number;
       inkSendMaxDimPx: number;
+      sendAllEnabled: boolean;
+      sendAllComposerEnabled: boolean;
+      sendAllModelIds: string[];
     };
     chatStates: Map<string, WorldEngineChatState>;
     chatMeta: Map<string, ChatRuntimeMeta>;
@@ -658,6 +685,13 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsPanel, setSettingsPanel] = useState<'appearance' | 'models' | 'debug' | 'data' | 'reset'>('appearance');
   const [debugHudVisible, setDebugHudVisible] = useState(DEFAULT_DEBUG_HUD_VISIBLE);
+  const [sendAllEnabled, setSendAllEnabled] = useState(DEFAULT_SEND_ALL_ENABLED);
+  const sendAllEnabledRef = useRef<boolean>(sendAllEnabled);
+  const [sendAllComposerEnabled, setSendAllComposerEnabled] = useState(DEFAULT_SEND_ALL_COMPOSER_ENABLED);
+  const sendAllComposerEnabledRef = useRef<boolean>(sendAllComposerEnabled);
+  const [sendAllModelIds, setSendAllModelIds] = useState<string[]>(() => []);
+  const sendAllModelIdsRef = useRef<string[]>(sendAllModelIds);
+  const sendAllModelIdsInitializedRef = useRef(false);
   const [allowEditingAllTextNodes, setAllowEditingAllTextNodes] = useState(DEFAULT_ALLOW_EDITING_ALL_TEXT_NODES);
   const allowEditingAllTextNodesRef = useRef<boolean>(allowEditingAllTextNodes);
   const [spawnEditNodeByDraw, setSpawnEditNodeByDraw] = useState(DEFAULT_SPAWN_EDIT_NODE_BY_DRAW);
@@ -737,6 +771,10 @@ export default function App() {
   const sidebarFontSizePxRef = useRef<number>(sidebarFontSizePx);
   const backgroundLoadSeqRef = useRef(0);
   const allModels = useMemo(() => listModels(), [listModels]);
+  const allModelIds = useMemo(
+    () => allModels.map((m) => String(m.id ?? '').trim()).filter(Boolean),
+    [allModels],
+  );
   const edgeRouterOptions = useMemo(
     () => listEdgeRouters().map((r) => ({ id: r.id as EdgeRouterId, label: r.label, description: r.description })),
     [],
@@ -861,6 +899,33 @@ export default function App() {
   useEffect(() => {
     backgroundLibraryRef.current = backgroundLibrary;
   }, [backgroundLibrary]);
+
+  useEffect(() => {
+    sendAllEnabledRef.current = sendAllEnabled;
+  }, [sendAllEnabled]);
+
+  useEffect(() => {
+    sendAllComposerEnabledRef.current = sendAllComposerEnabled;
+  }, [sendAllComposerEnabled]);
+
+  useEffect(() => {
+    sendAllModelIdsRef.current = sendAllModelIds;
+  }, [sendAllModelIds]);
+
+  useEffect(() => {
+    setSendAllModelIds((prev) => {
+      let normalized = normalizeSendAllModelIds(prev, allModelIds);
+      if (!sendAllModelIdsInitializedRef.current) {
+        sendAllModelIdsInitializedRef.current = true;
+        if (normalized.length === 0) normalized = allModelIds.slice();
+      }
+      const same =
+        prev.length === normalized.length && prev.every((id, index) => id === normalized[index]);
+      if (same) return prev;
+      sendAllModelIdsRef.current = normalized;
+      return normalized;
+    });
+  }, [allModelIds]);
 
   useEffect(() => {
     allowEditingAllTextNodesRef.current = allowEditingAllTextNodes;
@@ -1190,6 +1255,9 @@ export default function App() {
               inkSendDownscaleEnabled: Boolean(inkSendDownscaleEnabledRef.current),
               inkSendMaxPixels: Math.round(clampNumber(inkSendMaxPixelsRef.current, 100_000, 40_000_000, 6_000_000)),
               inkSendMaxDimPx: Math.round(clampNumber(inkSendMaxDimPxRef.current, 256, 8192, 4096)),
+              sendAllEnabled: Boolean(sendAllEnabledRef.current),
+              sendAllComposerEnabled: Boolean(sendAllComposerEnabledRef.current),
+              sendAllModelIds: normalizeSendAllModelIds(sendAllModelIdsRef.current, allModelIds),
             },
           });
         } catch {
@@ -3722,11 +3790,18 @@ export default function App() {
     inkSendDownscaleEnabledRef.current = Boolean(visual.inkSendDownscaleEnabled);
     inkSendMaxPixelsRef.current = clampNumber(visual.inkSendMaxPixels, 100_000, 40_000_000, 6_000_000);
     inkSendMaxDimPxRef.current = clampNumber(visual.inkSendMaxDimPx, 256, 8192, 4096);
+    sendAllEnabledRef.current = Boolean(visual.sendAllEnabled);
+    sendAllComposerEnabledRef.current = Boolean(visual.sendAllComposerEnabled);
+    sendAllModelIdsRef.current = normalizeSendAllModelIds(visual.sendAllModelIds, allModelIds);
+    sendAllModelIdsInitializedRef.current = true;
     setInkSendCropEnabled(inkSendCropEnabledRef.current);
     setInkSendCropPaddingPx(inkSendCropPaddingPxRef.current);
     setInkSendDownscaleEnabled(inkSendDownscaleEnabledRef.current);
     setInkSendMaxPixels(inkSendMaxPixelsRef.current);
     setInkSendMaxDimPx(inkSendMaxDimPxRef.current);
+    setSendAllEnabled(sendAllEnabledRef.current);
+    setSendAllComposerEnabled(sendAllComposerEnabledRef.current);
+    setSendAllModelIds(sendAllModelIdsRef.current);
 
     bootedRef.current = true;
     setActiveChatId(resolvedActive);
@@ -4064,6 +4139,18 @@ export default function App() {
             : DEFAULT_INK_SEND_DOWNSCALE_ENABLED,
         inkSendMaxPixels: clampNumber((visualSrc as any)?.inkSendMaxPixels, 100_000, 40_000_000, 6_000_000),
         inkSendMaxDimPx: clampNumber((visualSrc as any)?.inkSendMaxDimPx, 256, 8192, 4096),
+        sendAllEnabled:
+          typeof (visualSrc as any)?.sendAllEnabled === 'boolean'
+            ? Boolean((visualSrc as any).sendAllEnabled)
+            : DEFAULT_SEND_ALL_ENABLED,
+        sendAllComposerEnabled:
+          typeof (visualSrc as any)?.sendAllComposerEnabled === 'boolean'
+            ? Boolean((visualSrc as any).sendAllComposerEnabled)
+            : DEFAULT_SEND_ALL_COMPOSER_ENABLED,
+        sendAllModelIds:
+          (visualSrc as any)?.sendAllModelIds === undefined
+            ? allModelIds.slice()
+            : normalizeSendAllModelIds((visualSrc as any)?.sendAllModelIds, allModelIds),
       };
 
       const modelUserSettings = buildModelUserSettings(allModels, ws.llm?.modelUserSettings);
@@ -4092,7 +4179,7 @@ export default function App() {
         bootPayloadRef.current = null;
       }
     })();
-  }, [allModels, schedulePersistSoon]);
+  }, [allModelIds, allModels, schedulePersistSoon]);
 
   useEffect(() => {
     if (!engineReady) return;
@@ -4607,9 +4694,9 @@ export default function App() {
     void exportAllChats();
   };
 
-  const sendTurn = (args: SendTurnArgs) => {
+  const sendTurn = (args: SendTurnArgs): { chatId: string; userNodeId: string; assistantNodeId: string } | null => {
     const engine = engineRef.current;
-    if (!engine) return;
+    if (!engine) return null;
 
     const raw = String(args.userText ?? '');
 
@@ -4638,7 +4725,7 @@ export default function App() {
     })();
     const hasPreface = Boolean(replyTo || contextTexts.length > 0);
 
-    if (!raw.trim() && composerDraftAttachments.length === 0 && !hasPreface) return;
+    if (!raw.trim() && composerDraftAttachments.length === 0 && !hasPreface) return null;
 
     const selectedModelId = String(args.modelIdOverride || composerModelId || DEFAULT_MODEL_ID).trim() || DEFAULT_MODEL_ID;
     const assistantTitle = (() => {
@@ -4850,16 +4937,21 @@ export default function App() {
     }
 
     schedulePersistSoon();
+    return { chatId, userNodeId: res.userNodeId, assistantNodeId: res.assistantNodeId };
   };
 
-  const sendInkTurn = (args: { strokes: InkStroke[]; viewport?: { w: number; h: number } | null; modelIdOverride?: string | null }) => {
+  const sendInkTurn = (args: {
+    strokes: InkStroke[];
+    viewport?: { w: number; h: number } | null;
+    modelIdOverride?: string | null;
+  }): { chatId: string; userNodeId: string; assistantNodeId: string } | null => {
     const engine = engineRef.current;
-    if (!engine) return;
+    if (!engine) return null;
 
     const rawStrokes = Array.isArray(args.strokes) ? args.strokes : [];
     if (rawStrokes.length === 0) {
       showToast('Nothing to send: ink is empty.', 'error');
-      return;
+      return null;
     }
 
     const composerContextTexts = (contextSelections ?? []).map((t) => String(t ?? '').trim()).filter(Boolean);
@@ -4893,7 +4985,7 @@ export default function App() {
     const modelInfo = getModelInfo(selectedModelId);
     if (modelInfo && modelInfo.supportsImageInput === false) {
       showToast('Selected model does not support image input.', 'error');
-      return;
+      return null;
     }
 
     let desiredParentId = replySelection?.nodeId && engine.hasNode(replySelection.nodeId) ? replySelection.nodeId : null;
@@ -4978,7 +5070,7 @@ export default function App() {
 
     if (nodeStrokes.length === 0) {
       showToast('Nothing to send: ink is empty.', 'error');
-      return;
+      return null;
     }
 
     const chatId = activeChatIdRef.current;
@@ -5114,6 +5206,7 @@ export default function App() {
     }
 
     schedulePersistSoon();
+    return { chatId, userNodeId: res.userNodeId, assistantNodeId: res.assistantNodeId };
   };
 
   const sendAssistantTurnFromUserNode = (args: {
@@ -5121,12 +5214,12 @@ export default function App() {
     modelIdOverride?: string | null;
     assistantRect?: Rect | null;
     clearComposerText?: boolean;
-  }) => {
+  }): { chatId: string; assistantNodeId: string } | null => {
     const engine = engineRef.current;
-    if (!engine) return;
+    if (!engine) return null;
 
     const userNodeId = String(args.userNodeId ?? '').trim();
-    if (!userNodeId) return;
+    if (!userNodeId) return null;
     contextTargetEditNodeIdRef.current = userNodeId;
 
     const chatId = activeChatIdRef.current;
@@ -5146,19 +5239,19 @@ export default function App() {
 
     const preSnapshot = engine.exportChatState();
     const leafNode = preSnapshot.nodes.find((n) => n.id === userNodeId) ?? null;
-    if (!leafNode) return;
+    if (!leafNode) return null;
 
     if (leafNode.kind === 'ink') {
       const strokes = Array.isArray((leafNode as any).strokes) ? ((leafNode as any).strokes as any[]) : [];
       if (strokes.length === 0) {
         showToast('Nothing to send: ink node is empty.', 'error');
-        return;
+        return null;
       }
 
       const modelInfo = getModelInfo(selectedModelId);
       if (modelInfo && modelInfo.supportsImageInput === false) {
         showToast('Selected model does not support image input.', 'error');
-        return;
+        return null;
       }
 
       // Persist the composed context back onto the ink node so the sent message matches what the node shows.
@@ -5199,7 +5292,7 @@ export default function App() {
         assistantModelId: selectedModelId,
         ...(args.assistantRect ? { rect: args.assistantRect } : {}),
       });
-      if (!res) return;
+      if (!res) return null;
 
       meta.turns.push({
         id: genId('turn'),
@@ -5321,10 +5414,10 @@ export default function App() {
       }
 
       schedulePersistSoon();
-      return;
+      return { chatId, assistantNodeId: res.assistantNodeId };
     }
 
-    if (leafNode.kind !== 'text') return;
+    if (leafNode.kind !== 'text') return null;
     const userNode = leafNode;
 
     const userText = typeof userNode.content === 'string' ? userNode.content : String((userNode as any).content ?? '');
@@ -5349,7 +5442,7 @@ export default function App() {
     })();
     const hasPreface = Boolean(replyTo || contextTexts.length > 0);
 
-    if (!userText.trim() && composerDraftAttachments.length === 0 && !hasPreface) return;
+    if (!userText.trim() && composerDraftAttachments.length === 0 && !hasPreface) return null;
 
     // Persist the composed context back onto the edit node so the sent message matches what the node shows.
     try {
@@ -5373,7 +5466,7 @@ export default function App() {
       assistantModelId: selectedModelId,
       ...(args.assistantRect ? { rect: args.assistantRect } : {}),
     });
-    if (!res) return;
+    if (!res) return null;
 
     meta.turns.push({
       id: genId('turn'),
@@ -5531,7 +5624,88 @@ export default function App() {
     }
 
     schedulePersistSoon();
+    return { chatId, assistantNodeId: res.assistantNodeId };
   };
+
+  const resolveComposerSendModelIds = React.useCallback((): string[] => {
+    const fallback = String(composerModelId || DEFAULT_MODEL_ID).trim() || DEFAULT_MODEL_ID;
+    if (!sendAllEnabled || !sendAllComposerEnabled) return [fallback];
+    const allowed = new Set(allModelIds);
+    const seen = new Set<string>();
+    const picked: string[] = [];
+    for (const raw of sendAllModelIds) {
+      const id = String(raw ?? '').trim();
+      if (!id || !allowed.has(id) || seen.has(id)) continue;
+      seen.add(id);
+      picked.push(id);
+    }
+    if (picked.length === 0) return [fallback];
+    return picked;
+  }, [allModelIds, composerModelId, sendAllComposerEnabled, sendAllEnabled, sendAllModelIds]);
+
+  const resolveSymmetricAssistantRects = React.useCallback((args: {
+    chatId: string;
+    userNodeId: string;
+    firstAssistantNodeId: string;
+    count: number;
+  }): Array<Rect | null> => {
+    const count = Math.max(0, Math.floor(args.count));
+    if (count <= 0) return [];
+
+    const state = chatStatesRef.current.get(args.chatId);
+    if (!state) return new Array(count).fill(null);
+    const userNode =
+      state.nodes.find(
+        (n): n is Extract<ChatNode, { kind: 'text' }> | Extract<ChatNode, { kind: 'ink' }> =>
+          (n.kind === 'text' || n.kind === 'ink') && n.id === args.userNodeId,
+      ) ?? null;
+    const firstAssistantNode =
+      state.nodes.find(
+        (n): n is Extract<ChatNode, { kind: 'text' }> =>
+          n.kind === 'text' && n.id === args.firstAssistantNodeId,
+      ) ?? null;
+    if (!userNode || !firstAssistantNode) return new Array(count).fill(null);
+
+    const baseRect = firstAssistantNode.rect;
+    const baseW = Number.isFinite(baseRect.w) ? baseRect.w : 0;
+    const baseH = Number.isFinite(baseRect.h) ? baseRect.h : 0;
+    const userCenterX = userNode.rect.x + userNode.rect.w * 0.5;
+    const laneStep = Math.max(MULTI_SEND_ASSISTANT_MAX_W_PX, baseW) + MULTI_SEND_ASSISTANT_GAP_X_PX;
+    const centerOffset = (count - 1) * 0.5;
+    return new Array(count).fill(null).map((_v, index) => ({
+      x: userCenterX - baseW * 0.5 + (index - centerOffset) * laneStep,
+      y: baseRect.y,
+      w: baseW,
+      h: baseH,
+    }));
+  }, []);
+
+  const applyAssistantRects = React.useCallback((args: {
+    chatId: string;
+    assistantNodeIds: string[];
+    rects: Array<Rect | null>;
+  }) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const zoom = Math.max(0.001, Number(engine.camera.zoom) || 1);
+
+    const count = Math.min(args.assistantNodeIds.length, args.rects.length);
+    for (let i = 0; i < count; i += 1) {
+      const nodeId = String(args.assistantNodeIds[i] ?? '').trim();
+      const rect = args.rects[i];
+      if (!nodeId || !rect) continue;
+      const screenRect: Rect = {
+        x: (rect.x - engine.camera.x) * zoom,
+        y: (rect.y - engine.camera.y) * zoom,
+        w: rect.w * zoom,
+        h: rect.h * zoom,
+      };
+      engine.setNodeScreenRect(nodeId, screenRect);
+    }
+
+    chatStatesRef.current.set(args.chatId, engine.exportChatState());
+    schedulePersistSoon();
+  }, [schedulePersistSoon]);
 
   const applyComposerModelSelection = React.useCallback(
     (nextModelId: string) => {
@@ -6284,6 +6458,14 @@ export default function App() {
             setComposerWebSearch(next);
             ensureChatMeta(activeChatId).llm.webSearchEnabled = next;
           }}
+          sendAllEnabled={sendAllEnabled}
+          sendAllChecked={sendAllComposerEnabled}
+          onChangeSendAllChecked={(next) => {
+            const value = Boolean(next);
+            setSendAllComposerEnabled(value);
+            sendAllComposerEnabledRef.current = value;
+            schedulePersistSoon();
+          }}
           replyPreview={replySelection?.preview ?? null}
           contextSelections={contextSelections}
           onRemoveContextSelection={(index) => {
@@ -6311,10 +6493,80 @@ export default function App() {
                 (contextSelections ?? []).every((t) => !String(t ?? '').trim())
           }
           onSend={() => {
-            sendTurn({ userText: composerDraft, allowPdfAttachmentParentFallback: true, clearComposerText: true });
+            const targetModelIds = resolveComposerSendModelIds();
+            const [firstModelId, ...restModelIds] = targetModelIds;
+            const first = sendTurn({
+              userText: composerDraft,
+              allowPdfAttachmentParentFallback: true,
+              clearComposerText: true,
+              modelIdOverride: firstModelId,
+            });
+            if (!first) return;
+            const assistantNodeIds = [first.assistantNodeId];
+            for (let i = 0; i < restModelIds.length; i += 1) {
+              const modelId = restModelIds[i];
+              const spawned = sendAssistantTurnFromUserNode({
+                userNodeId: first.userNodeId,
+                modelIdOverride: modelId,
+                clearComposerText: false,
+              });
+              if (spawned?.assistantNodeId) assistantNodeIds.push(spawned.assistantNodeId);
+            }
+            if (assistantNodeIds.length >= 2) {
+              const assistantRects = resolveSymmetricAssistantRects({
+                chatId: first.chatId,
+                userNodeId: first.userNodeId,
+                firstAssistantNodeId: first.assistantNodeId,
+                count: assistantNodeIds.length,
+              });
+              applyAssistantRects({
+                chatId: first.chatId,
+                assistantNodeIds,
+                rects: assistantRects,
+              });
+            }
           }}
           onSendInk={({ strokes, viewport }) => {
-            sendInkTurn({ strokes, viewport });
+            const targetModelIds = resolveComposerSendModelIds();
+            const supportedModelIds = targetModelIds.filter((modelId) => {
+              const info = getModelInfo(modelId);
+              return !info || info.supportsImageInput !== false;
+            });
+            const skippedCount = targetModelIds.length - supportedModelIds.length;
+            const dispatchModelIds = supportedModelIds.length ? supportedModelIds : targetModelIds;
+            const [firstModelId, ...restModelIds] = dispatchModelIds;
+            const first = sendInkTurn({ strokes, viewport, modelIdOverride: firstModelId });
+            if (!first) return;
+            const assistantNodeIds = [first.assistantNodeId];
+            for (let i = 0; i < restModelIds.length; i += 1) {
+              const modelId = restModelIds[i];
+              const spawned = sendAssistantTurnFromUserNode({
+                userNodeId: first.userNodeId,
+                modelIdOverride: modelId,
+                clearComposerText: false,
+              });
+              if (spawned?.assistantNodeId) assistantNodeIds.push(spawned.assistantNodeId);
+            }
+            if (assistantNodeIds.length >= 2) {
+              const assistantRects = resolveSymmetricAssistantRects({
+                chatId: first.chatId,
+                userNodeId: first.userNodeId,
+                firstAssistantNodeId: first.assistantNodeId,
+                count: assistantNodeIds.length,
+              });
+              applyAssistantRects({
+                chatId: first.chatId,
+                assistantNodeIds,
+                rects: assistantRects,
+              });
+            }
+            if (skippedCount > 0) {
+              showToast(
+                `Skipped ${skippedCount} selected model${skippedCount === 1 ? '' : 's'} that do not support image input.`,
+                'info',
+                2600,
+              );
+            }
           }}
         />
         <input
@@ -6718,6 +6970,26 @@ export default function App() {
           }}
           debugHudVisible={debugHudVisible}
           onToggleDebugHudVisible={() => setDebugHudVisible((prev) => !prev)}
+          sendAllEnabled={sendAllEnabled}
+          onToggleSendAllEnabled={() => {
+            const next = !sendAllEnabledRef.current;
+            sendAllEnabledRef.current = next;
+            setSendAllEnabled(next);
+            schedulePersistSoon();
+          }}
+          sendAllModelIds={sendAllModelIds}
+          onToggleSendAllModelId={(rawModelId) => {
+            const modelId = String(rawModelId ?? '').trim();
+            if (!modelId || !allModelIds.includes(modelId)) return;
+            setSendAllModelIds((prev) => {
+              const exists = prev.includes(modelId);
+              const next = exists ? prev.filter((id) => id !== modelId) : [...prev, modelId];
+              const normalized = normalizeSendAllModelIds(next, allModelIds);
+              sendAllModelIdsRef.current = normalized;
+              return normalized;
+            });
+            schedulePersistSoon();
+          }}
           allowEditingAllTextNodes={allowEditingAllTextNodes}
           onToggleAllowEditingAllTextNodes={() => setAllowEditingAllTextNodes((prev) => !prev)}
           spawnEditNodeByDraw={spawnEditNodeByDraw}
@@ -6869,6 +7141,13 @@ export default function App() {
             setComposerWebSearch(true);
             setActiveChatSystemInstructionOverride(null);
             setDebugHudVisible(DEFAULT_DEBUG_HUD_VISIBLE);
+            sendAllEnabledRef.current = DEFAULT_SEND_ALL_ENABLED;
+            sendAllComposerEnabledRef.current = DEFAULT_SEND_ALL_COMPOSER_ENABLED;
+            sendAllModelIdsRef.current = allModelIds.slice();
+            sendAllModelIdsInitializedRef.current = true;
+            setSendAllEnabled(DEFAULT_SEND_ALL_ENABLED);
+            setSendAllComposerEnabled(DEFAULT_SEND_ALL_COMPOSER_ENABLED);
+            setSendAllModelIds(sendAllModelIdsRef.current);
             allowEditingAllTextNodesRef.current = DEFAULT_ALLOW_EDITING_ALL_TEXT_NODES;
             setAllowEditingAllTextNodes(DEFAULT_ALLOW_EDITING_ALL_TEXT_NODES);
             spawnEditNodeByDrawRef.current = DEFAULT_SPAWN_EDIT_NODE_BY_DRAW;

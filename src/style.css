@@ -1576,6 +1576,58 @@ body {
   width: 100%;
 }
 
+.settingsSendAllList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 280px;
+  overflow-y: auto;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 8px;
+}
+
+.settingsSendAllList__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 6px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.settingsSendAllList__item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.settingsSendAllList__checkbox {
+  margin-top: 2px;
+  accent-color: rgba(37, 99, 235, 1);
+}
+
+.settingsSendAllList__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.settingsSendAllList__title {
+  font-size: 12px;
+  font-weight: 650;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.settingsSendAllList__desc {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.66);
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .controls__title {
   display: flex;
   align-items: center;

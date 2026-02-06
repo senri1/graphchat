@@ -34,6 +34,9 @@ type Props = {
   onChangeModelId: (next: string) => void;
   webSearchEnabled: boolean;
   onChangeWebSearchEnabled: (next: boolean) => void;
+  sendAllEnabled?: boolean;
+  sendAllChecked?: boolean;
+  onChangeSendAllChecked?: (next: boolean) => void;
   mode: ComposerMode;
   onChangeMode: (next: ComposerMode) => void;
   inkTool: InkTool;
@@ -210,7 +213,7 @@ function labelForAttachment(att: ChatAttachment): string {
 }
 
 export default function ChatComposer(props: Props) {
-  const { value, onChange, onSend, onSendInk, modelId, modelOptions, onChangeModelId, webSearchEnabled, onChangeWebSearchEnabled, mode, onChangeMode, inkTool, inkStrokes, onChangeInkStrokes, containerRef, replyPreview, onCancelReply, contextSelections, onRemoveContextSelection, placeholder, sendDisabled, disabled, draftAttachments, onAddAttachmentFiles, onRemoveDraftAttachment, contextAttachments, selectedContextAttachmentKeys, onToggleContextAttachmentKey, minimized: minimizedProp, onChangeMinimized } = props;
+  const { value, onChange, onSend, onSendInk, modelId, modelOptions, onChangeModelId, webSearchEnabled, onChangeWebSearchEnabled, sendAllEnabled, sendAllChecked, onChangeSendAllChecked, mode, onChangeMode, inkTool, inkStrokes, onChangeInkStrokes, containerRef, replyPreview, onCancelReply, contextSelections, onRemoveContextSelection, placeholder, sendDisabled, disabled, draftAttachments, onAddAttachmentFiles, onRemoveDraftAttachment, contextAttachments, selectedContextAttachmentKeys, onToggleContextAttachmentKey, minimized: minimizedProp, onChangeMinimized } = props;
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const onSendRef = useRef(onSend);
@@ -1390,6 +1393,18 @@ export default function ChatComposer(props: Props) {
                 disabled={disabled}
               />
             </label>
+
+            {sendAllEnabled ? (
+              <label className="composer__toggle">
+                <span>Send all</span>
+                <input
+                  type="checkbox"
+                  checked={Boolean(sendAllChecked)}
+                  onChange={(e) => onChangeSendAllChecked?.(Boolean((e.currentTarget as HTMLInputElement).checked))}
+                  disabled={disabled}
+                />
+              </label>
+            ) : null}
           </div>
           <button className="composer__send" type="button" onClick={send} disabled={Boolean(disabled || sendDisabled)}>
             Send

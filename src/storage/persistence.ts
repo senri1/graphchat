@@ -45,6 +45,9 @@ export type PersistedWorkspaceSnapshot = {
     inkSendDownscaleEnabled?: boolean;
     inkSendMaxPixels?: number;
     inkSendMaxDimPx?: number;
+    sendAllEnabled?: boolean;
+    sendAllComposerEnabled?: boolean;
+    sendAllModelIds?: string[];
   };
   updatedAt: number;
 };

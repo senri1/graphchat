@@ -76,6 +76,10 @@ type Props = {
 
   debugHudVisible: boolean;
   onToggleDebugHudVisible: () => void;
+  sendAllEnabled: boolean;
+  onToggleSendAllEnabled: () => void;
+  sendAllModelIds: string[];
+  onToggleSendAllModelId: (modelId: string) => void;
   allowEditingAllTextNodes: boolean;
   onToggleAllowEditingAllTextNodes: () => void;
   spawnEditNodeByDraw: boolean;
@@ -1008,6 +1012,60 @@ export default function SettingsModal(props: Props) {
                       </button>
                     </div>
                   </div>
+                </div>
+
+                <div className="settingsCard">
+                  <div className="settingsRow">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Send all</div>
+                      <div className="settingsRow__desc">Enable multi-model send controls in the composer.</div>
+                    </div>
+                    <div className="settingsRow__actions">
+                      <button
+                        className={`settingsToggle ${props.sendAllEnabled ? 'settingsToggle--on' : ''}`}
+                        type="button"
+                        aria-pressed={props.sendAllEnabled}
+                        onClick={props.onToggleSendAllEnabled}
+                      >
+                        {props.sendAllEnabled ? 'On' : 'Off'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {props.sendAllEnabled ? (
+                    <div className="settingsSendAllList" role="list" aria-label="Send all model list">
+                      {(props.models ?? []).map((model) => {
+                        const modelId = String(model.id ?? '').trim();
+                        if (!modelId) return null;
+                        const checked = (props.sendAllModelIds ?? []).includes(modelId);
+                        const shortLabel = String(model.shortLabel ?? model.label ?? modelId).trim();
+                        const provider =
+                          model.provider === 'openai'
+                            ? 'OpenAI'
+                            : model.provider === 'gemini'
+                              ? 'Gemini'
+                              : model.provider === 'anthropic'
+                                ? 'Anthropic'
+                                : model.provider === 'xai'
+                                  ? 'xAI'
+                                  : String(model.provider ?? '').trim() || 'Provider';
+                        return (
+                          <label key={modelId} className="settingsSendAllList__item" role="listitem">
+                            <input
+                              className="settingsSendAllList__checkbox"
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => props.onToggleSendAllModelId(modelId)}
+                            />
+                            <span className="settingsSendAllList__meta">
+                              <span className="settingsSendAllList__title">{shortLabel}</span>
+                              <span className="settingsSendAllList__desc">{provider} • {model.apiModel}</span>
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="settingsCard">
