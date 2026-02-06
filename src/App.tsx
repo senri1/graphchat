@@ -5921,10 +5921,21 @@ export default function App() {
               onSend={(text, opts) => {
                 const id = String(ui.editingNodeId ?? '').trim();
                 if (!id) return;
-                engineRef.current?.setEditingText(text);
+                const engine = engineRef.current;
+                engine?.setEditingText(text);
+                let assistantRect: Rect | null = null;
+                const placementClient = opts?.placementClient;
+                const canvas = canvasRef.current;
+                if (engine && canvas && placementClient) {
+                  const canvasRect = canvas.getBoundingClientRect();
+                  const screenX = placementClient.clientX - canvasRect.left;
+                  const screenY = placementClient.clientY - canvasRect.top;
+                  assistantRect = engine.getNodeSendAssistantSpawnRectAtScreen(id, { x: screenX, y: screenY });
+                }
                 sendAssistantTurnFromUserNode({
                   userNodeId: id,
                   modelIdOverride: opts?.modelIdOverride ?? null,
+                  assistantRect,
                   clearComposerText: false,
                 });
               }}

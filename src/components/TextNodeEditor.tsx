@@ -6,6 +6,8 @@ import type { Rect } from '../engine/types';
 import type { ModelInfo } from '../llm/registry';
 
 type TextNodeUserPreface = { replyTo: string; contexts: string[]; collapsedPrefaceContexts: Record<number, boolean> };
+type SendPlacementClientPoint = { clientX: number; clientY: number };
+type SendOptions = { modelIdOverride?: string | null; placementClient?: SendPlacementClientPoint | null };
 
 type Props = {
   nodeId: string;
@@ -26,7 +28,7 @@ type Props = {
   onTogglePrefaceContext?: (contextIndex: number) => void;
   onCommit: (next: string) => void;
   onCancel: () => void;
-  onSend: (text: string, opts?: { modelIdOverride?: string | null }) => void;
+  onSend: (text: string, opts?: SendOptions) => void;
 };
 
 type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
@@ -65,6 +67,15 @@ export default function TextNodeEditor(props: Props) {
   const getZoomRef = useRef<Props['getZoom']>(getZoom);
 
   const [liveRect, setLiveRect] = useState<Rect | null>(() => anchorRect ?? null);
+  const liveRectRef = useRef<Rect | null>(anchorRect ?? null);
+  const sendDragRef = useRef<{
+    pointerId: number;
+    modelIdOverride: string | null;
+    startClient: { x: number; y: number };
+    lastClient: { x: number; y: number };
+    moved: boolean;
+  } | null>(null);
+  const suppressSendClickRef = useRef(false);
   const deferredDraft = useDeferredValue(draft);
 
   useEffect(() => {
@@ -181,6 +192,15 @@ export default function TextNodeEditor(props: Props) {
   useEffect(() => {
     draftRef.current = draft;
   }, [draft]);
+
+  useEffect(() => {
+    liveRectRef.current = liveRect ?? null;
+  }, [liveRect]);
+
+  useEffect(() => {
+    sendDragRef.current = null;
+    suppressSendClickRef.current = false;
+  }, [nodeId]);
 
   const followEnabled = typeof getScreenRect === 'function';
 
@@ -383,6 +403,86 @@ export default function TextNodeEditor(props: Props) {
 
   const send = (modelIdOverride?: string | null) => {
     onSendRef.current(draftRef.current, { modelIdOverride: modelIdOverride ?? null });
+  };
+
+  const beginSendDrag = (modelIdOverride?: string | null) => (e: React.PointerEvent<HTMLButtonElement>) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    sendDragRef.current = {
+      pointerId: e.pointerId,
+      modelIdOverride: modelIdOverride ?? null,
+      startClient: { x: e.clientX, y: e.clientY },
+      lastClient: { x: e.clientX, y: e.clientY },
+      moved: false,
+    };
+
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+  };
+
+  const onSendDragPointerMove = (e: React.PointerEvent<HTMLButtonElement>) => {
+    const active = sendDragRef.current;
+    if (!active || active.pointerId !== e.pointerId) return;
+
+    active.lastClient = { x: e.clientX, y: e.clientY };
+    if (!active.moved) {
+      const dx = active.lastClient.x - active.startClient.x;
+      const dy = active.lastClient.y - active.startClient.y;
+      if (dx * dx + dy * dy >= 16) active.moved = true;
+    }
+    if (!active.moved) return;
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const onSendDragPointerEnd = (e: React.PointerEvent<HTMLButtonElement>) => {
+    const active = sendDragRef.current;
+    if (!active || active.pointerId !== e.pointerId) return;
+    sendDragRef.current = null;
+
+    active.lastClient = { x: e.clientX, y: e.clientY };
+    if (!active.moved) {
+      e.stopPropagation();
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    suppressSendClickRef.current = true;
+
+    const rect = liveRectRef.current ?? anchorRectRef.current;
+    if (!rect) return;
+
+    const inside =
+      active.lastClient.x >= rect.x &&
+      active.lastClient.x <= rect.x + rect.w &&
+      active.lastClient.y >= rect.y &&
+      active.lastClient.y <= rect.y + rect.h;
+    if (inside) return;
+
+    onSendRef.current(draftRef.current, {
+      modelIdOverride: active.modelIdOverride ?? null,
+      placementClient: { clientX: active.lastClient.x, clientY: active.lastClient.y },
+    });
+  };
+
+  const onSendDragPointerCancel = (e: React.PointerEvent<HTMLButtonElement>) => {
+    const active = sendDragRef.current;
+    if (!active || active.pointerId !== e.pointerId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    sendDragRef.current = null;
+    if (active.moved) suppressSendClickRef.current = true;
+  };
+
+  const onSendMainClick = () => {
+    if (suppressSendClickRef.current) {
+      suppressSendClickRef.current = false;
+      return;
+    }
+    send(null);
   };
 
   const baseFontSize = Math.max(1, Math.round(Number.isFinite(baseFontSizePx) ? baseFontSizePx : 14));
@@ -646,7 +746,11 @@ export default function TextNodeEditor(props: Props) {
             <button
               className="editor__btn editor__btn--primary editor__btn--splitMain"
               type="button"
-              onClick={() => send(null)}
+              onPointerDown={beginSendDrag(null)}
+              onPointerMove={onSendDragPointerMove}
+              onPointerUp={onSendDragPointerEnd}
+              onPointerCancel={onSendDragPointerCancel}
+              onClick={onSendMainClick}
             >
               Send
             </button>

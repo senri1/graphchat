@@ -4255,6 +4255,21 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y };
   }
 
+  getNodeSendAssistantSpawnRectAtScreen(nodeId: string, screen: Vec2): Rect | null {
+    const node =
+      this.nodes.find((n): n is TextNode | InkNode => (n.kind === 'text' || n.kind === 'ink') && n.id === nodeId) ??
+      null;
+    if (!node) return null;
+    if (node.kind === 'text' && !node.isEditNode) return null;
+
+    const sx = Number(screen?.x);
+    const sy = Number(screen?.y);
+    if (!Number.isFinite(sx) || !Number.isFinite(sy)) return null;
+
+    const world = this.camera.screenToWorld({ x: sx, y: sy });
+    return { x: world.x, y: world.y, w: node.rect.w, h: TEXT_NODE_SPAWN_MIN_H_PX };
+  }
+
   setNodeScreenRect(nodeId: string, screenRect: Rect): void {
     const id = typeof nodeId === 'string' ? nodeId : String(nodeId ?? '');
     if (!id) return;
@@ -8755,6 +8770,13 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
       const didDrag = Boolean(info.wasDrag);
       const shouldPlace = didDrag && !inside;
+
+      if (action === 'send' && didDrag && inside) {
+        this.requestRender();
+        if (selectionChanged) this.emitUiState();
+        if (info.wasDrag) this.suppressTapPointerIds.delete(info.pointerId);
+        return;
+      }
 
       if (!shouldPlace) {
         this.requestRender();
