@@ -848,7 +848,7 @@ export class WorldEngine {
   private fullTextNodeRasterCacheBytes = 0;
   private readonly bestFullTextNodeRasterKeyBySig = new Map<string, { key: string; rasterScale: number }>();
   private readonly fullTextNodeRasterCacheMaxEntries = 1400;
-  private readonly fullTextNodeRasterCacheMaxBytes = 220 * 1024 * 1024;
+  private fullTextNodeRasterCacheMaxBytes = 220 * 1024 * 1024;
 
   private readonly inkPrefaceRasterCache = new Map<
     string,
@@ -1075,6 +1075,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         return false;
       }
     })();
+    this.fullTextNodeRasterCacheMaxBytes = this.resolveFullTextNodeRasterCacheMaxBytes();
 
     const inputEl = opts.inputEl ?? this.canvas;
     this.inputEl = inputEl;
@@ -1227,7 +1228,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.textRasterQueueByNodeId.clear();
     this.fullTextNodeRasterGeneration += 1;
     this.fullTextNodeRasterQueueByNodeId.clear();
-    this.clearFullTextNodeRasters();
+    // Keep full-node rasters across chat switches to avoid cold-start jank when revisiting chats.
+    this.evictOldFullTextNodeRasters();
     this.inkPrefaceRasterGeneration += 1;
     this.inkPrefaceRasterQueueByNodeId.clear();
     this.inkPrefaceMeasureCacheByNodeId.clear();
@@ -4632,6 +4634,34 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const raw = Number(node.contentScrollX);
     if (!Number.isFinite(raw)) return 0;
     return Math.max(0, Math.round(raw));
+  }
+
+  private resolveFullTextNodeRasterCacheMaxBytes(): number {
+    const MB = 1024 * 1024;
+    const nav = typeof navigator !== 'undefined' ? navigator : null;
+    const ua = (nav?.userAgent ?? '').toLowerCase();
+    const isAndroid = ua.includes('android');
+
+    const deviceMemoryRaw = Number((nav as any)?.deviceMemory);
+    const hasDeviceMemory = Number.isFinite(deviceMemoryRaw) && deviceMemoryRaw > 0;
+    const deviceMemoryGb = hasDeviceMemory ? deviceMemoryRaw : 0;
+
+    if (isAndroid) {
+      if (hasDeviceMemory) {
+        if (deviceMemoryGb <= 2) return 48 * MB;
+        if (deviceMemoryGb <= 3) return 64 * MB;
+        if (deviceMemoryGb <= 4) return 80 * MB;
+        if (deviceMemoryGb <= 6) return 96 * MB;
+      }
+      return 128 * MB;
+    }
+
+    if (this.touchUi) {
+      if (hasDeviceMemory && deviceMemoryGb <= 4) return 96 * MB;
+      return 128 * MB;
+    }
+
+    return 220 * MB;
   }
 
   private getTextScrollGutterPx(): number {
