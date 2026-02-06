@@ -1,14 +1,15 @@
-import systemInstructions from './SystemInstructions.md?raw';
 import type { ChatAttachment, ChatNode } from '../model/chat';
 import { DEFAULT_MODEL_ID, getModelInfo } from './registry';
 import { inkNodeToPngBase64, type InkExportOptions } from './inkExport';
 import { blobToDataUrl, getAttachment as getStoredAttachment } from '../storage/attachments';
 import { getPayload } from '../storage/payloads';
+import { resolveSystemInstruction } from './systemInstructions';
 
 export type XaiChatSettings = {
   modelId: string;
   webSearchEnabled?: boolean;
   stream?: boolean;
+  systemInstruction?: string;
   inkExport?: InkExportOptions;
 };
 
@@ -89,6 +90,7 @@ function buildInkTurnText(node: Extract<ChatNode, { kind: 'ink' }>): string {
 async function buildXaiInputFromChatNodes(args: {
   nodes: ChatNode[];
   leafUserNodeId: string;
+  systemInstruction?: string;
   inkExport?: InkExportOptions;
 }): Promise<any[]> {
   const nodes = Array.isArray(args.nodes) ? args.nodes : [];
@@ -126,7 +128,7 @@ async function buildXaiInputFromChatNodes(args: {
     return set;
   })();
 
-  const input: any[] = [{ role: 'system', content: systemInstructions }];
+  const input: any[] = [{ role: 'system', content: resolveSystemInstruction(args.systemInstruction) }];
 
   for (const n of chain) {
     if (n.kind === 'pdf') {
@@ -245,6 +247,7 @@ export async function buildXaiResponseRequest(args: {
   const input = await buildXaiInputFromChatNodes({
     nodes: args.nodes ?? [],
     leafUserNodeId: args.leafUserNodeId,
+    systemInstruction: args.settings.systemInstruction,
     inkExport: args.settings.inkExport,
   });
 

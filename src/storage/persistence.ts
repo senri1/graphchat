@@ -13,6 +13,7 @@ export type PersistedWorkspaceSnapshot = {
   backgroundLibrary?: BackgroundLibraryItem[];
   llm?: {
     modelUserSettings?: Record<string, unknown>;
+    systemInstructionDefault?: string;
   };
   visual?: {
     glassNodesEnabled: boolean;

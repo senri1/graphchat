@@ -1,10 +1,10 @@
-import systemInstructions from './SystemInstructions.md?raw';
 import type { ChatAttachment, ChatNode } from '../model/chat';
 import { DEFAULT_MODEL_ID, getModelInfo } from './registry';
 import { inkNodeToPngBase64, type InkExportOptions } from './inkExport';
 import { getAttachment as getStoredAttachment } from '../storage/attachments';
 import { getPayload, putPayload } from '../storage/payloads';
 import { GoogleGenAI } from '@google/genai';
+import { resolveSystemInstruction } from './systemInstructions';
 
 export type GeminiFileMeta = { name: string; uri: string; mimeType: string };
 
@@ -25,6 +25,7 @@ export type GeminiChatSettings = {
   modelId: string;
   webSearchEnabled?: boolean;
   stream?: boolean;
+  systemInstruction?: string;
   inkExport?: InkExportOptions;
 };
 
@@ -461,7 +462,7 @@ export async function buildGeminiContext(args: {
     contents: history,
   };
 
-  const config: any = { systemInstruction: systemInstructions };
+  const config: any = { systemInstruction: resolveSystemInstruction(args.settings.systemInstruction) };
   if (args.settings.webSearchEnabled && info?.parameters.webSearch) {
     config.tools = [{ googleSearch: {} }];
   }

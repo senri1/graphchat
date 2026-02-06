@@ -781,6 +781,7 @@ export async function importArchive(
     selectedAttachmentKeys: Array.isArray(rawMeta.selectedAttachmentKeys)
       ? rawMeta.selectedAttachmentKeys.filter((k: any) => typeof k === 'string')
       : [],
+    systemInstructionOverride: typeof rawMeta.systemInstructionOverride === 'string' ? rawMeta.systemInstructionOverride : null,
     headNodeId: typeof rawMeta.headNodeId === 'string' ? rawMeta.headNodeId : null,
     turns: Array.isArray(rawMeta.turns) ? rawMeta.turns : [],
     llm: {

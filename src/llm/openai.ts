@@ -1,9 +1,9 @@
-import systemInstructions from './SystemInstructions.md?raw';
 import type { ChatAttachment, ChatNode } from '../model/chat';
 import { DEFAULT_MODEL_ID, getModelInfo, type TextVerbosity } from './registry';
 import { inkNodeToPngBase64, type InkExportOptions } from './inkExport';
 import { blobToDataUrl, getAttachment as getStoredAttachment } from '../storage/attachments';
 import { getPayload } from '../storage/payloads';
+import { resolveSystemInstruction } from './systemInstructions';
 
 export type OpenAIChatSettings = {
   modelId: string;
@@ -12,6 +12,7 @@ export type OpenAIChatSettings = {
   reasoningSummary?: 'auto' | 'detailed' | 'off';
   stream?: boolean;
   background?: boolean;
+  systemInstruction?: string;
   inkExport?: InkExportOptions;
 };
 
@@ -262,7 +263,7 @@ export async function buildOpenAIResponseRequest(args: {
   const body: any = {
     model: apiModel,
     input,
-    instructions: systemInstructions,
+    instructions: resolveSystemInstruction(args.settings.systemInstruction),
     store: true,
   };
 

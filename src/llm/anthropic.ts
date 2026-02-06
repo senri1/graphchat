@@ -1,4 +1,3 @@
-import systemInstructions from './SystemInstructions.md?raw';
 import type { ChatAttachment, ChatNode } from '../model/chat';
 import { DEFAULT_MODEL_ID, getModelInfo } from './registry';
 import { normalizeAnthropicEffort, type AnthropicEffortSetting } from './modelUserSettings';
@@ -6,6 +5,7 @@ import { inkNodeToPngBase64, type InkExportOptions } from './inkExport';
 import { blobToDataUrl, getAttachment as getStoredAttachment } from '../storage/attachments';
 import { getPayload } from '../storage/payloads';
 import { splitDataUrl } from '../utils/files';
+import { resolveSystemInstruction } from './systemInstructions';
 
 export type AnthropicChatSettings = {
   modelId: string;
@@ -13,6 +13,7 @@ export type AnthropicChatSettings = {
   stream?: boolean;
   maxTokens?: number;
   effort?: AnthropicEffortSetting;
+  systemInstruction?: string;
   inkExport?: InkExportOptions;
 };
 
@@ -268,7 +269,7 @@ export async function buildAnthropicMessageRequest(args: {
   const body: any = {
     model: apiModel,
     max_tokens: maxTokens,
-    system: systemInstructions,
+    system: resolveSystemInstruction(args.settings.systemInstruction),
     messages,
     thinking: { type: 'adaptive' },
     output_config: { effort },

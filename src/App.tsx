@@ -52,6 +52,11 @@ import { buildGeminiContext, type GeminiChatSettings } from './llm/gemini';
 import { buildXaiResponseRequest, type XaiChatSettings } from './llm/xai';
 import { buildAnthropicMessageRequest, type AnthropicChatSettings } from './llm/anthropic';
 import { DEFAULT_MODEL_ID, getModelInfo, listModels } from './llm/registry';
+import {
+  DEFAULT_SYSTEM_INSTRUCTIONS,
+  normalizeSystemInstruction,
+  resolveSystemInstruction as resolveSystemInstructionText,
+} from './llm/systemInstructions';
 import { extractCanonicalMessage, extractCanonicalMeta } from './llm/openaiCanonical';
 import { buildModelUserSettings, normalizeModelUserSettings, type ModelUserSettingsById } from './llm/modelUserSettings';
 import { base64ToBlob, readFileAsDataUrl, splitDataUrl } from './utils/files';
@@ -89,6 +94,7 @@ type ChatRuntimeMeta = {
   replyTo: ReplySelection | null;
   contextSelections: string[];
   selectedAttachmentKeys: string[];
+  systemInstructionOverride: string | null;
   headNodeId: string | null;
   turns: ChatTurnMeta[];
   llm: OpenAIChatSettings;
@@ -572,6 +578,7 @@ export default function App() {
     backgroundLibrary: BackgroundLibraryItem[];
     llm: {
       modelUserSettings: ModelUserSettingsById;
+      systemInstructionDefault: string;
     };
     visual: {
       glassNodesEnabled: boolean;
@@ -727,6 +734,8 @@ export default function App() {
   );
   const [modelUserSettings, setModelUserSettings] = useState<ModelUserSettingsById>(() => buildModelUserSettings(allModels, null));
   const modelUserSettingsRef = useRef<ModelUserSettingsById>(modelUserSettings);
+  const [globalSystemInstruction, setGlobalSystemInstruction] = useState<string>(() => DEFAULT_SYSTEM_INSTRUCTIONS);
+  const globalSystemInstructionRef = useRef<string>(globalSystemInstruction);
   const composerModelOptions = useMemo(
     () => allModels.filter((m) => modelUserSettings[m.id]?.includeInComposer !== false),
     [allModels, modelUserSettings],
@@ -753,6 +762,7 @@ export default function App() {
   }, []);
   const [composerModelId, setComposerModelId] = useState<string>(() => DEFAULT_MODEL_ID);
   const [composerWebSearch, setComposerWebSearch] = useState<boolean>(() => true);
+  const [activeChatSystemInstructionOverride, setActiveChatSystemInstructionOverride] = useState<string | null>(() => null);
 
   const initial = useMemo(() => {
     const chatId = genId('chat');
@@ -774,6 +784,7 @@ export default function App() {
       replyTo: null,
       contextSelections: [],
       selectedAttachmentKeys: [],
+      systemInstructionOverride: null,
       headNodeId: null,
       turns: [],
       llm: { modelId: DEFAULT_MODEL_ID, webSearchEnabled: true },
@@ -802,6 +813,7 @@ export default function App() {
       replyTo: null,
       contextSelections: [],
       selectedAttachmentKeys: [],
+      systemInstructionOverride: null,
       headNodeId: null,
       turns: [],
       llm: { modelId: DEFAULT_MODEL_ID, webSearchEnabled: true },
@@ -809,6 +821,12 @@ export default function App() {
     };
     chatMetaRef.current.set(chatId, meta);
     return meta;
+  };
+
+  const resolveSystemInstructionForChat = (chatId: string): string => {
+    const meta = ensureChatMeta(chatId);
+    const override = typeof meta.systemInstructionOverride === 'string' ? meta.systemInstructionOverride : null;
+    return resolveSystemInstructionText(override, globalSystemInstructionRef.current);
   };
 
   const ensureDraftAttachmentDedupe = (chatId: string): DraftAttachmentDedupeState => {
@@ -826,6 +844,10 @@ export default function App() {
   useEffect(() => {
     modelUserSettingsRef.current = modelUserSettings;
   }, [modelUserSettings]);
+
+  useEffect(() => {
+    globalSystemInstructionRef.current = globalSystemInstruction;
+  }, [globalSystemInstruction]);
 
   useEffect(() => {
     backgroundLibraryRef.current = backgroundLibrary;
@@ -1115,7 +1137,10 @@ export default function App() {
             activeChatId: active,
             focusedFolderId: focused,
             backgroundLibrary: backgroundLibraryRef.current,
-            llm: { modelUserSettings: modelUserSettingsRef.current as any },
+            llm: {
+              modelUserSettings: modelUserSettingsRef.current as any,
+              systemInstructionDefault: globalSystemInstructionRef.current,
+            },
             visual: {
               glassNodesEnabled: Boolean(glassNodesEnabledRef.current),
               edgeRouterId: edgeRouterIdRef.current,
@@ -3592,6 +3617,9 @@ export default function App() {
     }
     setComposerModelId(meta.llm.modelId || DEFAULT_MODEL_ID);
     setComposerWebSearch(Boolean(meta.llm.webSearchEnabled));
+    setActiveChatSystemInstructionOverride(
+      typeof meta.systemInstructionOverride === 'string' ? meta.systemInstructionOverride : null,
+    );
     setActiveChatId(nextChatId);
     applyVisualSettings(nextChatId);
     schedulePersistSoon();
@@ -3612,6 +3640,8 @@ export default function App() {
     chatMetaRef.current = chatMeta;
     setModelUserSettings(payload.llm.modelUserSettings);
     modelUserSettingsRef.current = payload.llm.modelUserSettings;
+    setGlobalSystemInstruction(payload.llm.systemInstructionDefault);
+    globalSystemInstructionRef.current = payload.llm.systemInstructionDefault;
     backgroundLibraryRef.current = payload.backgroundLibrary;
     setBackgroundLibrary(payload.backgroundLibrary);
 
@@ -3751,6 +3781,9 @@ export default function App() {
     }
     setComposerModelId(meta.llm.modelId || DEFAULT_MODEL_ID);
 	    setComposerWebSearch(Boolean(meta.llm.webSearchEnabled));
+    setActiveChatSystemInstructionOverride(
+      typeof meta.systemInstructionOverride === 'string' ? meta.systemInstructionOverride : null,
+    );
 
 	    applyVisualSettings(resolvedActive);
 	    resumeInProgressLlmJobs();
@@ -3866,6 +3899,7 @@ export default function App() {
             selectedAttachmentKeys: Array.isArray(raw?.selectedAttachmentKeys)
               ? (raw.selectedAttachmentKeys as any[]).filter((k) => typeof k === 'string')
               : [],
+            systemInstructionOverride: typeof raw?.systemInstructionOverride === 'string' ? raw.systemInstructionOverride : null,
             headNodeId: typeof raw?.headNodeId === 'string' ? raw.headNodeId : null,
             turns: Array.isArray(raw?.turns) ? (raw.turns as ChatTurnMeta[]) : [],
             llm: {
@@ -4024,13 +4058,20 @@ export default function App() {
       };
 
       const modelUserSettings = buildModelUserSettings(allModels, ws.llm?.modelUserSettings);
+      const systemInstructionDefault = normalizeSystemInstruction(
+        (ws.llm as any)?.systemInstructionDefault,
+        DEFAULT_SYSTEM_INSTRUCTIONS,
+      );
 
       const payload = {
         root,
         activeChatId: desiredActiveChatId,
         focusedFolderId: typeof ws.focusedFolderId === 'string' ? ws.focusedFolderId : root.id,
         backgroundLibrary,
-        llm: { modelUserSettings },
+        llm: {
+          modelUserSettings,
+          systemInstructionDefault,
+        },
         visual,
         chatStates,
         chatMeta,
@@ -4065,6 +4106,7 @@ export default function App() {
       replyTo: null,
       contextSelections: [],
       selectedAttachmentKeys: [],
+      systemInstructionOverride: null,
       headNodeId: null,
       turns: [],
       llm: { modelId: DEFAULT_MODEL_ID, webSearchEnabled: true },
@@ -4457,6 +4499,7 @@ export default function App() {
           replyTo: null,
           contextSelections: [],
           selectedAttachmentKeys: [],
+          systemInstructionOverride: null,
           headNodeId: null,
           turns: [],
           llm: { modelId: DEFAULT_MODEL_ID, webSearchEnabled: true },
@@ -4599,6 +4642,7 @@ export default function App() {
 
     const chatId = activeChatIdRef.current;
     const meta = ensureChatMeta(chatId);
+    const systemInstruction = resolveSystemInstructionForChat(chatId);
 
     let desiredParentId = replySelection?.nodeId && engine.hasNode(replySelection.nodeId) ? replySelection.nodeId : null;
     if (!desiredParentId) {
@@ -4711,6 +4755,7 @@ export default function App() {
         modelId: selectedModelId,
         webSearchEnabled: composerWebSearch,
         stream: modelSettings?.streaming,
+        systemInstruction,
         inkExport: {
           cropEnabled: inkSendCropEnabledRef.current,
           cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -4733,6 +4778,7 @@ export default function App() {
         stream: modelSettings?.streaming,
         maxTokens: modelSettings?.maxTokens,
         effort: modelSettings?.anthropicEffort,
+        systemInstruction,
         inkExport: {
           cropEnabled: inkSendCropEnabledRef.current,
           cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -4753,6 +4799,7 @@ export default function App() {
         modelId: selectedModelId,
         webSearchEnabled: composerWebSearch,
         stream: modelSettings?.streaming,
+        systemInstruction,
         inkExport: {
           cropEnabled: inkSendCropEnabledRef.current,
           cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -4776,6 +4823,7 @@ export default function App() {
         reasoningSummary: modelSettings?.reasoningSummary,
         stream: modelSettings?.streaming,
         background: modelSettings?.background,
+        systemInstruction,
         inkExport: {
           cropEnabled: inkSendCropEnabledRef.current,
           cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -4926,6 +4974,7 @@ export default function App() {
 
     const chatId = activeChatIdRef.current;
     const meta = ensureChatMeta(chatId);
+    const systemInstruction = resolveSystemInstructionForChat(chatId);
 
     const res = engine.spawnInkChatTurn({
       strokes: nodeStrokes,
@@ -4970,6 +5019,7 @@ export default function App() {
         modelId: selectedModelId,
         webSearchEnabled: composerWebSearch,
         stream: modelSettings?.streaming,
+        systemInstruction,
         inkExport: {
           cropEnabled: inkSendCropEnabledRef.current,
           cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -4992,6 +5042,7 @@ export default function App() {
         stream: modelSettings?.streaming,
         maxTokens: modelSettings?.maxTokens,
         effort: modelSettings?.anthropicEffort,
+        systemInstruction,
         inkExport: {
           cropEnabled: inkSendCropEnabledRef.current,
           cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -5012,6 +5063,7 @@ export default function App() {
         modelId: selectedModelId,
         webSearchEnabled: composerWebSearch,
         stream: modelSettings?.streaming,
+        systemInstruction,
         inkExport: {
           cropEnabled: inkSendCropEnabledRef.current,
           cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -5035,6 +5087,7 @@ export default function App() {
         reasoningSummary: modelSettings?.reasoningSummary,
         stream: modelSettings?.streaming,
         background: modelSettings?.background,
+        systemInstruction,
         inkExport: {
           cropEnabled: inkSendCropEnabledRef.current,
           cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -5069,6 +5122,7 @@ export default function App() {
 
     const chatId = activeChatIdRef.current;
     const meta = ensureChatMeta(chatId);
+    const systemInstruction = resolveSystemInstructionForChat(chatId);
 
     const composerContextTexts = (contextSelections ?? []).map((t) => String(t ?? '').trim()).filter(Boolean);
 
@@ -5170,6 +5224,7 @@ export default function App() {
           modelId: selectedModelId,
           webSearchEnabled: composerWebSearch,
           stream: modelSettings?.streaming,
+          systemInstruction,
           inkExport: {
             cropEnabled: inkSendCropEnabledRef.current,
             cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -5192,6 +5247,7 @@ export default function App() {
           stream: modelSettings?.streaming,
           maxTokens: modelSettings?.maxTokens,
           effort: modelSettings?.anthropicEffort,
+          systemInstruction,
           inkExport: {
             cropEnabled: inkSendCropEnabledRef.current,
             cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -5213,6 +5269,7 @@ export default function App() {
           modelId: selectedModelId,
           webSearchEnabled: composerWebSearch,
           stream: modelSettings?.streaming,
+          systemInstruction,
           inkExport: {
             cropEnabled: inkSendCropEnabledRef.current,
             cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -5237,6 +5294,7 @@ export default function App() {
           reasoningSummary: modelSettings?.reasoningSummary,
           stream: modelSettings?.streaming,
           background: modelSettings?.background,
+          systemInstruction,
           inkExport: {
             cropEnabled: inkSendCropEnabledRef.current,
             cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -5374,6 +5432,7 @@ export default function App() {
         modelId: selectedModelId,
         webSearchEnabled: composerWebSearch,
         stream: modelSettings?.streaming,
+        systemInstruction,
         inkExport: {
           cropEnabled: inkSendCropEnabledRef.current,
           cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -5397,6 +5456,7 @@ export default function App() {
         stream: modelSettings?.streaming,
         maxTokens: modelSettings?.maxTokens,
         effort: modelSettings?.anthropicEffort,
+        systemInstruction,
         inkExport: {
           cropEnabled: inkSendCropEnabledRef.current,
           cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -5418,6 +5478,7 @@ export default function App() {
         modelId: selectedModelId,
         webSearchEnabled: composerWebSearch,
         stream: modelSettings?.streaming,
+        systemInstruction,
         inkExport: {
           cropEnabled: inkSendCropEnabledRef.current,
           cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -5442,6 +5503,7 @@ export default function App() {
         reasoningSummary: modelSettings?.reasoningSummary,
         stream: modelSettings?.streaming,
         background: modelSettings?.background,
+        systemInstruction,
         inkExport: {
           cropEnabled: inkSendCropEnabledRef.current,
           cropPaddingPx: inkSendCropPaddingPxRef.current,
@@ -6279,6 +6341,29 @@ export default function App() {
           onClose={() => setSettingsOpen(false)}
           models={allModels}
           modelUserSettings={modelUserSettings}
+          globalSystemInstruction={globalSystemInstruction}
+          onChangeGlobalSystemInstruction={(next) => {
+            setGlobalSystemInstruction(next);
+            globalSystemInstructionRef.current = next;
+            schedulePersistSoon();
+          }}
+          chatSystemInstructionOverride={activeChatSystemInstructionOverride}
+          onChangeChatSystemInstructionOverride={(next) => {
+            const chatId = String(activeChatIdRef.current ?? '').trim();
+            if (!chatId) return;
+            const meta = ensureChatMeta(chatId);
+            meta.systemInstructionOverride = next;
+            setActiveChatSystemInstructionOverride(next);
+            schedulePersistSoon();
+          }}
+          onResetChatSystemInstructionOverride={() => {
+            const chatId = String(activeChatIdRef.current ?? '').trim();
+            if (!chatId) return;
+            const meta = ensureChatMeta(chatId);
+            meta.systemInstructionOverride = null;
+            setActiveChatSystemInstructionOverride(null);
+            schedulePersistSoon();
+          }}
           onUpdateModelUserSettings={(modelId, patch) => {
             const model = allModels.find((m) => m.id === modelId);
             if (!model) return;
@@ -6566,6 +6651,7 @@ export default function App() {
               replyTo: null,
               contextSelections: [],
               selectedAttachmentKeys: [],
+              systemInstructionOverride: null,
               headNodeId: null,
               turns: [],
               llm: { modelId: DEFAULT_MODEL_ID, webSearchEnabled: true },
@@ -6593,6 +6679,7 @@ export default function App() {
             setBackgroundStorageKey(null);
             setComposerModelId(DEFAULT_MODEL_ID);
             setComposerWebSearch(true);
+            setActiveChatSystemInstructionOverride(null);
             setDebugHudVisible(DEFAULT_DEBUG_HUD_VISIBLE);
             allowEditingAllTextNodesRef.current = DEFAULT_ALLOW_EDITING_ALL_TEXT_NODES;
             setAllowEditingAllTextNodes(DEFAULT_ALLOW_EDITING_ALL_TEXT_NODES);
@@ -6613,6 +6700,8 @@ export default function App() {
             const nextModelUserSettings = buildModelUserSettings(allModels, null);
             setModelUserSettings(nextModelUserSettings);
             modelUserSettingsRef.current = nextModelUserSettings;
+            setGlobalSystemInstruction(DEFAULT_SYSTEM_INSTRUCTIONS);
+            globalSystemInstructionRef.current = DEFAULT_SYSTEM_INSTRUCTIONS;
 
             glassNodesEnabledRef.current = DEFAULT_GLASS_NODES_ENABLED;
             glassNodesBlurCssPxWebglRef.current = DEFAULT_GLASS_BLUR_CSS_PX_WEBGL;
