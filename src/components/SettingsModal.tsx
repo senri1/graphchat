@@ -669,53 +669,62 @@ export default function SettingsModal(props: Props) {
                   <div className="settingsPanel__subtitle">Choose which models appear in the composer and set per-model defaults.</div>
                 </div>
 
-                <div className="settingsCard">
-                  <div className="settingsRow settingsRow--stack">
-                    <div className="settingsRow__text">
-                      <div className="settingsRow__title">Global system instruction</div>
-                      <div className="settingsRow__desc">Used by chats that do not have a chat-specific override.</div>
-                    </div>
-                    <div className="settingsRow__actions settingsRow__actions--grow">
-                      <textarea
-                        className="settingsTextArea"
-                        rows={8}
-                        value={props.globalSystemInstruction}
-                        onChange={(e) => props.onChangeGlobalSystemInstruction(e.currentTarget.value)}
-                        aria-label="Global system instruction"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="settingsCard">
-                  <div className="settingsRow settingsRow--stack">
-                    <div className="settingsRow__text">
-                      <div className="settingsRow__title">This chat system instruction</div>
-                      <div className="settingsRow__desc">
-                        {chatSystemInstructionIsCustom ? 'Custom override active for this chat.' : 'Using the global default.'} Applies to new messages only.
+                <details className="settingsCard settingsDetails">
+                  <summary className="settingsDetails__summary">
+                    <div className="settingsRow settingsRow--stack">
+                      <div className="settingsRow__text">
+                        <div className="settingsRow__title">System instructions</div>
+                        <div className="settingsRow__desc">Global default and per-chat override.</div>
                       </div>
                     </div>
-                    <div className="settingsRow__actions settingsRow__actions--grow">
-                      <textarea
-                        className="settingsTextArea"
-                        rows={8}
-                        value={chatSystemInstructionValue}
-                        onChange={(e) => props.onChangeChatSystemInstructionOverride(e.currentTarget.value)}
-                        aria-label="This chat system instruction"
-                      />
+                  </summary>
+
+                  <div className="settingsDetails__body">
+                    <div className="settingsRow settingsRow--stack">
+                      <div className="settingsRow__text">
+                        <div className="settingsRow__title">Global system instruction</div>
+                        <div className="settingsRow__desc">Used by chats that do not have a chat-specific override.</div>
+                      </div>
+                      <div className="settingsRow__actions settingsRow__actions--grow">
+                        <textarea
+                          className="settingsTextArea"
+                          rows={8}
+                          value={props.globalSystemInstruction}
+                          onChange={(e) => props.onChangeGlobalSystemInstruction(e.currentTarget.value)}
+                          aria-label="Global system instruction"
+                        />
+                      </div>
                     </div>
-                    <div className="settingsRow__actions">
-                      <button
-                        className="settingsBtn"
-                        type="button"
-                        onClick={props.onResetChatSystemInstructionOverride}
-                        disabled={!chatSystemInstructionIsCustom}
-                      >
-                        Reset to default
-                      </button>
+
+                    <div className="settingsRow settingsRow--stack">
+                      <div className="settingsRow__text">
+                        <div className="settingsRow__title">This chat system instruction</div>
+                        <div className="settingsRow__desc">
+                          {chatSystemInstructionIsCustom ? 'Custom override active for this chat.' : 'Using the global default.'} Applies to new messages only.
+                        </div>
+                        <div className="settingsInlineActions">
+                          <button
+                            className="settingsBtn"
+                            type="button"
+                            onClick={props.onResetChatSystemInstructionOverride}
+                            disabled={!chatSystemInstructionIsCustom}
+                          >
+                            Reset to default
+                          </button>
+                        </div>
+                      </div>
+                      <div className="settingsRow__actions settingsRow__actions--grow">
+                        <textarea
+                          className="settingsTextArea"
+                          rows={8}
+                          value={chatSystemInstructionValue}
+                          onChange={(e) => props.onChangeChatSystemInstructionOverride(e.currentTarget.value)}
+                          aria-label="This chat system instruction"
+                        />
+                      </div>
                     </div>
                   </div>
-                </div>
+                </details>
 
                 {providers.map((provider) => (
                   <details
