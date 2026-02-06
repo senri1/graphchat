@@ -6686,6 +6686,26 @@ export default function App() {
                   }`
                 : 'starting…'}
             </div>
+            {debug?.framePerf ? (
+              <>
+                <div style={{ opacity: 0.85 }}>
+                  frame {debug.framePerf.frameMs.toFixed(1)}ms • edges {debug.framePerf.edgesMs.toFixed(1)} • nodes{' '}
+                  {debug.framePerf.drawNodesMs.toFixed(1)} • overlays {debug.framePerf.overlaysMs.toFixed(1)}
+                </div>
+                <div style={{ opacity: 0.75 }}>
+                  updates{' '}
+                  {(
+                    debug.framePerf.updateFullTextNodeRastersMs +
+                    debug.framePerf.updateTextRastersMs +
+                    debug.framePerf.updateInkPrefaceRastersMs +
+                    debug.framePerf.updatePdfRastersMs
+                  ).toFixed(1)}
+                  ms • route cache {(debug.framePerf.edgeRouteCacheHitRate * 100).toFixed(0)}% (
+                  {debug.framePerf.edgeRouteCacheHits}/{debug.framePerf.edgeRouteCacheHits + debug.framePerf.edgeRouteCacheMisses}) • size{' '}
+                  {debug.framePerf.edgeRouteCacheSize}
+                </div>
+              </>
+            ) : null}
             {inkInputConfig.hud && inkHud ? (
               <>
                 <div style={{ opacity: 0.85 }}>

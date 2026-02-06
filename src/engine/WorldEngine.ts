@@ -8,7 +8,15 @@ import { normalizeMathDelimitersFromCopyTex } from '../markdown/mathDelimiters';
 import { TextLod2Overlay, type HighlightRect, type TextLod2Action, type TextLod2Mode } from './TextLod2Overlay';
 import { PdfTextLod2Overlay, type HighlightRect as PdfHighlightRect, type PdfSelectionStartAnchor } from './PdfTextLod2Overlay';
 import { WebGLPreblur } from './WebGLPreblur';
-import { DEFAULT_EDGE_ROUTER_ID, getEdgeRouter, normalizeEdgeRouterId, type EdgeRoute, type EdgeRouterId } from './edgeRouting';
+import {
+  DEFAULT_EDGE_ROUTER_ID,
+  getEdgeRouter,
+  normalizeEdgeRouterId,
+  type EdgeRoute,
+  type EdgeRouteAnchor,
+  type EdgeRouteStyle,
+  type EdgeRouterId,
+} from './edgeRouting';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import type { PDFPageProxy, PageViewport } from 'pdfjs-dist';
 import { loadPdfDocument } from './pdf/pdfjs';
@@ -25,6 +33,27 @@ import type {
   ThinkingSummaryChunk,
 } from '../model/chat';
 
+export type WorldEngineFramePerf = {
+  frameMs: number;
+  clearMs: number;
+  backgroundMs: number;
+  glassMs: number;
+  gridMs: number;
+  edgesMs: number;
+  updateFullTextNodeRastersMs: number;
+  updateTextRastersMs: number;
+  updateInkPrefaceRastersMs: number;
+  updatePdfRastersMs: number;
+  drawNodesMs: number;
+  drawWorldInkMs: number;
+  drawPreviewsMs: number;
+  overlaysMs: number;
+  edgeRouteCacheHits: number;
+  edgeRouteCacheMisses: number;
+  edgeRouteCacheHitRate: number;
+  edgeRouteCacheSize: number;
+};
+
 export type WorldEngineDebug = {
   cssW: number;
   cssH: number;
@@ -33,6 +62,7 @@ export type WorldEngineDebug = {
   cameraY: number;
   zoom: number;
   interacting: boolean;
+  framePerf?: WorldEngineFramePerf;
 };
 
 export type GlassBlurBackend = 'webgl' | 'canvas';
@@ -389,6 +419,16 @@ type TextRasterJob = {
   scrollY: number;
 };
 
+type FullTextNodeRasterJob = {
+  nodeId: string;
+  key: string;
+  sig: string;
+  rasterScale: number;
+  width: number;
+  height: number;
+  html: string;
+};
+
 type InkPrefaceRasterJob = {
   nodeId: string;
   key: string;
@@ -625,6 +665,10 @@ export class WorldEngine {
   private glassUnderlayAlpha = 1;
   private glassBlurBackend: GlassBlurBackend = 'webgl';
   private edgeRouterId: EdgeRouterId = DEFAULT_EDGE_ROUTER_ID;
+  private readonly edgeRouteCache = new Map<string, EdgeRoute | null>();
+  private readonly edgeRouteCacheMaxEntries = 24000;
+  private edgeRouteCacheHits = 0;
+  private edgeRouteCacheMisses = 0;
   private replyArrowColor = '#f5f5f5';
   private replyArrowOpacity = 0.7;
   private webglPreblur: WebGLPreblur | null = null;
@@ -650,6 +694,7 @@ export class WorldEngine {
   private interacting = false;
 
   private lastDebugEmitAt = 0;
+  private lastFramePerf: WorldEngineFramePerf | null = null;
   onDebug?: (state: WorldEngineDebug) => void;
 
   onUiState?: (state: WorldEngineUiState) => void;
@@ -742,6 +787,10 @@ export class WorldEngine {
   private textRasterRunning = false;
   private textRasterGeneration = 0;
 
+  private readonly fullTextNodeRasterQueueByNodeId = new Map<string, FullTextNodeRasterJob>();
+  private fullTextNodeRasterRunning = false;
+  private fullTextNodeRasterGeneration = 0;
+
   private readonly inkPrefaceRasterQueueByNodeId = new Map<string, InkPrefaceRasterJob>();
   private inkPrefaceRasterRunning = false;
   private inkPrefaceRasterGeneration = 0;
@@ -782,6 +831,24 @@ export class WorldEngine {
   private readonly bestTextRasterKeyBySig = new Map<string, { key: string; rasterScale: number }>();
   private readonly textRasterCacheMaxEntries = 2500;
   private readonly textRasterCacheMaxBytes = 256 * 1024 * 1024;
+
+  private readonly fullTextNodeRasterCache = new Map<
+    string,
+    {
+      key: string;
+      sig: string;
+      rasterScale: number;
+      width: number;
+      height: number;
+      image: CanvasImageSource;
+      bitmapBytesEstimate: number;
+      readyAt: number;
+    }
+  >();
+  private fullTextNodeRasterCacheBytes = 0;
+  private readonly bestFullTextNodeRasterKeyBySig = new Map<string, { key: string; rasterScale: number }>();
+  private readonly fullTextNodeRasterCacheMaxEntries = 1400;
+  private readonly fullTextNodeRasterCacheMaxBytes = 220 * 1024 * 1024;
 
   private readonly inkPrefaceRasterCache = new Map<
     string,
@@ -1155,8 +1222,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     }
 
     // Cancel queued work from the previous chat.
+    this.clearEdgeRouteCache();
     this.textRasterGeneration += 1;
     this.textRasterQueueByNodeId.clear();
+    this.fullTextNodeRasterGeneration += 1;
+    this.fullTextNodeRasterQueueByNodeId.clear();
+    this.clearFullTextNodeRasters();
     this.inkPrefaceRasterGeneration += 1;
     this.inkPrefaceRasterQueueByNodeId.clear();
     this.inkPrefaceMeasureCacheByNodeId.clear();
@@ -1947,6 +2018,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const next = normalizeEdgeRouterId(id);
     if (this.edgeRouterId === next) return;
     this.edgeRouterId = next;
+    this.clearEdgeRouteCache();
     this.requestRender();
   }
 
@@ -1978,6 +2050,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const next = Boolean(enabled);
     if (this.glassNodesEnabled === next) return;
     this.glassNodesEnabled = next;
+    this.invalidateFullTextNodeRasters({ requestRender: false });
     this.requestRender();
   }
 
@@ -1986,6 +2059,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const next = clamp(Number.isFinite(raw) ? raw : 0, 0, 30);
     if (Math.abs(next - this.glassBlurCssPx) < 0.001) return;
     this.glassBlurCssPx = next;
+    this.invalidateFullTextNodeRasters({ requestRender: false });
     this.requestRender();
   }
 
@@ -1994,6 +2068,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const next = clamp(Number.isFinite(raw) ? raw : 100, 100, 200);
     if (Math.abs(next - this.glassSaturatePct) < 0.001) return;
     this.glassSaturatePct = next;
+    this.invalidateFullTextNodeRasters({ requestRender: false });
     this.requestRender();
   }
 
@@ -2002,6 +2077,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const next = clamp(Number.isFinite(raw) ? raw : 0, 0, 1);
     if (Math.abs(next - this.glassUnderlayAlpha) < 0.001) return;
     this.glassUnderlayAlpha = next;
+    this.invalidateFullTextNodeRasters({ requestRender: false });
     this.requestRender();
   }
 
@@ -2023,10 +2099,18 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     };
   }
 
+  private invalidateFullTextNodeRasters(opts?: { requestRender?: boolean }): void {
+    this.fullTextNodeRasterGeneration += 1;
+    this.fullTextNodeRasterQueueByNodeId.clear();
+    this.clearFullTextNodeRasters();
+    if (opts?.requestRender !== false) this.requestRender();
+  }
+
   private invalidateNodeTextRendering(): void {
     this.textRasterGeneration += 1;
     this.textRasterQueueByNodeId.clear();
     this.clearTextRasters();
+    this.invalidateFullTextNodeRasters({ requestRender: false });
     this.textResizeHold = null;
     this.textLod2HitZones = null;
     try {
@@ -2878,6 +2962,15 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.textRasterCacheBytes = 0;
   }
 
+  private clearFullTextNodeRasters(): void {
+    if (this.fullTextNodeRasterCache.size > 0) {
+      for (const entry of this.fullTextNodeRasterCache.values()) this.closeImage(entry.image);
+    }
+    this.fullTextNodeRasterCache.clear();
+    this.bestFullTextNodeRasterKeyBySig.clear();
+    this.fullTextNodeRasterCacheBytes = 0;
+  }
+
   private clearInkPrefaceRasters(): void {
     if (this.inkPrefaceRasterCache.size > 0) {
       for (const entry of this.inkPrefaceRasterCache.values()) this.closeImage(entry.image);
@@ -2902,6 +2995,22 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         this.closeImage(entry.image);
       }
       this.textRasterCache.delete(oldestKey);
+    }
+  }
+
+  private evictOldFullTextNodeRasters(): void {
+    while (
+      this.fullTextNodeRasterCache.size > this.fullTextNodeRasterCacheMaxEntries ||
+      this.fullTextNodeRasterCacheBytes > this.fullTextNodeRasterCacheMaxBytes
+    ) {
+      const oldestKey = this.fullTextNodeRasterCache.keys().next().value as string | undefined;
+      if (!oldestKey) return;
+      const entry = this.fullTextNodeRasterCache.get(oldestKey);
+      if (entry) {
+        this.fullTextNodeRasterCacheBytes -= entry.bitmapBytesEstimate || 0;
+        this.closeImage(entry.image);
+      }
+      this.fullTextNodeRasterCache.delete(oldestKey);
     }
   }
 
@@ -2948,11 +3057,92 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.textRasterCache.set(key, entry);
   }
 
+  private touchFullTextNodeRaster(key: string): void {
+    const entry = this.fullTextNodeRasterCache.get(key);
+    if (!entry) return;
+    this.fullTextNodeRasterCache.delete(key);
+    this.fullTextNodeRasterCache.set(key, entry);
+  }
+
   private touchInkPrefaceRaster(key: string): void {
     const entry = this.inkPrefaceRasterCache.get(key);
     if (!entry) return;
     this.inkPrefaceRasterCache.delete(key);
     this.inkPrefaceRasterCache.set(key, entry);
+  }
+
+  private clearEdgeRouteCache(): void {
+    this.edgeRouteCache.clear();
+    this.edgeRouteCacheHits = 0;
+    this.edgeRouteCacheMisses = 0;
+  }
+
+  private edgeRouteCacheNumberKey(value: number): string {
+    if (!Number.isFinite(value)) return '0';
+    return Number(value).toFixed(3);
+  }
+
+  private edgeRouteCacheRectKey(rect: Rect): string {
+    return [
+      this.edgeRouteCacheNumberKey(rect.x),
+      this.edgeRouteCacheNumberKey(rect.y),
+      this.edgeRouteCacheNumberKey(rect.w),
+      this.edgeRouteCacheNumberKey(rect.h),
+    ].join(',');
+  }
+
+  private edgeRouteCacheAnchorKey(anchor: EdgeRouteAnchor | undefined): string {
+    if (!anchor) return '-';
+    return [
+      anchor.side,
+      this.edgeRouteCacheNumberKey(anchor.point.x),
+      this.edgeRouteCacheNumberKey(anchor.point.y),
+    ].join(',');
+  }
+
+  private edgeRouteCacheKey(opts: {
+    parent: WorldNode;
+    child: WorldNode;
+    style: EdgeRouteStyle;
+    anchors?: { start?: EdgeRouteAnchor; end?: EdgeRouteAnchor };
+  }): string {
+    const styleKey = [
+      this.edgeRouteCacheNumberKey(opts.style.arrowHeadLength),
+      this.edgeRouteCacheNumberKey(opts.style.controlPointMin),
+      this.edgeRouteCacheNumberKey(opts.style.controlPointMax),
+      this.edgeRouteCacheNumberKey(opts.style.straightAlignThreshold),
+    ].join(',');
+    return [
+      this.edgeRouterId,
+      opts.parent.id,
+      this.edgeRouteCacheRectKey(opts.parent.rect),
+      opts.child.id,
+      this.edgeRouteCacheRectKey(opts.child.rect),
+      styleKey,
+      this.edgeRouteCacheAnchorKey(opts.anchors?.start),
+      this.edgeRouteCacheAnchorKey(opts.anchors?.end),
+    ].join('|');
+  }
+
+  private getCachedEdgeRoute(key: string, build: () => EdgeRoute | null): EdgeRoute | null {
+    if (this.edgeRouteCache.has(key)) {
+      this.edgeRouteCacheHits += 1;
+      const cached = this.edgeRouteCache.get(key) ?? null;
+      // LRU touch: keep hot routes at the tail.
+      this.edgeRouteCache.delete(key);
+      this.edgeRouteCache.set(key, cached);
+      return cached;
+    }
+
+    this.edgeRouteCacheMisses += 1;
+    const route = build();
+    this.edgeRouteCache.set(key, route ?? null);
+    while (this.edgeRouteCache.size > this.edgeRouteCacheMaxEntries) {
+      const oldest = this.edgeRouteCache.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.edgeRouteCache.delete(oldest);
+    }
+    return route;
   }
 
   private enqueueTextRaster(job: TextRasterJob): void {
@@ -2961,6 +3151,14 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const prev = this.textRasterQueueByNodeId.get(job.nodeId);
     if (prev && prev.key === job.key) return;
     this.textRasterQueueByNodeId.set(job.nodeId, job);
+  }
+
+  private enqueueFullTextNodeRaster(job: FullTextNodeRasterJob): void {
+    if (!job.nodeId || !job.key) return;
+    if (this.fullTextNodeRasterCache.has(job.key)) return;
+    const prev = this.fullTextNodeRasterQueueByNodeId.get(job.nodeId);
+    if (prev && prev.key === job.key) return;
+    this.fullTextNodeRasterQueueByNodeId.set(job.nodeId, job);
   }
 
   private enqueueInkPrefaceRaster(job: InkPrefaceRasterJob): void {
@@ -2983,6 +3181,13 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (this.interacting) return;
     if (this.textRasterQueueByNodeId.size === 0) return;
     void this.runTextRasterQueue();
+  }
+
+  private kickFullTextNodeRasterQueue(): void {
+    if (this.fullTextNodeRasterRunning) return;
+    if (this.interacting) return;
+    if (this.fullTextNodeRasterQueueByNodeId.size === 0) return;
+    void this.runFullTextNodeRasterQueue();
   }
 
   private kickInkPrefaceRasterQueue(): void {
@@ -3092,6 +3297,94 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       if (!this.interacting && this.textRasterQueueByNodeId.size > 0) {
         // If work remains, schedule another burst.
         this.kickTextRasterQueue();
+      }
+    }
+  }
+
+  private async runFullTextNodeRasterQueue(): Promise<void> {
+    if (this.fullTextNodeRasterRunning) return;
+    this.fullTextNodeRasterRunning = true;
+    const gen = this.fullTextNodeRasterGeneration;
+
+    try {
+      while (this.fullTextNodeRasterQueueByNodeId.size > 0) {
+        if (this.interacting) return;
+        if (this.fullTextNodeRasterGeneration !== gen) return;
+
+        const next = this.fullTextNodeRasterQueueByNodeId.entries().next();
+        if (next.done) return;
+        const [nodeId, job] = next.value;
+        this.fullTextNodeRasterQueueByNodeId.delete(nodeId);
+
+        if (this.fullTextNodeRasterCache.has(job.key)) continue;
+
+        try {
+          const stillWanted = (() => {
+            const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === job.nodeId) ?? null;
+            if (!node) return false;
+            if (!this.isTextNodeEligibleForFullRaster(node)) return false;
+            const sig = this.fullTextNodeRasterSigForNode(node).sig;
+            return sig === job.sig;
+          })();
+          if (!stillWanted) continue;
+
+          const res = await rasterizeHtmlToImage(job.html, {
+            width: job.width,
+            height: job.height,
+            rasterScale: job.rasterScale,
+            fontFamily: this.nodeTextFontFamily,
+            fontSizePx: this.nodeTextFontSizePx,
+            lineHeight: this.nodeTextLineHeight,
+            color: this.nodeTextColor,
+            scrollGutterPx: 0,
+          });
+          if (this.fullTextNodeRasterGeneration !== gen) {
+            this.closeImage(res.image);
+            return;
+          }
+
+          const stillCurrent = (() => {
+            const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === job.nodeId) ?? null;
+            if (!node) return false;
+            if (!this.isTextNodeEligibleForFullRaster(node)) return false;
+            const sig = this.fullTextNodeRasterSigForNode(node).sig;
+            return sig === job.sig;
+          })();
+          if (!stillCurrent) {
+            this.closeImage(res.image);
+            continue;
+          }
+
+          const readyAt = performance.now();
+          this.fullTextNodeRasterCache.set(job.key, {
+            key: job.key,
+            sig: job.sig,
+            rasterScale: job.rasterScale,
+            width: job.width,
+            height: job.height,
+            image: res.image,
+            bitmapBytesEstimate: res.bitmapBytesEstimate,
+            readyAt,
+          });
+          this.fullTextNodeRasterCacheBytes += res.bitmapBytesEstimate || 0;
+
+          const prevBest = this.bestFullTextNodeRasterKeyBySig.get(job.sig);
+          if (!prevBest || job.rasterScale >= prevBest.rasterScale) {
+            this.bestFullTextNodeRasterKeyBySig.set(job.sig, { key: job.key, rasterScale: job.rasterScale });
+          }
+
+          this.evictOldFullTextNodeRasters();
+          this.requestRender();
+        } catch {
+          // ignore; fall back to vector rendering
+        }
+
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      }
+    } finally {
+      this.fullTextNodeRasterRunning = false;
+      if (!this.interacting && this.fullTextNodeRasterQueueByNodeId.size > 0) {
+        this.kickFullTextNodeRasterQueue();
       }
     }
   }
@@ -3381,6 +3674,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     for (const entry of this.pdfPageCache.values()) this.closeImage(entry.image);
     this.pdfPageCache.clear();
     this.pdfPageCacheBytes = 0;
+
+    this.fullTextNodeRasterGeneration += 1;
+    this.fullTextNodeRasterQueueByNodeId.clear();
+    this.clearFullTextNodeRasters();
 
     this.backgroundLoadToken += 1;
     if (this.backgroundImage) this.closeImage(this.backgroundImage);
@@ -4287,6 +4584,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     // Clean up any node-specific resources.
     if (node.kind === 'pdf') this.disposePdfNode(id);
     this.textRasterQueueByNodeId.delete(id);
+    this.fullTextNodeRasterQueueByNodeId.delete(id);
     this.inkPrefaceRasterQueueByNodeId.delete(id);
     this.inkPrefaceMeasureCacheByNodeId.delete(id);
 
@@ -4563,6 +4861,102 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const gutter = this.getTextScrollGutterPx();
     const sig = `${node.displayHash}|${Math.round(contentRect.w)}x${Math.round(contentRect.h)}|sx${scrollX}|sy${scrollY}|sg${gutter}`;
     return { sig, scrollX, scrollY };
+  }
+
+  private isTextNodeEligibleForFullRaster(node: TextNode): boolean {
+    if (node.id === this.editingNodeId) return false;
+    if (node.id === this.selectedNodeId) return false;
+    if (node.id === this.rawViewerNodeId) return false;
+    if (node.id === this.textSelectNodeId) return false;
+    if (node.isGenerating) return false;
+    if (this.textLod2Target?.nodeId === node.id) return false;
+    if (this.textStreamLod2Target?.nodeId === node.id) return false;
+    if (this.hoverNodeHeaderButton?.nodeId === node.id) return false;
+
+    const activeNodeId = (() => {
+      const g = this.activeGesture as { nodeId?: string } | null;
+      return typeof g?.nodeId === 'string' ? g.nodeId : null;
+    })();
+    if (activeNodeId === node.id) return false;
+
+    return true;
+  }
+
+  private fullTextNodeRasterSigForNode(node: TextNode): { sig: string; scrollX: number; scrollY: number } {
+    const scrollX = this.getTextNodeScrollX(node);
+    const scrollY = this.getTextNodeScrollY(node);
+    const w = Math.max(1, Math.round(node.rect.w));
+    const h = Math.max(1, Math.round(node.rect.h));
+    const sig = [
+      node.displayHash,
+      `title:${fingerprintText(node.title ?? '')}`,
+      `${w}x${h}`,
+      `sx${scrollX}`,
+      `sy${scrollY}`,
+      `edit:${node.isEditNode ? 1 : 0}`,
+      `ff:${fingerprintText(this.nodeTextFontFamily)}`,
+      `fs:${Math.max(1, Math.round(this.nodeTextFontSizePx))}`,
+      `lh:${Math.max(0.1, this.nodeTextLineHeight).toFixed(3)}`,
+      `fc:${fingerprintText(this.nodeTextColor)}`,
+    ].join('|');
+    return { sig, scrollX, scrollY };
+  }
+
+  private renderFullTextNodeHtml(node: TextNode): string {
+    const splitGap = TEXT_NODE_SEND_BUTTON_SPLIT_GAP_PX;
+    const buttonBox = (label: string, opts: { width: number; accent?: 'neutral' | 'blue' }): string => {
+      const accent = opts.accent ?? 'neutral';
+      const bg = accent === 'blue' ? 'rgba(147,197,253,0.22)' : 'rgba(0,0,0,0.22)';
+      const border = accent === 'blue' ? 'rgba(147,197,253,0.50)' : 'rgba(255,255,255,0.14)';
+      const color = accent === 'blue' ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.86)';
+      return (
+        `<div style="width:${opts.width}px;height:22px;border-radius:9px;display:flex;align-items:center;` +
+        `justify-content:center;box-sizing:border-box;background:${bg};border:1px solid ${border};` +
+        `color:${color};font:12px ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;">` +
+        `${escapeHtml(label)}` +
+        `</div>`
+      );
+    };
+
+    const splitButton = (label: string, totalWidth: number, opts?: { accent?: 'neutral' | 'blue' }): string => {
+      const accent = opts?.accent ?? 'neutral';
+      const arrowW = 18;
+      const mainW = Math.max(1, Math.round(totalWidth) - arrowW - splitGap);
+      const main = buttonBox(label, { width: mainW, accent });
+      const arrow = buttonBox('▾', { width: 18, accent });
+      return `<div style="display:flex;align-items:center;gap:${splitGap}px;">${main}${arrow}</div>`;
+    };
+
+    const controls: string[] = [];
+    if (node.isEditNode) controls.push(splitButton('Send', 68, { accent: 'blue' }));
+    controls.push(splitButton('Reply', 74));
+    controls.push(buttonBox('⋮', { width: 28 }));
+
+    const title = escapeHtml(node.title ?? '');
+    const { scrollX, scrollY } = this.fullTextNodeRasterSigForNode(node);
+    const contentHtml = this.renderTextNodeHtml(node);
+    const translate =
+      scrollX !== 0 || scrollY !== 0
+        ? `transform:translate(${-Math.round(scrollX)}px,${-Math.round(scrollY)}px);transform-origin:0 0;`
+        : '';
+
+    return (
+      `<div style="position:relative;width:100%;height:100%;box-sizing:border-box;overflow:hidden;` +
+      `border-radius:18px;background:rgba(0,0,0,0.28);border:1px solid rgba(255,255,255,0.14);">` +
+      `<div style="position:absolute;left:${TEXT_NODE_PAD_PX}px;top:9px;right:${TEXT_NODE_PAD_PX}px;height:22px;display:flex;align-items:center;` +
+      `color:rgba(255,255,255,0.85);font:600 14px ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;` +
+      `white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${title}</div>` +
+      `<div style="position:absolute;right:${TEXT_NODE_PAD_PX}px;top:9px;display:flex;align-items:center;gap:8px;">` +
+      `${controls.join('')}` +
+      `</div>` +
+      `<div style="position:absolute;left:${TEXT_NODE_PAD_PX}px;right:${TEXT_NODE_PAD_PX}px;` +
+      `top:${TEXT_NODE_HEADER_H_PX - TEXT_NODE_HEADER_GAP_PX}px;height:1px;background:rgba(255,255,255,0.10);"></div>` +
+      `<div style="position:absolute;left:${TEXT_NODE_PAD_PX}px;right:${TEXT_NODE_PAD_PX}px;` +
+      `top:${TEXT_NODE_HEADER_H_PX}px;bottom:${TEXT_NODE_PAD_PX}px;overflow:hidden;">` +
+      `<div style="${translate}">${contentHtml}</div>` +
+      `</div>` +
+      `</div>`
+    );
   }
 
   private buildTextNodeDisplaySig(node: TextNode): string {
@@ -6834,6 +7228,18 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return { key: best.key, image: entry.image, hitZones: entry.hitZones };
   }
 
+  private getBestFullTextNodeRaster(sig: string): { key: string; image: CanvasImageSource } | null {
+    const best = this.bestFullTextNodeRasterKeyBySig.get(sig);
+    if (!best) return null;
+    const entry = this.fullTextNodeRasterCache.get(best.key);
+    if (!entry) {
+      this.bestFullTextNodeRasterKeyBySig.delete(sig);
+      return null;
+    }
+    this.touchFullTextNodeRaster(best.key);
+    return { key: best.key, image: entry.image };
+  }
+
   private getInkPrefaceRasterByKey(
     key: string,
   ): { key: string; image: CanvasImageSource; width: number; height: number; hitZones?: TextHitZone[] } | null {
@@ -6854,6 +7260,48 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       return null;
     }
     return raster;
+  }
+
+  private updateFullTextNodeRastersForViewport(): void {
+    const view = this.worldViewportRect({ overscan: 320 });
+    const desiredScale = this.chooseTextRasterScale();
+    const desiredNodeIds = new Set<string>();
+
+    for (const n of this.nodes) {
+      if (n.kind !== 'text') continue;
+      if (!this.isTextNodeEligibleForFullRaster(n)) continue;
+      if (!rectsIntersect(n.rect, view)) continue;
+
+      const { sig } = this.fullTextNodeRasterSigForNode(n);
+      const best = this.bestFullTextNodeRasterKeyBySig.get(sig);
+      const hasBest = !!best && this.fullTextNodeRasterCache.has(best.key);
+      if (hasBest && best!.rasterScale >= desiredScale) continue;
+
+      const key = `${sig}|s${desiredScale}`;
+      if (this.fullTextNodeRasterCache.has(key)) {
+        this.bestFullTextNodeRasterKeyBySig.set(sig, { key, rasterScale: desiredScale });
+        continue;
+      }
+
+      desiredNodeIds.add(n.id);
+      this.enqueueFullTextNodeRaster({
+        nodeId: n.id,
+        key,
+        sig,
+        rasterScale: desiredScale,
+        width: n.rect.w,
+        height: n.rect.h,
+        html: this.renderFullTextNodeHtml(n),
+      });
+    }
+
+    if (this.fullTextNodeRasterQueueByNodeId.size > 0) {
+      for (const nodeId of this.fullTextNodeRasterQueueByNodeId.keys()) {
+        if (!desiredNodeIds.has(nodeId)) this.fullTextNodeRasterQueueByNodeId.delete(nodeId);
+      }
+    }
+
+    this.kickFullTextNodeRasterQueue();
   }
 
   private updateTextRastersForViewport(): void {
@@ -8892,6 +9340,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       cameraY: this.camera.y,
       zoom: this.camera.zoom,
       interacting: this.interacting,
+      ...(this.lastFramePerf ? { framePerf: this.lastFramePerf } : {}),
     });
   }
 
@@ -9525,12 +9974,20 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         return { start: { side, point: { x, y } } };
       })();
 
-      const route = router.route({
-        parent: { id: parent.id, rect: parent.rect },
-        child: { id: child.id, rect: child.rect },
+      const routeKey = this.edgeRouteCacheKey({
+        parent,
+        child,
         style: routeStyle,
         ...(anchors ? { anchors } : {}),
       });
+      const route = this.getCachedEdgeRoute(routeKey, () =>
+        router.route({
+          parent: { id: parent.id, rect: parent.rect },
+          child: { id: child.id, rect: child.rect },
+          style: routeStyle,
+          ...(anchors ? { anchors } : {}),
+        }),
+      );
       if (!route) continue;
 
       const drawn = drawRoute(route);
@@ -9573,6 +10030,20 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         const state = this.pdfStateByNodeId.get(node.id);
         if (state) this.updatePdfNodeDerivedHeight(node, state);
       }
+
+      if (node.kind === 'text' && this.isTextNodeEligibleForFullRaster(node)) {
+        const sig = this.fullTextNodeRasterSigForNode(node).sig;
+        const raster = this.getBestFullTextNodeRaster(sig);
+        if (raster) {
+          try {
+            ctx.drawImage(raster.image, node.rect.x, node.rect.y, node.rect.w, node.rect.h);
+            continue;
+          } catch {
+            // ignore; fall through to vector path
+          }
+        }
+      }
+
       const { x, y, w, h } = node.rect;
       const r = 18;
 
@@ -10384,6 +10855,11 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   }
 
   draw(): void {
+    const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    const frameStart = now();
+    const edgeRouteHitsAtStart = this.edgeRouteCacheHits;
+    const edgeRouteMissesAtStart = this.edgeRouteCacheMisses;
+
     const nextTextLod2Target = this.computeTextLod2Target();
     this.textLod2Target = nextTextLod2Target;
     const nextTextStreamLod2Target = this.computeTextStreamLod2Target(nextTextLod2Target);
@@ -10394,26 +10870,65 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const ctx = this.ctx;
     this.applyScreenTransform();
     ctx.clearRect(0, 0, this.cssW, this.cssH);
+    const afterClear = now();
+
     this.drawBackground();
+    const afterBackground = now();
     this.drawNodeGlassUnderlays();
+    const afterGlass = now();
 
     this.applyWorldTransform();
     this.drawGrid();
+    const afterGrid = now();
     this.drawParentArrows();
+    const afterEdges = now();
+    this.updateFullTextNodeRastersForViewport();
+    const afterFullTextRasterUpdate = now();
     this.updateTextRastersForViewport();
+    const afterTextRasterUpdate = now();
     this.updateInkPrefaceRastersForViewport();
+    const afterInkPrefaceUpdate = now();
     this.updatePdfPageRendersForViewport();
+    const afterPdfRasterUpdate = now();
     this.drawDemoNodes();
+    const afterNodes = now();
     this.drawWorldInk();
+    const afterWorldInk = now();
     this.drawSpawnByDrawPreview();
     this.drawHeaderPlacementPreview();
     this.drawTextAnnotationOutlinePreview();
     this.drawTextAnnotationPlacementPreview();
     this.drawPdfAnnotationOutlinePreview();
     this.drawPdfAnnotationPlacementPreview();
+    const afterPreviews = now();
     this.renderTextStreamLod2Target(nextTextStreamLod2Target);
     this.renderTextLod2Target(nextTextLod2Target);
     this.renderPdfTextLod2Target(nextPdfLod2Target);
+    const frameEnd = now();
+
+    const edgeRouteCacheHits = this.edgeRouteCacheHits - edgeRouteHitsAtStart;
+    const edgeRouteCacheMisses = this.edgeRouteCacheMisses - edgeRouteMissesAtStart;
+    const edgeRouteCacheQueries = edgeRouteCacheHits + edgeRouteCacheMisses;
+    this.lastFramePerf = {
+      frameMs: frameEnd - frameStart,
+      clearMs: afterClear - frameStart,
+      backgroundMs: afterBackground - afterClear,
+      glassMs: afterGlass - afterBackground,
+      gridMs: afterGrid - afterGlass,
+      edgesMs: afterEdges - afterGrid,
+      updateFullTextNodeRastersMs: afterFullTextRasterUpdate - afterEdges,
+      updateTextRastersMs: afterTextRasterUpdate - afterFullTextRasterUpdate,
+      updateInkPrefaceRastersMs: afterInkPrefaceUpdate - afterTextRasterUpdate,
+      updatePdfRastersMs: afterPdfRasterUpdate - afterInkPrefaceUpdate,
+      drawNodesMs: afterNodes - afterPdfRasterUpdate,
+      drawWorldInkMs: afterWorldInk - afterNodes,
+      drawPreviewsMs: afterPreviews - afterWorldInk,
+      overlaysMs: frameEnd - afterPreviews,
+      edgeRouteCacheHits,
+      edgeRouteCacheMisses,
+      edgeRouteCacheHitRate: edgeRouteCacheQueries > 0 ? edgeRouteCacheHits / edgeRouteCacheQueries : 1,
+      edgeRouteCacheSize: this.edgeRouteCache.size,
+    };
     this.emitDebug();
   }
 }
