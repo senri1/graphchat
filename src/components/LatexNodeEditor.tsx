@@ -133,18 +133,21 @@ export default function LatexNodeEditor(props: Props) {
 
       const rawZoom = getZoomRef.current?.();
       const zNow = Math.max(0.001, Number.isFinite(rawZoom as number) ? Number(rawZoom) : 1);
-      el.style.setProperty('--editor-scale', String(zNow));
+      el.style.setProperty('--editor-scale', '1');
 
       if (!fn) return;
       const r = fn();
       if (!r) return;
       anchorRectRef.current = r;
 
-      const w = Math.max(1, Number(r.w));
-      const h = Math.max(1, Number(r.h));
-      el.style.transform = `translate3d(${r.x}px, ${r.y}px, 0)`;
-      el.style.width = `${w}px`;
-      el.style.height = `${h}px`;
+      const screenW = Math.max(1, Number(r.w));
+      const screenH = Math.max(1, Number(r.h));
+      const unscaledW = Math.max(1, screenW / zNow);
+      const unscaledH = Math.max(1, screenH / zNow);
+      el.style.transformOrigin = '0 0';
+      el.style.transform = `translate3d(${r.x}px, ${r.y}px, 0) scale(${zNow})`;
+      el.style.width = `${unscaledW}px`;
+      el.style.height = `${unscaledH}px`;
     };
 
     raf = requestAnimationFrame(tick);
@@ -328,26 +331,25 @@ export default function LatexNodeEditor(props: Props) {
   const activeAnchorRect = liveRect ?? anchorRect ?? null;
   const style = useMemo<React.CSSProperties>(() => {
     const baseFontSize = Math.max(10, baseFontSizePx || 16);
+    const editorVars = { ['--editor-scale' as any]: 1, ['--editor-font-size' as any]: `${baseFontSize}px` } as any;
+    if (followEnabled) {
+      return {
+        left: 0,
+        top: 0,
+        borderRadius: 'calc(18px * var(--editor-scale, 1))',
+        willChange: 'transform,width,height',
+        ...editorVars,
+      };
+    }
+
     if (activeAnchorRect) {
-      if (followEnabled) {
-        return {
-          left: 0,
-          top: 0,
-          transform: `translate3d(${activeAnchorRect.x}px, ${activeAnchorRect.y}px, 0)`,
-          width: activeAnchorRect.w,
-          height: activeAnchorRect.h,
-          borderRadius: 'calc(18px * var(--editor-scale, 1))',
-          willChange: 'transform',
-          ...(typeof zoom === 'number' ? ({ ['--editor-scale' as any]: zoom, ['--editor-font-size' as any]: `${baseFontSize}px` } as any) : ({} as any)),
-        };
-      }
       return {
         left: activeAnchorRect.x,
         top: activeAnchorRect.y,
         width: activeAnchorRect.w,
         height: activeAnchorRect.h,
         borderRadius: 'calc(18px * var(--editor-scale, 1))',
-        ...(typeof zoom === 'number' ? ({ ['--editor-scale' as any]: zoom, ['--editor-font-size' as any]: `${baseFontSize}px` } as any) : ({} as any)),
+        ...editorVars,
       };
     }
 
@@ -361,9 +363,9 @@ export default function LatexNodeEditor(props: Props) {
       top: margin,
       width: w,
       height: h,
-      ...(typeof zoom === 'number' ? ({ ['--editor-scale' as any]: zoom, ['--editor-font-size' as any]: `${baseFontSize}px` } as any) : ({} as any)),
+      ...editorVars,
     };
-  }, [activeAnchorRect, baseFontSizePx, followEnabled, viewport.h, viewport.w, zoom]);
+  }, [activeAnchorRect, baseFontSizePx, followEnabled, viewport.h, viewport.w]);
 
   const statusText = useMemo(() => {
     if (isCompiling) return 'Compiling...';
