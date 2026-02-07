@@ -67,7 +67,6 @@ export default function LatexNodeEditor(props: Props) {
     corner: ResizeCorner;
     startClient: { x: number; y: number };
     startRect: Rect;
-    startZoom: number;
   } | null>(null);
   const dragRef = useRef<{
     pointerId: number;
@@ -136,7 +135,6 @@ export default function LatexNodeEditor(props: Props) {
       const zNow = Math.max(0.001, Number.isFinite(rawZoom as number) ? Number(rawZoom) : 1);
       el.style.setProperty('--editor-scale', String(zNow));
 
-      if (resizeRef.current || dragRef.current) return;
       if (!fn) return;
       const r = fn();
       if (!r) return;
@@ -191,6 +189,26 @@ export default function LatexNodeEditor(props: Props) {
     return next;
   };
 
+  const finishResize = useCallback((pointerId?: number) => {
+    const active = resizeRef.current;
+    if (!active) return;
+    if (typeof pointerId === 'number' && active.pointerId !== pointerId) return;
+    resizeRef.current = null;
+    const next = liveRectRef.current;
+    if (next) onResizeRef.current(next);
+    onResizeEndRef.current();
+  }, []);
+
+  const finishDrag = useCallback((pointerId?: number) => {
+    const active = dragRef.current;
+    if (!active) return;
+    if (typeof pointerId === 'number' && active.pointerId !== pointerId) return;
+    dragRef.current = null;
+    const next = liveRectRef.current;
+    if (next) onResizeRef.current(next);
+    onResizeEndRef.current();
+  }, []);
+
   const beginResize = (corner: ResizeCorner) => (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
@@ -204,13 +222,11 @@ export default function LatexNodeEditor(props: Props) {
       // ignore
     }
 
-    const z = Math.max(0.001, Number.isFinite(zoom) ? Number(zoom) : 1);
     resizeRef.current = {
       pointerId,
       corner,
       startClient: { x: e.clientX, y: e.clientY },
       startRect: { ...rect },
-      startZoom: z,
     };
   };
 
@@ -220,8 +236,8 @@ export default function LatexNodeEditor(props: Props) {
     e.preventDefault();
     e.stopPropagation();
 
-    const dx = (e.clientX - active.startClient.x) / active.startZoom;
-    const dy = (e.clientY - active.startClient.y) / active.startZoom;
+    const dx = e.clientX - active.startClient.x;
+    const dy = e.clientY - active.startClient.y;
     const next = applyResize(active.startRect, active.corner, dx, dy, 340, 240);
     setLiveRect(next);
     onResizeRef.current(next);
@@ -238,10 +254,7 @@ export default function LatexNodeEditor(props: Props) {
     } catch {
       // ignore
     }
-    resizeRef.current = null;
-    const next = liveRectRef.current;
-    if (next) onResizeRef.current(next);
-    onResizeEndRef.current();
+    finishResize(e.pointerId);
   };
 
   const beginDrag = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -270,9 +283,8 @@ export default function LatexNodeEditor(props: Props) {
     e.preventDefault();
     e.stopPropagation();
 
-    const z = Math.max(0.001, Number.isFinite(zoom) ? Number(zoom) : 1);
-    const dx = (e.clientX - active.startClient.x) / z;
-    const dy = (e.clientY - active.startClient.y) / z;
+    const dx = e.clientX - active.startClient.x;
+    const dy = e.clientY - active.startClient.y;
     const next: Rect = { ...active.startRect, x: active.startRect.x + dx, y: active.startRect.y + dy };
     setLiveRect(next);
     onResizeRef.current(next);
@@ -288,10 +300,7 @@ export default function LatexNodeEditor(props: Props) {
     } catch {
       // ignore
     }
-    dragRef.current = null;
-    const next = liveRectRef.current;
-    if (next) onResizeRef.current(next);
-    onResizeEndRef.current();
+    finishDrag(e.pointerId);
   };
 
   const commit = useCallback(() => {
@@ -322,6 +331,8 @@ export default function LatexNodeEditor(props: Props) {
     if (activeAnchorRect) {
       if (followEnabled) {
         return {
+          left: 0,
+          top: 0,
           transform: `translate3d(${activeAnchorRect.x}px, ${activeAnchorRect.y}px, 0)`,
           width: activeAnchorRect.w,
           height: activeAnchorRect.h,
@@ -381,6 +392,7 @@ export default function LatexNodeEditor(props: Props) {
         onPointerMove={onResizePointerMove}
         onPointerUp={onResizePointerEnd}
         onPointerCancel={onResizePointerEnd}
+        onLostPointerCapture={(e) => finishResize(e.pointerId)}
       />
       <div
         className="editor__resizeHandle editor__resizeHandle--ne"
@@ -389,6 +401,7 @@ export default function LatexNodeEditor(props: Props) {
         onPointerMove={onResizePointerMove}
         onPointerUp={onResizePointerEnd}
         onPointerCancel={onResizePointerEnd}
+        onLostPointerCapture={(e) => finishResize(e.pointerId)}
       />
       <div
         className="editor__resizeHandle editor__resizeHandle--sw"
@@ -397,6 +410,7 @@ export default function LatexNodeEditor(props: Props) {
         onPointerMove={onResizePointerMove}
         onPointerUp={onResizePointerEnd}
         onPointerCancel={onResizePointerEnd}
+        onLostPointerCapture={(e) => finishResize(e.pointerId)}
       />
       <div
         className="editor__resizeHandle editor__resizeHandle--se"
@@ -405,6 +419,7 @@ export default function LatexNodeEditor(props: Props) {
         onPointerMove={onResizePointerMove}
         onPointerUp={onResizePointerEnd}
         onPointerCancel={onResizePointerEnd}
+        onLostPointerCapture={(e) => finishResize(e.pointerId)}
       />
 
       <div className="editor__topbar">
@@ -414,6 +429,7 @@ export default function LatexNodeEditor(props: Props) {
           onPointerMove={onDragPointerMove}
           onPointerUp={onDragPointerEnd}
           onPointerCancel={onDragPointerEnd}
+          onLostPointerCapture={(e) => finishDrag(e.pointerId)}
         >
           {title ?? 'LaTeX node'}
         </div>
