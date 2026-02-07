@@ -2844,6 +2844,37 @@ body {
   background: rgba(255, 255, 255, 0.96);
 }
 
+.editor__latexLogPanel {
+  margin-top: calc(8px * var(--editor-scale, 1));
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: calc(9px * var(--editor-scale, 1));
+  background: rgba(0, 0, 0, 0.26);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor__latexLogLabel {
+  font-size: calc(11px * var(--editor-scale, 1));
+  color: rgba(255, 255, 255, 0.76);
+  padding: calc(6px * var(--editor-scale, 1)) calc(8px * var(--editor-scale, 1));
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  user-select: none;
+}
+
+.editor__latexLogBody {
+  margin: 0;
+  padding: calc(8px * var(--editor-scale, 1));
+  max-height: calc(170px * var(--editor-scale, 1));
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: calc(11px * var(--editor-scale, 1));
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.87);
+}
+
 .editor__paneLabel--error {
   color: rgba(255, 124, 124, 0.95);
 }

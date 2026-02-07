@@ -363,6 +363,7 @@ type TextNode = DemoNodeBase & {
   textFormat?: 'markdown' | 'latex';
   latexCompileError?: string | null;
   latexCompiledAt?: number | null;
+  latexCompileLog?: string | null;
   latexProjectRoot?: string | null;
   latexMainFile?: string | null;
   latexActiveFile?: string | null;
@@ -1133,6 +1134,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           textFormat: n.textFormat ?? 'markdown',
           latexCompileError: n.latexCompileError ?? null,
           latexCompiledAt: Number.isFinite(n.latexCompiledAt) ? n.latexCompiledAt : null,
+          latexCompileLog: typeof n.latexCompileLog === 'string' && n.latexCompileLog ? n.latexCompileLog : null,
           latexProjectRoot: typeof n.latexProjectRoot === 'string' && n.latexProjectRoot.trim() ? n.latexProjectRoot : null,
           latexMainFile: typeof n.latexMainFile === 'string' && n.latexMainFile.trim() ? n.latexMainFile : null,
           latexActiveFile: typeof n.latexActiveFile === 'string' && n.latexActiveFile.trim() ? n.latexActiveFile : null,
@@ -1288,6 +1290,14 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           const raw = Number((n as any)?.latexCompiledAt);
           return Number.isFinite(raw) && raw > 0 ? raw : null;
         })();
+        const latexCompileLog = (() => {
+          const raw = (n as any)?.latexCompileLog;
+          if (typeof raw !== 'string') return null;
+          if (!raw) return null;
+          const LIMIT = 120_000;
+          if (raw.length <= LIMIT) return raw;
+          return `${raw.slice(0, LIMIT)}\n\n[log truncated]`;
+        })();
         const latexProjectRoot = (() => {
           const raw = (n as any)?.latexProjectRoot;
           if (typeof raw !== 'string') return null;
@@ -1427,6 +1437,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           textFormat,
           latexCompileError,
           latexCompiledAt,
+          latexCompileLog,
           latexProjectRoot,
           latexMainFile,
           latexActiveFile,
@@ -2327,6 +2338,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       textFormat,
       latexCompileError: null,
       latexCompiledAt: null,
+      latexCompileLog: null,
       latexProjectRoot: null,
       latexMainFile: null,
       latexActiveFile: null,
@@ -4079,6 +4091,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   getTextNodeLatexState(nodeId: string): {
     compileError: string | null;
     compiledAt: number | null;
+    compileLog: string | null;
     compiledPdfStorageKey: string | null;
     projectRoot: string | null;
     mainFile: string | null;
@@ -4095,6 +4108,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return {
       compileError: typeof node.latexCompileError === 'string' && node.latexCompileError.trim() ? node.latexCompileError : null,
       compiledAt: Number.isFinite(node.latexCompiledAt) && (node.latexCompiledAt as number) > 0 ? (node.latexCompiledAt as number) : null,
+      compileLog: typeof node.latexCompileLog === 'string' && node.latexCompileLog ? node.latexCompileLog : null,
       compiledPdfStorageKey,
       projectRoot: typeof node.latexProjectRoot === 'string' && node.latexProjectRoot.trim() ? node.latexProjectRoot.trim() : null,
       mainFile: typeof node.latexMainFile === 'string' && node.latexMainFile.trim() ? node.latexMainFile.trim() : null,
@@ -4109,6 +4123,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       attachments?: ChatAttachment[] | null;
       latexCompileError?: string | null;
       latexCompiledAt?: number | null;
+      latexCompileLog?: string | null;
       latexProjectRoot?: string | null;
       latexMainFile?: string | null;
       latexActiveFile?: string | null;
@@ -4149,6 +4164,19 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       const next = Number.isFinite(raw) && raw > 0 ? raw : null;
       if ((node.latexCompiledAt ?? null) !== next) {
         node.latexCompiledAt = next;
+        changed = true;
+      }
+    }
+    if (patch.latexCompileLog !== undefined) {
+      const next = (() => {
+        if (typeof patch.latexCompileLog !== 'string') return null;
+        if (!patch.latexCompileLog) return null;
+        const LIMIT = 120_000;
+        if (patch.latexCompileLog.length <= LIMIT) return patch.latexCompileLog;
+        return `${patch.latexCompileLog.slice(0, LIMIT)}\n\n[log truncated]`;
+      })();
+      if ((node.latexCompileLog ?? null) !== next) {
+        node.latexCompileLog = next;
         changed = true;
       }
     }

@@ -20,6 +20,7 @@ type Props = {
   baseFontSizePx: number;
   compiledPdfUrl: string | null;
   compileError: string | null;
+  compileLog: string | null;
   compiledAt: number | null;
   latexProject: LatexProjectState | null;
   onDraftChange?: (next: string) => void;
@@ -51,6 +52,7 @@ export default function LatexNodeEditor(props: Props) {
     baseFontSizePx,
     compiledPdfUrl,
     compileError,
+    compileLog,
     compiledAt,
     latexProject,
     onDraftChange,
@@ -676,6 +678,7 @@ export default function LatexNodeEditor(props: Props) {
   const showMainAsActive = Boolean(projectRoot && activeFile && mainFile && activeFile !== mainFile);
   const rootDisplay = projectRoot ? projectRoot : 'Inline document';
   const fileListValue = activeFile ?? '';
+  const hasCompileLog = Boolean(typeof compileLog === 'string' && compileLog.trim());
 
   return (
     <div
@@ -841,6 +844,12 @@ export default function LatexNodeEditor(props: Props) {
               <div className="editor__emptyPreview">Compile the document to preview the PDF.</div>
             )}
           </div>
+          {hasCompileLog ? (
+            <div className="editor__latexLogPanel">
+              <div className="editor__latexLogLabel">Compiler log</div>
+              <pre className="editor__latexLogBody">{compileLog ?? ''}</pre>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>

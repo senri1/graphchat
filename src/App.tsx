@@ -6251,6 +6251,7 @@ export default function App() {
               initialValue={ui.editingText}
               compiledPdfUrl={editorLatexCompiledPdfUrl}
               compileError={editorLatexState?.compileError ?? null}
+              compileLog={editorLatexState?.compileLog ?? null}
               compiledAt={editorLatexState?.compiledAt ?? null}
               latexProject={{
                 projectRoot: editorLatexState?.projectRoot ?? null,
@@ -6302,11 +6303,14 @@ export default function App() {
                   ...(projectRoot && mainFile ? { projectRoot, mainFile } : { source }),
                   engine: 'pdflatex',
                 });
+                const compileLog =
+                  typeof result.log === 'string' && result.log.trim() ? result.log : null;
 
                 if (!result.ok || !result.pdfBase64) {
-                  const failMsg = (result.error ?? result.log ?? 'Compile failed.').trim().slice(0, 600);
+                  const failMsg = (result.error ?? 'Compile failed. See compiler log for details.').trim().slice(0, 600);
                   engine.setTextNodeLatexState(id, {
                     latexCompileError: failMsg || 'Compile failed.',
+                    latexCompileLog: compileLog,
                   });
                   schedulePersistSoon();
                   return;
@@ -6328,6 +6332,7 @@ export default function App() {
                 if (!storageKey) {
                   engine.setTextNodeLatexState(id, {
                     latexCompileError: 'Compile succeeded but failed to store PDF output.',
+                    latexCompileLog: compileLog,
                   });
                   schedulePersistSoon();
                   return;
@@ -6345,6 +6350,7 @@ export default function App() {
                   attachments: [compiledAttachment],
                   latexCompileError: null,
                   latexCompiledAt: Date.now(),
+                  latexCompileLog: compileLog,
                 });
 
                 if (previousPdfKey && previousPdfKey !== storageKey) {
