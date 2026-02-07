@@ -23,13 +23,17 @@ type RenderPageMeta = {
   scale: number;
 };
 
+const PAGE_GAP_PX = 10;
+const SCROLL_PAD_PX = 8;
+const VISIBLE_OVERSCAN_PX = 1200;
+
 function clamp(v: number, min: number, max: number): number {
   if (v < min) return min;
   if (v > max) return max;
   return v;
 }
 
-export default function LatexPdfPreview(props: Props) {
+function LatexPdfPreviewImpl(props: Props) {
   const { pdfUrl, syncTarget, zoom, onInverseSync } = props;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -46,6 +50,8 @@ export default function LatexPdfPreview(props: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [marker, setMarker] = useState<{ page: number; left: number; top: number } | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [scrollViewportH, setScrollViewportH] = useState(0);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -77,6 +83,48 @@ export default function LatexPdfPreview(props: Props) {
       docRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    let raf = 0;
+    const syncFromDom = () => {
+      raf = 0;
+      setScrollTop(Math.max(0, Math.floor(el.scrollTop)));
+      setScrollViewportH(Math.max(1, Math.floor(el.clientHeight)));
+    };
+    const scheduleSync = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(syncFromDom);
+    };
+
+    syncFromDom();
+    el.addEventListener('scroll', scheduleSync, { passive: true });
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => scheduleSync());
+      ro.observe(el);
+    }
+
+    return () => {
+      el.removeEventListener('scroll', scheduleSync);
+      if (ro) {
+        try {
+          ro.disconnect();
+        } catch {
+          // ignore
+        }
+      }
+      if (raf) {
+        try {
+          cancelAnimationFrame(raf);
+        } catch {
+          // ignore
+        }
+      }
+    };
+  }, [metas.length, pdfUrl, loading, error]);
 
   useEffect(() => {
     const token = ++renderTokenRef.current;
@@ -174,16 +222,42 @@ export default function LatexPdfPreview(props: Props) {
     };
   }, [pdfUrl, containerWidth, zoom]);
 
+  const visiblePageSet = useMemo(() => {
+    if (metas.length === 0) return new Set<number>();
+    const out = new Set<number>();
+    const vpH = Math.max(1, scrollViewportH || 1);
+    const yMin = Math.max(0, scrollTop - VISIBLE_OVERSCAN_PX);
+    const yMax = scrollTop + vpH + VISIBLE_OVERSCAN_PX;
+    let cursor = SCROLL_PAD_PX;
+    for (const meta of metas) {
+      const top = cursor;
+      const bottom = top + meta.height + PAGE_GAP_PX;
+      if (bottom >= yMin && top <= yMax) out.add(meta.pageNumber);
+      cursor = bottom;
+    }
+    if (marker && Number.isFinite(marker.page)) out.add(marker.page);
+    return out;
+  }, [marker, metas, scrollTop, scrollViewportH]);
+
+  const visiblePageKey = useMemo(() => {
+    if (visiblePageSet.size === 0) return '';
+    return Array.from(visiblePageSet).sort((a, b) => a - b).join(',');
+  }, [visiblePageSet]);
+
   useEffect(() => {
     const token = ++renderTokenRef.current;
     const doc = docRef.current;
-    if (!doc || metas.length === 0) return;
+    if (!doc || metas.length === 0 || visiblePageSet.size === 0) return;
 
     let cancelled = false;
     const run = async () => {
       for (const meta of metas) {
+        if (!visiblePageSet.has(meta.pageNumber)) continue;
         const canvas = canvasRefByPage.current.get(meta.pageNumber);
         if (!canvas) continue;
+        const renderSig = `${loadedPdfUrlRef.current ?? ''}:${meta.width}x${meta.height}@${meta.scale.toFixed(5)}`;
+        if (canvas.dataset.renderSig === renderSig && viewportRefByPage.current.has(meta.pageNumber)) continue;
+
         const page = await doc.getPage(meta.pageNumber);
         if (cancelled || token !== renderTokenRef.current) return;
         const viewport = page.getViewport({ scale: meta.scale });
@@ -205,6 +279,7 @@ export default function LatexPdfPreview(props: Props) {
 
         await page.render({ canvasContext: ctx, viewport }).promise;
         if (cancelled || token !== renderTokenRef.current) return;
+        canvas.dataset.renderSig = renderSig;
       }
     };
     void run();
@@ -212,7 +287,7 @@ export default function LatexPdfPreview(props: Props) {
     return () => {
       cancelled = true;
     };
-  }, [metas]);
+  }, [metas, visiblePageKey, visiblePageSet]);
 
   useEffect(() => {
     const t = syncTarget;
@@ -329,3 +404,20 @@ export default function LatexPdfPreview(props: Props) {
 
   return <>{content}</>;
 }
+
+function syncTargetsEqual(a: SyncTarget | null, b: SyncTarget | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.token === b.token && a.page === b.page && a.x === b.x && a.y === b.y;
+}
+
+const LatexPdfPreview = React.memo(LatexPdfPreviewImpl, (prev, next) => {
+  return (
+    prev.pdfUrl === next.pdfUrl &&
+    prev.zoom === next.zoom &&
+    prev.onInverseSync === next.onInverseSync &&
+    syncTargetsEqual(prev.syncTarget, next.syncTarget)
+  );
+});
+
+export default LatexPdfPreview;

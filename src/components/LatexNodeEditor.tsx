@@ -509,6 +509,24 @@ export default function LatexNodeEditor(props: Props) {
   }, [anchorRect?.x, anchorRect?.y, anchorRect?.w, anchorRect?.h, nodeId]);
 
   const followEnabled = typeof getScreenRect === 'function';
+  const applyFollowRectToElement = useCallback((rect: Rect | null) => {
+    const el = rootRef.current;
+    if (!el || !rect) return;
+
+    const rawZoom = getZoomRef.current?.();
+    const zNow = Math.max(0.001, Number.isFinite(rawZoom as number) ? Number(rawZoom) : 1);
+    const screenW = Math.max(1, Number(rect.w));
+    const screenH = Math.max(1, Number(rect.h));
+    const unscaledW = Math.max(1, screenW / zNow);
+    const unscaledH = Math.max(1, screenH / zNow);
+
+    el.style.setProperty('--editor-scale', '1');
+    el.style.transformOrigin = '0 0';
+    el.style.transform = `translate3d(${rect.x}px, ${rect.y}px, 0) scale(${zNow})`;
+    el.style.width = `${unscaledW}px`;
+    el.style.height = `${unscaledH}px`;
+  }, []);
+
   useEffect(() => {
     if (!followEnabled) return;
     let raf = 0;
@@ -521,23 +539,13 @@ export default function LatexNodeEditor(props: Props) {
       const fn = getScreenRectRef.current;
       if (!el) return;
 
-      const rawZoom = getZoomRef.current?.();
-      const zNow = Math.max(0.001, Number.isFinite(rawZoom as number) ? Number(rawZoom) : 1);
-      el.style.setProperty('--editor-scale', '1');
-
+      if (resizeRef.current || dragRef.current) return;
       if (!fn) return;
       const r = fn();
       if (!r) return;
       anchorRectRef.current = r;
-
-      const screenW = Math.max(1, Number(r.w));
-      const screenH = Math.max(1, Number(r.h));
-      const unscaledW = Math.max(1, screenW / zNow);
-      const unscaledH = Math.max(1, screenH / zNow);
-      el.style.transformOrigin = '0 0';
-      el.style.transform = `translate3d(${r.x}px, ${r.y}px, 0) scale(${zNow})`;
-      el.style.width = `${unscaledW}px`;
-      el.style.height = `${unscaledH}px`;
+      liveRectRef.current = r;
+      applyFollowRectToElement(r);
     };
 
     raf = requestAnimationFrame(tick);
@@ -549,7 +557,7 @@ export default function LatexNodeEditor(props: Props) {
         // ignore
       }
     };
-  }, [followEnabled]);
+  }, [applyFollowRectToElement, followEnabled]);
 
   const applyResize = (start: Rect, corner: ResizeCorner, dx: number, dy: number, minW: number, minH: number): Rect => {
     const right = start.x + start.w;
@@ -605,7 +613,9 @@ export default function LatexNodeEditor(props: Props) {
   const beginResize = (corner: ResizeCorner) => (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
-    const rect = liveRectRef.current ?? anchorRectRef.current;
+    const rect = followEnabled
+      ? (anchorRectRef.current ?? liveRectRef.current)
+      : (liveRectRef.current ?? anchorRectRef.current);
     if (!rect) return;
     const pointerId = e.pointerId;
     const target = e.currentTarget;
@@ -633,6 +643,7 @@ export default function LatexNodeEditor(props: Props) {
     const dy = e.clientY - active.startClient.y;
     const next = applyResize(active.startRect, active.corner, dx, dy, 340, 240);
     setLiveRect(next);
+    if (followEnabled) applyFollowRectToElement(next);
     onResizeRef.current(next);
   };
 
@@ -653,7 +664,9 @@ export default function LatexNodeEditor(props: Props) {
   const beginDrag = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
-    const rect = liveRectRef.current ?? anchorRectRef.current;
+    const rect = followEnabled
+      ? (anchorRectRef.current ?? liveRectRef.current)
+      : (liveRectRef.current ?? anchorRectRef.current);
     if (!rect) return;
     const pointerId = e.pointerId;
     const target = e.currentTarget;
@@ -680,6 +693,7 @@ export default function LatexNodeEditor(props: Props) {
     const dy = e.clientY - active.startClient.y;
     const next: Rect = { ...active.startRect, x: active.startRect.x + dx, y: active.startRect.y + dy };
     setLiveRect(next);
+    if (followEnabled) applyFollowRectToElement(next);
     onResizeRef.current(next);
   };
 
@@ -959,6 +973,13 @@ export default function LatexNodeEditor(props: Props) {
     [switchActiveFile],
   );
 
+  const handlePdfInverseSync = useCallback(
+    (payload: { page: number; x: number; y: number }) => {
+      void syncPdfToSource(payload);
+    },
+    [syncPdfToSource],
+  );
+
   const diagnostics = useMemo<CompileDiagnostic[]>(() => {
     const raw = typeof compileLog === 'string' ? compileLog : '';
     if (!raw.trim()) return [];
@@ -1163,6 +1184,7 @@ export default function LatexNodeEditor(props: Props) {
   const showMainAsActive = Boolean(projectRoot && activeFile && mainFile && activeFile !== mainFile);
   const rootDisplay = projectRoot ? projectRoot : 'Inline document';
   const hasCompileLog = Boolean(typeof compileLog === 'string' && compileLog.trim());
+  const canInverseSync = Boolean(projectRoot && mainFile && compiledPdfUrl);
   const editableCount = editableProjectFiles.length;
   const assetCount = projectFiles.length - editableCount;
   const canZoomOut = pdfZoom > PDF_ZOOM_MIN + 0.001;
@@ -1447,13 +1469,7 @@ export default function LatexNodeEditor(props: Props) {
               pdfUrl={compiledPdfUrl}
               syncTarget={pdfSyncTarget}
               zoom={pdfZoom}
-              onInverseSync={
-                projectRoot && mainFile && compiledPdfUrl
-                  ? (payload) => {
-                      void syncPdfToSource(payload);
-                    }
-                  : undefined
-              }
+              onInverseSync={canInverseSync ? handlePdfInverseSync : undefined}
             />
           </div>
 

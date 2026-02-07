@@ -1328,10 +1328,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    // Editor overlays and raw viewers follow camera movement with their own RAF loops;
+    // keep the debug bridge off unless HUD/menus need React-driven repositioning.
     const shouldReceiveDebugFrames =
       debugHudVisible ||
-      ui.editingNodeId != null ||
-      rawViewer != null ||
       nodeMenuId != null ||
       editNodeSendMenuId != null ||
       replySpawnMenuId != null;
@@ -1347,7 +1347,7 @@ export default function App() {
     if (!wasEnabled) {
       engineRef.current?.requestRender();
     }
-  }, [debugHudVisible, ui.editingNodeId, rawViewer, nodeMenuId, editNodeSendMenuId, replySpawnMenuId]);
+  }, [debugHudVisible, nodeMenuId, editNodeSendMenuId, replySpawnMenuId]);
 
   const applyVisualSettings = (chatId: string) => {
     const engine = engineRef.current;

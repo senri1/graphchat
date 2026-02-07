@@ -247,6 +247,7 @@ export default function TextNodeEditor(props: Props) {
       const r = fn();
       if (!r) return;
       anchorRectRef.current = r;
+      liveRectRef.current = r;
 
       const w = Math.max(1, Number(r.w));
       const h = Math.max(1, Number(r.h));
@@ -372,7 +373,9 @@ export default function TextNodeEditor(props: Props) {
 
   const beginResize = (corner: ResizeCorner) => (e: React.PointerEvent<HTMLElement>) => {
     if (resizeRef.current) return;
-    const startRect = liveRect ?? anchorRectRef.current;
+    const startRect = followEnabled
+      ? (anchorRectRef.current ?? liveRectRef.current)
+      : (liveRectRef.current ?? anchorRectRef.current);
     if (!startRect) return;
     e.preventDefault();
     e.stopPropagation();
@@ -394,7 +397,9 @@ export default function TextNodeEditor(props: Props) {
 
   const beginDrag = (e: React.PointerEvent<HTMLElement>) => {
     if (dragRef.current || resizeRef.current) return;
-    const startRect = liveRect ?? anchorRectRef.current;
+    const startRect = followEnabled
+      ? (anchorRectRef.current ?? liveRectRef.current)
+      : (liveRectRef.current ?? anchorRectRef.current);
     if (!startRect) return;
     e.preventDefault();
     e.stopPropagation();
