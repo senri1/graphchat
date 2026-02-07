@@ -7,10 +7,14 @@ const os = require('os');
 const APP_TITLE = 'GraphChatV1';
 const LATEX_TIMEOUT_MS = 60_000;
 const LATEX_MAX_LOG_CHARS = 600_000;
-const LATEX_PROJECT_MAX_FILES = 4_000;
+const LATEX_PROJECT_MAX_FILES = 8_000;
 const LATEX_PROJECT_MAX_READ_BYTES = 2_000_000;
 const LATEX_PROJECT_EDITABLE_EXT = new Set(['.tex', '.bib', '.sty', '.cls', '.bst', '.txt', '.md']);
 const LATEX_PROJECT_SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', 'build', 'out', '.next']);
+const LATEX_PROJECT_ASSET_EXT = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tif', '.tiff', '.svg', '.pdf', '.eps', '.ps',
+  '.csv', '.tsv', '.json', '.yaml', '.yml',
+]);
 
 function clampLog(text) {
   const raw = typeof text === 'string' ? text : String(text ?? '');
@@ -82,6 +86,7 @@ function latexProjectFileKind(filePath) {
   if (ext === '.bib') return 'bib';
   if (ext === '.sty' || ext === '.bst') return 'style';
   if (ext === '.cls') return 'class';
+  if (LATEX_PROJECT_ASSET_EXT.has(ext)) return 'asset';
   return 'other';
 }
 
@@ -114,21 +119,22 @@ async function collectProjectFiles(projectRoot) {
 
       if (!entry.isFile()) continue;
       const relPath = relDir ? `${relDir}/${name}` : name;
-      if (!isLatexProjectEditableFile(relPath)) continue;
+      const editable = isLatexProjectEditableFile(relPath);
 
       out.push({
         path: relPath,
         kind: latexProjectFileKind(relPath),
+        editable,
       });
 
       if (out.length > LATEX_PROJECT_MAX_FILES) {
-        throw new Error(`Project has too many editable files (>${LATEX_PROJECT_MAX_FILES}).`);
+        throw new Error(`Project has too many files (>${LATEX_PROJECT_MAX_FILES}).`);
       }
     }
   }
 
   out.sort((a, b) => String(a.path).localeCompare(String(b.path)));
-  const texFiles = out.filter((f) => f.kind === 'tex').map((f) => f.path);
+  const texFiles = out.filter((f) => f.kind === 'tex' && f.editable).map((f) => f.path);
   if (texFiles.includes('main.tex')) {
     texMain = 'main.tex';
   } else if (texFiles.length > 0) {

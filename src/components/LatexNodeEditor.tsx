@@ -39,6 +39,135 @@ type Props = {
 
 type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
 
+type ProjectTreeNode = ProjectTreeDirNode | ProjectTreeFileNode;
+type ProjectTreeDirNode = { kind: 'dir'; name: string; path: string; children: ProjectTreeNode[] };
+type ProjectTreeFileNode = { kind: 'file'; file: LatexProjectFile };
+
+type CompileDiagnostic = {
+  key: string;
+  fileRaw: string;
+  filePath: string | null;
+  line: number;
+  message: string;
+};
+
+function normalizePathLike(value: string): string {
+  return String(value ?? '').replace(/\\/g, '/');
+}
+
+function baseName(filePath: string): string {
+  const normalized = normalizePathLike(filePath);
+  const idx = normalized.lastIndexOf('/');
+  return idx >= 0 ? normalized.slice(idx + 1) : normalized;
+}
+
+function lineOffsetFromOneBased(text: string, lineRaw: number): number {
+  const line = Math.max(1, Math.floor(Number.isFinite(lineRaw) ? lineRaw : 1));
+  if (!text) return 0;
+  let offset = 0;
+  let current = 1;
+  while (current < line && offset < text.length) {
+    const nl = text.indexOf('\n', offset);
+    if (nl === -1) return text.length;
+    offset = nl + 1;
+    current += 1;
+  }
+  return offset;
+}
+
+function buildExpandedDirs(files: LatexProjectFile[]): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  for (const file of files) {
+    const segments = String(file.path ?? '').split('/').filter(Boolean);
+    let acc = '';
+    for (let i = 0; i < segments.length - 1; i += 1) {
+      acc = acc ? `${acc}/${segments[i]}` : segments[i];
+      out[acc] = true;
+    }
+  }
+  return out;
+}
+
+function sortTreeChildren(children: ProjectTreeNode[]): ProjectTreeNode[] {
+  return [...children].sort((a, b) => {
+    if (a.kind === 'dir' && b.kind !== 'dir') return -1;
+    if (a.kind !== 'dir' && b.kind === 'dir') return 1;
+    if (a.kind === 'dir' && b.kind === 'dir') return a.name.localeCompare(b.name);
+    if (a.kind === 'file' && b.kind === 'file') return a.file.path.localeCompare(b.file.path);
+    return 0;
+  });
+}
+
+function buildProjectTree(files: LatexProjectFile[]): ProjectTreeDirNode {
+  const root: ProjectTreeDirNode = { kind: 'dir', name: '', path: '', children: [] };
+  const byPath = new Map<string, ProjectTreeDirNode>();
+  byPath.set('', root);
+
+  const sorted = [...files].sort((a, b) => String(a.path ?? '').localeCompare(String(b.path ?? '')));
+  for (const file of sorted) {
+    const filePath = String(file.path ?? '').trim();
+    if (!filePath) continue;
+    const parts = filePath.split('/').filter(Boolean);
+    if (parts.length === 0) continue;
+
+    let parentPath = '';
+    for (let i = 0; i < parts.length - 1; i += 1) {
+      const seg = parts[i];
+      const dirPath = parentPath ? `${parentPath}/${seg}` : seg;
+      let dir = byPath.get(dirPath);
+      if (!dir) {
+        dir = { kind: 'dir', name: seg, path: dirPath, children: [] };
+        byPath.set(dirPath, dir);
+        const parent = byPath.get(parentPath);
+        if (parent) parent.children.push(dir);
+      }
+      parentPath = dirPath;
+    }
+
+    const parent = byPath.get(parentPath) ?? root;
+    parent.children.push({ kind: 'file', file });
+  }
+
+  const visit = (node: ProjectTreeDirNode): ProjectTreeDirNode => ({
+    ...node,
+    children: sortTreeChildren(
+      node.children.map((child) => (child.kind === 'dir' ? visit(child) : child)),
+    ),
+  });
+  return visit(root);
+}
+
+function filterProjectTree(root: ProjectTreeDirNode, queryRaw: string): ProjectTreeDirNode | null {
+  const query = String(queryRaw ?? '').trim().toLowerCase();
+  if (!query) return root;
+
+  const matchFile = (f: LatexProjectFile): boolean => {
+    const path = String(f.path ?? '').toLowerCase();
+    const bn = baseName(path);
+    const kind = String(f.kind ?? '').toLowerCase();
+    return path.includes(query) || bn.includes(query) || kind.includes(query);
+  };
+
+  const visit = (node: ProjectTreeDirNode): ProjectTreeDirNode | null => {
+    const nameMatch = String(node.name ?? '').toLowerCase().includes(query);
+    if (nameMatch) return node;
+
+    const nextChildren: ProjectTreeNode[] = [];
+    for (const child of node.children) {
+      if (child.kind === 'dir') {
+        const next = visit(child);
+        if (next) nextChildren.push(next);
+        continue;
+      }
+      if (matchFile(child.file)) nextChildren.push(child);
+    }
+    if (nextChildren.length === 0) return null;
+    return { ...node, children: nextChildren };
+  };
+
+  return visit(root);
+}
+
 export default function LatexNodeEditor(props: Props) {
   const {
     nodeId,
@@ -75,6 +204,12 @@ export default function LatexNodeEditor(props: Props) {
   const [isSavingFile, setIsSavingFile] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
   const [runtimeCompileError, setRuntimeCompileError] = useState<string | null>(null);
+  const [treeQuery, setTreeQuery] = useState('');
+  const [expandedDirs, setExpandedDirs] = useState<Record<string, boolean>>({});
+  const [selectedTreePath, setSelectedTreePath] = useState<string | null>(null);
+  const [treeVisible, setTreeVisible] = useState(true);
+  const [logVisible, setLogVisible] = useState(false);
+  const [logCollapsed, setLogCollapsed] = useState(false);
 
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -82,6 +217,7 @@ export default function LatexNodeEditor(props: Props) {
   const projectRootRef = useRef<string | null>(null);
   const mainFileRef = useRef<string | null>(null);
   const activeFileRef = useRef<string | null>(null);
+  const lastCompileLogRef = useRef<string | null>(null);
   const onProjectStateChangeRef = useRef<Props['onProjectStateChange']>(onProjectStateChange);
   const loadTicketRef = useRef(0);
   const anchorRectRef = useRef<Rect | null>(anchorRect ?? null);
@@ -108,11 +244,39 @@ export default function LatexNodeEditor(props: Props) {
   const [liveRect, setLiveRect] = useState<Rect | null>(() => anchorRect ?? null);
   const liveRectRef = useRef<Rect | null>(anchorRect ?? null);
 
+  const projectFileByPath = useMemo(() => new Map(projectFiles.map((f) => [f.path, f] as const)), [projectFiles]);
+  const editableProjectFiles = useMemo(() => projectFiles.filter((f) => f.editable), [projectFiles]);
+  const projectTree = useMemo(() => buildProjectTree(projectFiles), [projectFiles]);
+  const filteredProjectTree = useMemo(() => filterProjectTree(projectTree, treeQuery), [projectTree, treeQuery]);
+
+  const selectedTreeFile =
+    selectedTreePath && projectFileByPath.has(selectedTreePath) ? projectFileByPath.get(selectedTreePath) ?? null : null;
+  const selectedReadOnlyFile = selectedTreeFile && !selectedTreeFile.editable ? selectedTreeFile : null;
+
   const applyDraft = useCallback((next: string) => {
     const text = typeof next === 'string' ? next : String(next ?? '');
     setDraft(text);
     draftRef.current = text;
     onDraftChangeRef.current?.(text);
+  }, []);
+
+  const jumpToLineInTextarea = useCallback((lineRaw: number) => {
+    const el = taRef.current;
+    if (!el) return;
+    const text = draftRef.current;
+    const offset = lineOffsetFromOneBased(text, lineRaw);
+    el.focus();
+    try {
+      el.setSelectionRange(offset, offset);
+    } catch {
+      // ignore
+    }
+
+    const before = text.slice(0, offset);
+    const row = Math.max(0, before.split('\n').length - 1);
+    const cs = getComputedStyle(el);
+    const lineHeight = Number.parseFloat(cs.lineHeight || '') || 18;
+    el.scrollTop = Math.max(0, row * lineHeight - el.clientHeight * 0.33);
   }, []);
 
   useEffect(() => {
@@ -147,6 +311,32 @@ export default function LatexNodeEditor(props: Props) {
     activeFileRef.current = activeFile;
   }, [activeFile, mainFile, projectRoot]);
 
+  useEffect(() => {
+    const nextLog = typeof compileLog === 'string' && compileLog.trim() ? compileLog : null;
+    if (!nextLog) {
+      lastCompileLogRef.current = null;
+      setLogVisible(false);
+      setLogCollapsed(false);
+      return;
+    }
+    if (lastCompileLogRef.current !== nextLog) {
+      lastCompileLogRef.current = nextLog;
+      setLogVisible(true);
+      setLogCollapsed(false);
+    }
+  }, [compileLog]);
+
+  const persistProjectState = useCallback(
+    async (patch: { projectRoot?: string | null; mainFile?: string | null; activeFile?: string | null; content?: string }) => {
+      try {
+        await onProjectStateChangeRef.current?.(patch);
+      } catch {
+        // ignore
+      }
+    },
+    [],
+  );
+
   const refreshProject = useCallback(
     async (
       rootRaw: string,
@@ -163,6 +353,10 @@ export default function LatexNodeEditor(props: Props) {
         setProjectError(null);
         setProjectBusy(false);
         setIsDirty(false);
+        setTreeQuery('');
+        setExpandedDirs({});
+        setSelectedTreePath(null);
+        setTreeVisible(true);
         return { ok: false, error: 'Project root is missing.' };
       }
 
@@ -176,26 +370,28 @@ export default function LatexNodeEditor(props: Props) {
           const msg = (indexRes.error ?? 'Failed to load project files.').trim();
           throw new Error(msg || 'Failed to load project files.');
         }
-
         if (ticket !== loadTicketRef.current) return { ok: false, error: 'stale' };
 
         const files = Array.isArray(indexRes.index.files) ? indexRes.index.files : [];
-        const allPaths = new Set(files.map((f) => f.path));
-        const texPaths = files.filter((f) => f.kind === 'tex').map((f) => f.path);
+        const editablePaths = new Set(files.filter((f) => f.editable).map((f) => f.path));
+        const texPaths = files.filter((f) => f.editable && f.kind === 'tex').map((f) => f.path);
 
         const preferredMain = typeof preferredMainRaw === 'string' ? preferredMainRaw.trim() : '';
         const preferredActive = typeof preferredActiveRaw === 'string' ? preferredActiveRaw.trim() : '';
         const suggestedMain = typeof indexRes.index.suggestedMainFile === 'string' ? indexRes.index.suggestedMainFile.trim() : '';
 
-        let nextMain = preferredMain && allPaths.has(preferredMain) ? preferredMain : null;
-        if (!nextMain && suggestedMain && allPaths.has(suggestedMain)) nextMain = suggestedMain;
+        let nextMain = preferredMain && editablePaths.has(preferredMain) ? preferredMain : null;
+        if (!nextMain && suggestedMain && editablePaths.has(suggestedMain)) nextMain = suggestedMain;
         if (!nextMain && texPaths.length > 0) nextMain = texPaths[0];
 
-        let nextActive = preferredActive && allPaths.has(preferredActive) ? preferredActive : null;
-        if (!nextActive && nextMain && allPaths.has(nextMain)) nextActive = nextMain;
-        if (!nextActive && files.length > 0) nextActive = files[0].path;
+        let nextActive = preferredActive && editablePaths.has(preferredActive) ? preferredActive : null;
+        if (!nextActive && nextMain && editablePaths.has(nextMain)) nextActive = nextMain;
+        if (!nextActive) {
+          const firstEditable = files.find((f) => f.editable);
+          nextActive = firstEditable ? firstEditable.path : null;
+        }
 
-        let loadedContent = typeof opts?.fallbackContent === 'string' ? opts!.fallbackContent : initialValue ?? '';
+        let loadedContent = typeof opts?.fallbackContent === 'string' ? opts.fallbackContent : initialValue ?? '';
         if (nextActive) {
           const fileRes = await readLatexProjectFile(root, nextActive);
           if (!fileRes.ok) throw new Error((fileRes.error ?? 'Failed to open file.').trim() || 'Failed to open file.');
@@ -207,6 +403,10 @@ export default function LatexNodeEditor(props: Props) {
         setMainFile(nextMain);
         setActiveFile(nextActive);
         setProjectFiles(files);
+        setExpandedDirs(buildExpandedDirs(files));
+        setTreeQuery('');
+        setSelectedTreePath(nextActive ?? (files[0]?.path ?? null));
+        setTreeVisible(true);
         setProjectError(null);
         setIsDirty(false);
         applyDraft(loadedContent);
@@ -260,6 +460,10 @@ export default function LatexNodeEditor(props: Props) {
       setProjectBusy(false);
       setProjectError(null);
       setIsDirty(false);
+      setTreeQuery('');
+      setExpandedDirs({});
+      setSelectedTreePath(null);
+      setTreeVisible(true);
       applyDraft(initialValue ?? '');
     }
 
@@ -472,18 +676,7 @@ export default function LatexNodeEditor(props: Props) {
     finishDrag(e.pointerId);
   };
 
-  const persistProjectState = useCallback(
-    async (patch: { projectRoot?: string | null; mainFile?: string | null; activeFile?: string | null; content?: string }) => {
-      try {
-        await onProjectStateChangeRef.current?.(patch);
-      } catch {
-        // ignore
-      }
-    },
-    [],
-  );
-
-  const saveActiveFile = useCallback(async () => {
+  const saveActiveFile = useCallback(async (): Promise<boolean> => {
     const root = typeof projectRootRef.current === 'string' ? projectRootRef.current.trim() : '';
     const filePath = typeof activeFileRef.current === 'string' ? activeFileRef.current.trim() : '';
     if (!root || !filePath) return true;
@@ -513,24 +706,42 @@ export default function LatexNodeEditor(props: Props) {
   }, [isDirty, persistProjectState]);
 
   const switchActiveFile = useCallback(
-    async (nextPathRaw: string) => {
+    async (nextPathRaw: string, opts?: { line?: number }): Promise<boolean> => {
       const root = typeof projectRootRef.current === 'string' ? projectRootRef.current.trim() : '';
       const nextPath = typeof nextPathRaw === 'string' ? nextPathRaw.trim() : '';
-      if (!root || !nextPath) return;
-      if ((activeFileRef.current ?? '') === nextPath) return;
+      if (!root || !nextPath) return false;
+      const fileMeta = projectFileByPath.get(nextPath) ?? null;
+      if (!fileMeta || !fileMeta.editable) {
+        const msg = fileMeta ? 'Selected file is read-only in this MVP.' : `File not found: ${nextPath}`;
+        setProjectError(msg);
+        setRuntimeCompileError(msg);
+        setSelectedTreePath(nextPath);
+        return false;
+      }
+
+      const targetLine = Number(opts?.line);
+      if ((activeFileRef.current ?? '') === nextPath) {
+        setSelectedTreePath(nextPath);
+        if (Number.isFinite(targetLine) && targetLine > 0) {
+          requestAnimationFrame(() => jumpToLineInTextarea(targetLine));
+        }
+        return true;
+      }
+
       const saved = await saveActiveFile();
-      if (!saved) return;
+      if (!saved) return false;
 
       const res = await readLatexProjectFile(root, nextPath);
       if (!res.ok) {
         const msg = (res.error ?? 'Failed to open file.').trim() || 'Failed to open file.';
         setProjectError(msg);
         setRuntimeCompileError(msg);
-        return;
+        return false;
       }
 
       const content = typeof res.content === 'string' ? res.content : '';
       setActiveFile(nextPath);
+      setSelectedTreePath(nextPath);
       setProjectError(null);
       setIsDirty(false);
       applyDraft(content);
@@ -540,8 +751,13 @@ export default function LatexNodeEditor(props: Props) {
         activeFile: nextPath,
         content,
       });
+
+      if (Number.isFinite(targetLine) && targetLine > 0) {
+        requestAnimationFrame(() => jumpToLineInTextarea(targetLine));
+      }
+      return true;
     },
-    [applyDraft, persistProjectState, saveActiveFile],
+    [applyDraft, jumpToLineInTextarea, persistProjectState, projectFileByPath, saveActiveFile],
   );
 
   const setMainToActive = useCallback(async () => {
@@ -621,6 +837,153 @@ export default function LatexNodeEditor(props: Props) {
     }
   }, [isCompiling, saveActiveFile]);
 
+  const diagnostics = useMemo<CompileDiagnostic[]>(() => {
+    const raw = typeof compileLog === 'string' ? compileLog : '';
+    if (!raw.trim()) return [];
+
+    const files = projectFiles;
+    const pathSet = new Set(files.map((f) => f.path));
+    const byBaseName = new Map<string, string[]>();
+    for (const file of files) {
+      const bn = baseName(file.path);
+      const list = byBaseName.get(bn) ?? [];
+      list.push(file.path);
+      byBaseName.set(bn, list);
+    }
+
+    const rootNormRaw = projectRoot ? normalizePathLike(projectRoot).replace(/\/+$/, '') : '';
+    const resolvePath = (fileRaw: string): string | null => {
+      const trimmed = normalizePathLike(fileRaw).trim();
+      if (!trimmed) return null;
+
+      let candidate = trimmed.replace(/^\.\//, '');
+      if (pathSet.has(candidate)) return candidate;
+
+      if (rootNormRaw && candidate.startsWith(`${rootNormRaw}/`)) {
+        candidate = candidate.slice(rootNormRaw.length + 1);
+        if (pathSet.has(candidate)) return candidate;
+      }
+
+      const bn = baseName(candidate);
+      const matches = byBaseName.get(bn) ?? [];
+      if (matches.length === 1) return matches[0];
+      return null;
+    };
+
+    const out: CompileDiagnostic[] = [];
+    const seen = new Set<string>();
+    const lines = raw.split(/\r?\n/);
+    const diagRe = /^(.+?\.(?:tex|bib|sty|cls|bst|ltx|md|txt)):(\d+):\s*(.*)$/;
+
+    for (const line of lines) {
+      const match = diagRe.exec(line);
+      if (!match) continue;
+      const fileRaw = String(match[1] ?? '').trim();
+      const lineNum = Number(match[2]);
+      if (!Number.isFinite(lineNum) || lineNum < 1) continue;
+      const message = String(match[3] ?? '').trim();
+      const filePath = resolvePath(fileRaw);
+      const key = `${filePath ?? fileRaw}:${lineNum}:${message}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ key, fileRaw, filePath, line: Math.floor(lineNum), message });
+      if (out.length >= 120) break;
+    }
+    return out;
+  }, [compileLog, projectFiles, projectRoot]);
+
+  const openDiagnostic = useCallback(
+    async (diag: CompileDiagnostic) => {
+      const path = diag.filePath;
+      if (!path) {
+        setRuntimeCompileError(`Could not map diagnostic file "${diag.fileRaw}" to a project file.`);
+        setLogVisible(true);
+        setLogCollapsed(false);
+        return;
+      }
+      const file = projectFileByPath.get(path) ?? null;
+      if (!file || !file.editable) {
+        setRuntimeCompileError(`Diagnostic points to read-only file "${path}".`);
+        setSelectedTreePath(path);
+        setLogVisible(true);
+        setLogCollapsed(false);
+        return;
+      }
+      const ok = await switchActiveFile(path, { line: diag.line });
+      if (ok) {
+        setSelectedTreePath(path);
+        setLogVisible(true);
+      }
+    },
+    [projectFileByPath, switchActiveFile],
+  );
+
+  const toggleDirExpanded = useCallback((dirPath: string) => {
+    setExpandedDirs((prev) => ({ ...prev, [dirPath]: !(prev[dirPath] !== false) }));
+  }, []);
+
+  const onProjectFileClick = useCallback(
+    (file: LatexProjectFile) => {
+      setSelectedTreePath(file.path);
+      if (!file.editable) return;
+      void switchActiveFile(file.path);
+    },
+    [switchActiveFile],
+  );
+
+  const renderTreeNodes = useCallback(
+    (nodes: ProjectTreeNode[], depth = 0): React.ReactNode => {
+      return nodes.map((node) => {
+        if (node.kind === 'dir') {
+          const expanded = expandedDirs[node.path] !== false;
+          return (
+            <div key={`d:${node.path}`} className="editor__latexTreeNode">
+              <button
+                type="button"
+                className="editor__latexTreeRow editor__latexTreeRow--dir"
+                style={{ paddingLeft: `${8 + depth * 14}px` }}
+                onClick={() => toggleDirExpanded(node.path)}
+              >
+                <span className="editor__latexTreeCaret" aria-hidden="true">
+                  {expanded ? '▾' : '▸'}
+                </span>
+                <span className="editor__latexTreeName">{node.name || '/'}</span>
+              </button>
+              {expanded ? <div className="editor__latexTreeChildren">{renderTreeNodes(node.children, depth + 1)}</div> : null}
+            </div>
+          );
+        }
+
+        const file = node.file;
+        const selected = selectedTreePath === file.path;
+        const isMain = mainFile === file.path;
+        const isActive = activeFile === file.path;
+        return (
+          <div key={`f:${file.path}`} className="editor__latexTreeNode">
+            <button
+              type="button"
+              className={`editor__latexTreeRow editor__latexTreeRow--file ${
+                selected ? 'editor__latexTreeRow--selected' : ''
+              } ${!file.editable ? 'editor__latexTreeRow--readonly' : ''}`}
+              style={{ paddingLeft: `${8 + depth * 14}px` }}
+              onClick={() => onProjectFileClick(file)}
+              title={file.editable ? file.path : `${file.path} (read-only)`}
+            >
+              <span className="editor__latexTreeCaret" aria-hidden="true">
+                {file.editable ? '•' : '○'}
+              </span>
+              <span className="editor__latexTreeName">{baseName(file.path)}</span>
+              {isMain ? <span className="editor__latexTreeBadge">main</span> : null}
+              {!file.editable ? <span className="editor__latexTreeBadge">asset</span> : null}
+              {isActive ? <span className="editor__latexTreeBadge">edit</span> : null}
+            </button>
+          </div>
+        );
+      });
+    },
+    [activeFile, expandedDirs, mainFile, onProjectFileClick, selectedTreePath, toggleDirExpanded],
+  );
+
   const activeAnchorRect = liveRect ?? anchorRect ?? null;
   const style = useMemo<React.CSSProperties>(() => {
     const baseFontSize = Math.max(10, baseFontSizePx || 16);
@@ -634,7 +997,6 @@ export default function LatexNodeEditor(props: Props) {
         ...editorVars,
       };
     }
-
     if (activeAnchorRect) {
       return {
         left: activeAnchorRect.x,
@@ -677,8 +1039,9 @@ export default function LatexNodeEditor(props: Props) {
   const compileDisabled = isCompiling || projectBusy || isSavingFile || Boolean(projectRoot && !mainFile);
   const showMainAsActive = Boolean(projectRoot && activeFile && mainFile && activeFile !== mainFile);
   const rootDisplay = projectRoot ? projectRoot : 'Inline document';
-  const fileListValue = activeFile ?? '';
   const hasCompileLog = Boolean(typeof compileLog === 'string' && compileLog.trim());
+  const editableCount = editableProjectFiles.length;
+  const assetCount = projectFiles.length - editableCount;
 
   return (
     <div
@@ -752,6 +1115,11 @@ export default function LatexNodeEditor(props: Props) {
               {isSavingFile ? 'Saving...' : 'Save file'}
             </button>
           ) : null}
+          {projectRoot ? (
+            <button className="editor__btn" type="button" onClick={() => setTreeVisible((v) => !v)} disabled={projectBusy}>
+              {treeVisible ? 'Hide tree' : 'Show tree'}
+            </button>
+          ) : null}
           {showMainAsActive ? (
             <button className="editor__btn" type="button" onClick={() => void setMainToActive()} disabled={projectBusy || isCompiling || isSavingFile}>
               Set main
@@ -777,66 +1145,103 @@ export default function LatexNodeEditor(props: Props) {
               {rootDisplay}
             </div>
             {projectRoot ? (
-              <>
-                <div className="editor__latexProjectControls">
-                  <label className="editor__latexProjectControlsLabel" htmlFor={`latex-file-select-${nodeId}`}>
-                    File
-                  </label>
-                  <select
-                    id={`latex-file-select-${nodeId}`}
-                    className="editor__latexProjectSelect"
-                    value={fileListValue}
-                    onChange={(e) => void switchActiveFile(e.target.value)}
-                    disabled={projectBusy || isCompiling || isSavingFile || projectFiles.length === 0}
-                  >
-                    {!fileListValue ? <option value="">No file selected</option> : null}
-                    {projectFiles.map((file) => (
-                      <option key={file.path} value={file.path}>
-                        {file.path}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="editor__latexProjectHint">
-                  Main: {mainFile ?? 'not set'}
-                  {isDirty ? ' • unsaved changes' : ''}
-                </div>
-              </>
+              <div className="editor__latexProjectHint">
+                Main: {mainFile ?? 'not set'}
+                {isDirty ? ' - unsaved changes' : ''}
+                {` - ${editableCount} editable, ${assetCount} assets`}
+              </div>
             ) : null}
           </div>
-          <textarea
-            ref={taRef}
-            className="editor__textarea editor__textarea--latex"
-            value={draft}
-            spellCheck={false}
-            onChange={(e) => {
-              const next = e.target.value;
-              applyDraft(next);
-              if (projectRootRef.current && activeFileRef.current) setIsDirty(true);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Escape') {
-                e.preventDefault();
-                e.stopPropagation();
-                cancel();
-                return;
-              }
-              if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
-                e.preventDefault();
-                e.stopPropagation();
-                void saveActiveFile();
-                return;
-              }
-              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-                e.preventDefault();
-                e.stopPropagation();
-                void compile();
-              }
-            }}
-          />
+
+          <div className="editor__latexWorkspace">
+            {projectRoot && treeVisible ? (
+              <div className="editor__latexTreePane">
+                <input
+                  className="editor__latexTreeSearch"
+                  value={treeQuery}
+                  onChange={(e) => setTreeQuery(e.target.value)}
+                  placeholder="Search project files..."
+                  aria-label="Search project files"
+                />
+                <div className="editor__latexTreeBody" role="tree" aria-label="LaTeX project files">
+                  {filteredProjectTree && filteredProjectTree.children.length > 0 ? (
+                    renderTreeNodes(filteredProjectTree.children, 0)
+                  ) : (
+                    <div className="editor__latexTreeEmpty">No matching files.</div>
+                  )}
+                </div>
+              </div>
+            ) : null}
+
+            <div className="editor__latexEditorPane">
+              {projectRoot && !treeVisible ? (
+                <div className="editor__latexTreeCollapsedBar">
+                  <span className="editor__latexTreeCollapsedText">Project tree hidden</span>
+                  <button className="editor__btn editor__btn--compact" type="button" onClick={() => setTreeVisible(true)}>
+                    Show tree
+                  </button>
+                </div>
+              ) : null}
+              {selectedReadOnlyFile ? (
+                <div className="editor__latexReadonlyHint">
+                  Selected read-only asset: <code>{selectedReadOnlyFile.path}</code>. Select a source file to edit.
+                </div>
+              ) : null}
+              <textarea
+                ref={taRef}
+                className="editor__textarea editor__textarea--latex"
+                value={draft}
+                spellCheck={false}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  applyDraft(next);
+                  if (projectRootRef.current && activeFileRef.current) setIsDirty(true);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    cancel();
+                    return;
+                  }
+                  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    void saveActiveFile();
+                    return;
+                  }
+                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    void compile();
+                  }
+                }}
+              />
+            </div>
+          </div>
         </div>
+
         <div className="editor__pane editor__pane--preview">
-          <div className={`editor__paneLabel ${compileError || effectiveError ? 'editor__paneLabel--error' : ''}`}>{statusText}</div>
+          <div className="editor__paneLabelRow">
+            <div className={`editor__paneLabel ${compileError || effectiveError ? 'editor__paneLabel--error' : ''}`}>{statusText}</div>
+            {hasCompileLog ? (
+              <button
+                className="editor__btn editor__btn--compact"
+                type="button"
+                onClick={() => {
+                  if (!logVisible) {
+                    setLogVisible(true);
+                    setLogCollapsed(false);
+                    return;
+                  }
+                  setLogCollapsed((v) => !v);
+                }}
+              >
+                {!logVisible ? 'Show log' : logCollapsed ? 'Expand log' : 'Minimize log'}
+              </button>
+            ) : null}
+          </div>
+
           <div className="editor__preview editor__preview--pdf">
             {compiledPdfUrl ? (
               <iframe className="editor__pdfPreview" src={compiledPdfUrl} title="Compiled PDF preview" />
@@ -844,10 +1249,52 @@ export default function LatexNodeEditor(props: Props) {
               <div className="editor__emptyPreview">Compile the document to preview the PDF.</div>
             )}
           </div>
-          {hasCompileLog ? (
+
+          {hasCompileLog && logVisible ? (
             <div className="editor__latexLogPanel">
-              <div className="editor__latexLogLabel">Compiler log</div>
-              <pre className="editor__latexLogBody">{compileLog ?? ''}</pre>
+              <div className="editor__latexLogLabelRow">
+                <div className="editor__latexLogLabel">Compiler log</div>
+                <div className="editor__latexLogActions">
+                  <button className="editor__btn editor__btn--compact" type="button" onClick={() => setLogCollapsed((v) => !v)}>
+                    {logCollapsed ? 'Expand' : 'Minimize'}
+                  </button>
+                  <button className="editor__btn editor__btn--compact" type="button" onClick={() => setLogVisible(false)}>
+                    Close
+                  </button>
+                </div>
+              </div>
+
+              {!logCollapsed ? (
+                <>
+                  {diagnostics.length > 0 ? (
+                    <div className="editor__latexDiagList">
+                      {diagnostics.map((diag) => {
+                        const mappedFile = diag.filePath ? projectFileByPath.get(diag.filePath) ?? null : null;
+                        const canJump = Boolean(mappedFile && mappedFile.editable);
+                        return (
+                          <button
+                            key={diag.key}
+                            className={`editor__latexDiagRow ${canJump ? 'editor__latexDiagRow--clickable' : 'editor__latexDiagRow--muted'}`}
+                            type="button"
+                            onClick={() => void openDiagnostic(diag)}
+                            disabled={!canJump}
+                            title={
+                              canJump
+                                ? `Open ${diag.filePath}:${diag.line}`
+                                : `Could not open ${diag.fileRaw}:${diag.line}`
+                            }
+                          >
+                            <span className="editor__latexDiagLoc">{`${diag.filePath ?? diag.fileRaw}:${diag.line}`}</span>
+                            <span className="editor__latexDiagMsg">{diag.message || 'Compile diagnostic'}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+
+                  <pre className="editor__latexLogBody">{compileLog ?? ''}</pre>
+                </>
+              ) : null}
             </div>
           ) : null}
         </div>

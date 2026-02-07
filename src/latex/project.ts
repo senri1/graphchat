@@ -1,6 +1,7 @@
 export type LatexProjectFile = {
   path: string;
-  kind: 'tex' | 'bib' | 'style' | 'class' | 'other';
+  kind: 'tex' | 'bib' | 'style' | 'class' | 'asset' | 'other';
+  editable: boolean;
 };
 
 export type LatexProjectIndex = {

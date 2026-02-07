@@ -2800,33 +2800,174 @@ body {
   text-overflow: ellipsis;
 }
 
-.editor__latexProjectControls {
-  display: flex;
-  align-items: center;
-  gap: calc(8px * var(--editor-scale, 1));
-}
-
-.editor__latexProjectControlsLabel {
-  font-size: calc(11px * var(--editor-scale, 1));
-  color: rgba(255, 255, 255, 0.72);
-  user-select: none;
-}
-
-.editor__latexProjectSelect {
-  flex: 1;
-  min-width: 0;
-  appearance: none;
-  border: 1px solid rgba(255, 255, 255, 0.17);
-  border-radius: calc(8px * var(--editor-scale, 1));
-  background: rgba(0, 0, 0, 0.3);
-  color: rgba(255, 255, 255, 0.9);
-  padding: calc(5px * var(--editor-scale, 1)) calc(7px * var(--editor-scale, 1));
-  font-size: calc(12px * var(--editor-scale, 1));
-}
-
 .editor__latexProjectHint {
   font-size: calc(11px * var(--editor-scale, 1));
   color: rgba(255, 255, 255, 0.65);
+}
+
+.editor__latexWorkspace {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  gap: calc(8px * var(--editor-scale, 1));
+}
+
+.editor__latexTreePane {
+  width: min(36%, 290px);
+  min-width: 170px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: calc(9px * var(--editor-scale, 1));
+  background: rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+}
+
+.editor__latexTreeSearch {
+  appearance: none;
+  border: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.24);
+  color: rgba(255, 255, 255, 0.9);
+  padding: calc(8px * var(--editor-scale, 1));
+  font-size: calc(12px * var(--editor-scale, 1));
+  outline: none;
+}
+
+.editor__latexTreeSearch::placeholder {
+  color: rgba(255, 255, 255, 0.46);
+}
+
+.editor__latexTreeBody {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: calc(6px * var(--editor-scale, 1)) 0;
+}
+
+.editor__latexTreeNode {
+  min-width: 0;
+}
+
+.editor__latexTreeChildren {
+  min-width: 0;
+}
+
+.editor__latexTreeRow {
+  width: 100%;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.84);
+  display: flex;
+  align-items: center;
+  gap: calc(6px * var(--editor-scale, 1));
+  min-height: calc(24px * var(--editor-scale, 1));
+  font-size: calc(11px * var(--editor-scale, 1));
+  text-align: left;
+  cursor: pointer;
+  padding-right: calc(6px * var(--editor-scale, 1));
+}
+
+.editor__latexTreeRow:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.editor__latexTreeRow--selected {
+  background: rgba(248, 207, 121, 0.16);
+}
+
+.editor__latexTreeRow--readonly {
+  color: rgba(255, 255, 255, 0.58);
+}
+
+.editor__latexTreeRow--readonly .editor__latexTreeBadge {
+  opacity: 0.9;
+}
+
+.editor__latexTreeCaret {
+  width: calc(12px * var(--editor-scale, 1));
+  flex: 0 0 auto;
+  display: inline-flex;
+  justify-content: center;
+  opacity: 0.75;
+}
+
+.editor__latexTreeName {
+  min-width: 0;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.editor__latexTreeBadge {
+  flex: 0 0 auto;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  font-size: calc(9px * var(--editor-scale, 1));
+  line-height: 1;
+  padding: calc(2px * var(--editor-scale, 1)) calc(5px * var(--editor-scale, 1));
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.editor__latexTreeEmpty {
+  padding: calc(8px * var(--editor-scale, 1));
+  color: rgba(255, 255, 255, 0.58);
+  font-size: calc(11px * var(--editor-scale, 1));
+}
+
+.editor__latexEditorPane {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor__latexTreeCollapsedBar {
+  margin: 0 0 calc(6px * var(--editor-scale, 1));
+  padding: calc(6px * var(--editor-scale, 1)) calc(8px * var(--editor-scale, 1));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: calc(8px * var(--editor-scale, 1));
+  background: rgba(0, 0, 0, 0.18);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(8px * var(--editor-scale, 1));
+}
+
+.editor__latexTreeCollapsedText {
+  font-size: calc(11px * var(--editor-scale, 1));
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.editor__latexReadonlyHint {
+  margin: 0 0 calc(6px * var(--editor-scale, 1));
+  padding: calc(6px * var(--editor-scale, 1)) calc(8px * var(--editor-scale, 1));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: calc(8px * var(--editor-scale, 1));
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.8);
+  font-size: calc(11px * var(--editor-scale, 1));
+}
+
+.editor__latexReadonlyHint code {
+  font-size: inherit;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+@media (max-width: 900px) {
+  .editor__latexWorkspace {
+    flex-direction: column;
+  }
+
+  .editor__latexTreePane {
+    width: 100%;
+    min-width: 0;
+    max-height: 180px;
+  }
 }
 
 .editor__preview--pdf {
@@ -2854,12 +2995,79 @@ body {
   flex-direction: column;
 }
 
+.editor__paneLabelRow {
+  display: flex;
+  align-items: center;
+  gap: calc(8px * var(--editor-scale, 1));
+}
+
+.editor__btn--compact {
+  padding: calc(3px * var(--editor-scale, 1)) calc(7px * var(--editor-scale, 1));
+  font-size: calc(11px * var(--editor-scale, 1));
+  border-radius: calc(7px * var(--editor-scale, 1));
+}
+
+.editor__latexLogLabelRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(8px * var(--editor-scale, 1));
+  padding: calc(6px * var(--editor-scale, 1)) calc(8px * var(--editor-scale, 1));
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
 .editor__latexLogLabel {
   font-size: calc(11px * var(--editor-scale, 1));
   color: rgba(255, 255, 255, 0.76);
-  padding: calc(6px * var(--editor-scale, 1)) calc(8px * var(--editor-scale, 1));
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
   user-select: none;
+}
+
+.editor__latexLogActions {
+  display: flex;
+  align-items: center;
+  gap: calc(6px * var(--editor-scale, 1));
+}
+
+.editor__latexDiagList {
+  max-height: calc(110px * var(--editor-scale, 1));
+  overflow: auto;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.editor__latexDiagRow {
+  width: 100%;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.85);
+  text-align: left;
+  padding: calc(6px * var(--editor-scale, 1)) calc(8px * var(--editor-scale, 1));
+  display: flex;
+  flex-direction: column;
+  gap: calc(2px * var(--editor-scale, 1));
+  font-size: calc(11px * var(--editor-scale, 1));
+}
+
+.editor__latexDiagRow--clickable {
+  cursor: pointer;
+}
+
+.editor__latexDiagRow--clickable:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.editor__latexDiagRow--muted {
+  opacity: 0.66;
+  cursor: default;
+}
+
+.editor__latexDiagLoc {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.editor__latexDiagMsg {
+  color: rgba(255, 255, 255, 0.72);
 }
 
 .editor__latexLogBody {

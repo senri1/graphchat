@@ -32,7 +32,7 @@ interface Window {
     pickLatexProject: () => Promise<{ ok: boolean; projectRoot?: string; error?: string }>;
     listLatexProjectFiles: (req: { projectRoot: string }) => Promise<{
       ok: boolean;
-      files?: Array<{ path: string; kind: 'tex' | 'bib' | 'style' | 'class' | 'other' }>;
+      files?: Array<{ path: string; kind: 'tex' | 'bib' | 'style' | 'class' | 'asset' | 'other'; editable: boolean }>;
       suggestedMainFile?: string | null;
       error?: string;
     }>;
