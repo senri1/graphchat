@@ -363,6 +363,9 @@ type TextNode = DemoNodeBase & {
   textFormat?: 'markdown' | 'latex';
   latexCompileError?: string | null;
   latexCompiledAt?: number | null;
+  latexProjectRoot?: string | null;
+  latexMainFile?: string | null;
+  latexActiveFile?: string | null;
   userPreface?: { replyTo?: string; contexts?: string[] };
   collapsedPrefaceContexts?: Record<number, boolean>;
   contentHash: string;
@@ -1130,6 +1133,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           textFormat: n.textFormat ?? 'markdown',
           latexCompileError: n.latexCompileError ?? null,
           latexCompiledAt: Number.isFinite(n.latexCompiledAt) ? n.latexCompiledAt : null,
+          latexProjectRoot: typeof n.latexProjectRoot === 'string' && n.latexProjectRoot.trim() ? n.latexProjectRoot : null,
+          latexMainFile: typeof n.latexMainFile === 'string' && n.latexMainFile.trim() ? n.latexMainFile : null,
+          latexActiveFile: typeof n.latexActiveFile === 'string' && n.latexActiveFile.trim() ? n.latexActiveFile : null,
           ...(n.userPreface ? { userPreface: n.userPreface } : {}),
           ...(n.collapsedPrefaceContexts ? { collapsedPrefaceContexts: n.collapsedPrefaceContexts } : {}),
           isGenerating: n.isGenerating,
@@ -1282,6 +1288,24 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           const raw = Number((n as any)?.latexCompiledAt);
           return Number.isFinite(raw) && raw > 0 ? raw : null;
         })();
+        const latexProjectRoot = (() => {
+          const raw = (n as any)?.latexProjectRoot;
+          if (typeof raw !== 'string') return null;
+          const next = raw.trim();
+          return next ? next : null;
+        })();
+        const latexMainFile = (() => {
+          const raw = (n as any)?.latexMainFile;
+          if (typeof raw !== 'string') return null;
+          const next = raw.trim();
+          return next ? next : null;
+        })();
+        const latexActiveFile = (() => {
+          const raw = (n as any)?.latexActiveFile;
+          if (typeof raw !== 'string') return null;
+          const next = raw.trim();
+          return next ? next : null;
+        })();
         const isEditNode = Boolean((n as any)?.isEditNode) || n.id.startsWith('n');
         const rawAuthor = (n as any)?.author;
         const author: ChatAuthor =
@@ -1403,6 +1427,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           textFormat,
           latexCompileError,
           latexCompiledAt,
+          latexProjectRoot,
+          latexMainFile,
+          latexActiveFile,
 	          ...(userPreface ? { userPreface } : {}),
           collapsedPrefaceContexts,
           contentHash: fingerprintText(content),
@@ -2300,6 +2327,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       textFormat,
       latexCompileError: null,
       latexCompiledAt: null,
+      latexProjectRoot: null,
+      latexMainFile: null,
+      latexActiveFile: null,
       contentHash: fingerprintText(content),
       displayHash: '',
     };
@@ -4050,6 +4080,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     compileError: string | null;
     compiledAt: number | null;
     compiledPdfStorageKey: string | null;
+    projectRoot: string | null;
+    mainFile: string | null;
+    activeFile: string | null;
   } | null {
     const id = typeof nodeId === 'string' ? nodeId : String(nodeId ?? '');
     if (!id) return null;
@@ -4063,6 +4096,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       compileError: typeof node.latexCompileError === 'string' && node.latexCompileError.trim() ? node.latexCompileError : null,
       compiledAt: Number.isFinite(node.latexCompiledAt) && (node.latexCompiledAt as number) > 0 ? (node.latexCompiledAt as number) : null,
       compiledPdfStorageKey,
+      projectRoot: typeof node.latexProjectRoot === 'string' && node.latexProjectRoot.trim() ? node.latexProjectRoot.trim() : null,
+      mainFile: typeof node.latexMainFile === 'string' && node.latexMainFile.trim() ? node.latexMainFile.trim() : null,
+      activeFile: typeof node.latexActiveFile === 'string' && node.latexActiveFile.trim() ? node.latexActiveFile.trim() : null,
     };
   }
 
@@ -4073,6 +4109,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       attachments?: ChatAttachment[] | null;
       latexCompileError?: string | null;
       latexCompiledAt?: number | null;
+      latexProjectRoot?: string | null;
+      latexMainFile?: string | null;
+      latexActiveFile?: string | null;
     },
   ): void {
     const id = typeof nodeId === 'string' ? nodeId : String(nodeId ?? '');
@@ -4110,6 +4149,29 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       const next = Number.isFinite(raw) && raw > 0 ? raw : null;
       if ((node.latexCompiledAt ?? null) !== next) {
         node.latexCompiledAt = next;
+        changed = true;
+      }
+    }
+    if (patch.latexProjectRoot !== undefined) {
+      const next =
+        typeof patch.latexProjectRoot === 'string' && patch.latexProjectRoot.trim() ? patch.latexProjectRoot.trim() : null;
+      if ((node.latexProjectRoot ?? null) !== next) {
+        node.latexProjectRoot = next;
+        changed = true;
+      }
+    }
+    if (patch.latexMainFile !== undefined) {
+      const next = typeof patch.latexMainFile === 'string' && patch.latexMainFile.trim() ? patch.latexMainFile.trim() : null;
+      if ((node.latexMainFile ?? null) !== next) {
+        node.latexMainFile = next;
+        changed = true;
+      }
+    }
+    if (patch.latexActiveFile !== undefined) {
+      const next =
+        typeof patch.latexActiveFile === 'string' && patch.latexActiveFile.trim() ? patch.latexActiveFile.trim() : null;
+      if ((node.latexActiveFile ?? null) !== next) {
+        node.latexActiveFile = next;
         changed = true;
       }
     }
@@ -5213,6 +5275,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     parts.push(`fmt:${this.textNodeFormat(node)}`);
     parts.push(`latex_err:${node.latexCompileError ?? ''}`);
     parts.push(`latex_at:${Number.isFinite(node.latexCompiledAt) ? node.latexCompiledAt : ''}`);
+    parts.push(`latex_project:${node.latexProjectRoot ?? ''}`);
+    parts.push(`latex_main:${node.latexMainFile ?? ''}`);
+    parts.push(`latex_active:${node.latexActiveFile ?? ''}`);
 
     const atts = Array.isArray(node.attachments) ? node.attachments : [];
     if (atts.length > 0) {
@@ -5635,6 +5700,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       const hasCompiledPdf = atts.some((att) => att?.kind === 'pdf');
       const compiledAt = Number.isFinite(node.latexCompiledAt) ? node.latexCompiledAt : null;
       const compileError = typeof node.latexCompileError === 'string' ? node.latexCompileError.trim() : '';
+      const projectRoot = typeof node.latexProjectRoot === 'string' ? node.latexProjectRoot.trim() : '';
+      const mainFile = typeof node.latexMainFile === 'string' ? node.latexMainFile.trim() : '';
       const previewSource = content.trim() ? content : '% Empty document';
 
       parts.push('<div style="margin:4px 0 10px;padding:8px 10px;border:1px solid rgba(255,255,255,0.12);border-radius:12px;background:rgba(0,0,0,0.18);font-size:0.86em;color:rgba(255,255,255,0.88);">');
@@ -5645,6 +5712,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         parts.push(`<div style="opacity:0.86;margin:0 0 4px;">Compiled ${escapeHtml(new Date(compiledAt).toLocaleString())}</div>`);
       } else {
         parts.push('<div style="opacity:0.72;margin:0 0 4px;">Not compiled yet.</div>');
+      }
+      if (projectRoot && mainFile) {
+        parts.push(`<div style="opacity:0.8;margin:0 0 4px;">Project main: ${escapeHtml(mainFile)}</div>`);
       }
       parts.push(`<div style="opacity:0.72;">PDF preview: ${hasCompiledPdf ? 'ready' : 'missing'}</div>`);
       parts.push('</div>');

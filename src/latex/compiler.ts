@@ -1,5 +1,7 @@
 export type LatexCompileRequest = {
-  source: string;
+  source?: string;
+  projectRoot?: string;
+  mainFile?: string;
   engine?: 'pdflatex' | 'xelatex' | 'lualatex';
 };
 
@@ -22,7 +24,10 @@ function getElectronApi(): ElectronCompileApi | null {
 
 export async function compileLatexDocument(req: LatexCompileRequest): Promise<LatexCompileResult> {
   const source = typeof req?.source === 'string' ? req.source : '';
-  if (!source.trim()) return { ok: false, error: 'LaTeX source is empty.' };
+  const projectRoot = typeof req?.projectRoot === 'string' ? req.projectRoot.trim() : '';
+  const mainFile = typeof req?.mainFile === 'string' ? req.mainFile.trim() : '';
+  const projectMode = Boolean(projectRoot && mainFile);
+  if (!projectMode && !source.trim()) return { ok: false, error: 'LaTeX source is empty.' };
 
   const api = getElectronApi();
   if (!api) {
@@ -34,7 +39,7 @@ export async function compileLatexDocument(req: LatexCompileRequest): Promise<La
 
   try {
     const res = await api.compileLatex({
-      source,
+      ...(projectMode ? { projectRoot, mainFile } : { source }),
       engine: req.engine === 'xelatex' || req.engine === 'lualatex' ? req.engine : 'pdflatex',
     });
     if (!res || typeof res !== 'object') return { ok: false, error: 'Compiler returned an invalid response.' };

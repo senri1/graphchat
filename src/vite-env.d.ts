@@ -18,11 +18,25 @@ interface ImportMeta {
 
 interface Window {
   gcElectron?: {
-    compileLatex: (req: { source: string; engine?: 'pdflatex' | 'xelatex' | 'lualatex' }) => Promise<{
+    compileLatex: (req: {
+      source?: string;
+      projectRoot?: string;
+      mainFile?: string;
+      engine?: 'pdflatex' | 'xelatex' | 'lualatex';
+    }) => Promise<{
       ok: boolean;
       pdfBase64?: string;
       log?: string;
       error?: string;
     }>;
+    pickLatexProject: () => Promise<{ ok: boolean; projectRoot?: string; error?: string }>;
+    listLatexProjectFiles: (req: { projectRoot: string }) => Promise<{
+      ok: boolean;
+      files?: Array<{ path: string; kind: 'tex' | 'bib' | 'style' | 'class' | 'other' }>;
+      suggestedMainFile?: string | null;
+      error?: string;
+    }>;
+    readLatexProjectFile: (req: { projectRoot: string; path: string }) => Promise<{ ok: boolean; content?: string; error?: string }>;
+    writeLatexProjectFile: (req: { projectRoot: string; path: string; content: string }) => Promise<{ ok: boolean; error?: string }>;
   };
 }

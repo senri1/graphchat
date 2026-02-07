@@ -68,6 +68,9 @@ export type ChatNode =
       textFormat?: 'markdown' | 'latex';
       latexCompileError?: string | null;
       latexCompiledAt?: number | null;
+      latexProjectRoot?: string | null;
+      latexMainFile?: string | null;
+      latexActiveFile?: string | null;
       userPreface?: {
         replyTo?: string;
         contexts?: string[];

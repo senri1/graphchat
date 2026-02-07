@@ -6252,7 +6252,30 @@ export default function App() {
               compiledPdfUrl={editorLatexCompiledPdfUrl}
               compileError={editorLatexState?.compileError ?? null}
               compiledAt={editorLatexState?.compiledAt ?? null}
+              latexProject={{
+                projectRoot: editorLatexState?.projectRoot ?? null,
+                mainFile: editorLatexState?.mainFile ?? null,
+                activeFile: editorLatexState?.activeFile ?? null,
+              }}
               onDraftChange={(next) => editingDraftByNodeIdRef.current.set(ui.editingNodeId as string, next)}
+              onProjectStateChange={(patch) => {
+                const id = String(ui.editingNodeId ?? '').trim();
+                if (!id) return;
+                const engine = engineRef.current;
+                if (!engine) return;
+                const nextContent =
+                  patch.content !== undefined ? (typeof patch.content === 'string' ? patch.content : String(patch.content ?? '')) : null;
+                if (nextContent !== null) {
+                  engine.setEditingText(nextContent);
+                }
+                engine.setTextNodeLatexState(id, {
+                  ...(nextContent !== null ? { content: nextContent } : {}),
+                  ...(patch.projectRoot !== undefined ? { latexProjectRoot: patch.projectRoot ?? null } : {}),
+                  ...(patch.mainFile !== undefined ? { latexMainFile: patch.mainFile ?? null } : {}),
+                  ...(patch.activeFile !== undefined ? { latexActiveFile: patch.activeFile ?? null } : {}),
+                });
+                schedulePersistSoon();
+              }}
               anchorRect={editorAnchor}
               getScreenRect={() => engineRef.current?.getNodeScreenRect(ui.editingNodeId as string) ?? null}
               getZoom={() => engineRef.current?.camera.zoom ?? 1}
@@ -6261,17 +6284,24 @@ export default function App() {
               baseFontSizePx={nodeFontSizePx}
               onResize={(nextRect) => engineRef.current?.setNodeScreenRect(ui.editingNodeId as string, nextRect)}
               onResizeEnd={() => schedulePersistSoon()}
-              onCompile={async (source) => {
+              onCompile={async (req) => {
                 const id = String(ui.editingNodeId ?? '').trim();
                 if (!id) return;
                 const engine = engineRef.current;
                 if (!engine) return;
 
+                const source = typeof req?.source === 'string' ? req.source : '';
+                const projectRoot = typeof req?.projectRoot === 'string' ? req.projectRoot.trim() : '';
+                const mainFile = typeof req?.mainFile === 'string' ? req.mainFile.trim() : '';
+
                 engine.setEditingText(source);
                 const prev = engine.getTextNodeLatexState(id);
                 const previousPdfKey =
                   prev && typeof prev.compiledPdfStorageKey === 'string' ? prev.compiledPdfStorageKey.trim() : '';
-                const result = await compileLatexDocument({ source, engine: 'pdflatex' });
+                const result = await compileLatexDocument({
+                  ...(projectRoot && mainFile ? { projectRoot, mainFile } : { source }),
+                  engine: 'pdflatex',
+                });
 
                 if (!result.ok || !result.pdfBase64) {
                   const failMsg = (result.error ?? result.log ?? 'Compile failed.').trim().slice(0, 600);
