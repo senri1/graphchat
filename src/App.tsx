@@ -6305,6 +6305,10 @@ export default function App() {
                 });
                 const compileLog =
                   typeof result.log === 'string' && result.log.trim() ? result.log : null;
+                const compileIssue =
+                  typeof result.error === 'string' && result.error.trim()
+                    ? result.error.trim().slice(0, 600)
+                    : null;
 
                 if (!result.ok || !result.pdfBase64) {
                   const failMsg = (result.error ?? 'Compile failed. See compiler log for details.').trim().slice(0, 600);
@@ -6348,7 +6352,7 @@ export default function App() {
 
                 engine.setTextNodeLatexState(id, {
                   attachments: [compiledAttachment],
-                  latexCompileError: null,
+                  latexCompileError: compileIssue,
                   latexCompiledAt: Date.now(),
                   latexCompileLog: compileLog,
                 });

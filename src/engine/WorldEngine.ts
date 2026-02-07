@@ -5735,7 +5735,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       parts.push('<div style="margin:4px 0 10px;padding:8px 10px;border:1px solid rgba(255,255,255,0.12);border-radius:12px;background:rgba(0,0,0,0.18);font-size:0.86em;color:rgba(255,255,255,0.88);">');
       parts.push('<div style="font-weight:600;opacity:0.94;margin:0 0 6px;">LaTeX document</div>');
       if (compileError) {
-        parts.push(`<div style="color:rgba(255,120,120,0.95);margin:0 0 4px;">Last compile failed: ${escapeHtml(compileError.slice(0, 220))}</div>`);
+        parts.push(`<div style="color:rgba(255,120,120,0.95);margin:0 0 4px;">Last compile issue: ${escapeHtml(compileError.slice(0, 220))}</div>`);
       } else if (compiledAt) {
         parts.push(`<div style="opacity:0.86;margin:0 0 4px;">Compiled ${escapeHtml(new Date(compiledAt).toLocaleString())}</div>`);
       } else {

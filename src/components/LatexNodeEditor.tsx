@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { listLatexProjectFiles, pickLatexProject, readLatexProjectFile, type LatexProjectFile, writeLatexProjectFile } from '../latex/project';
+import { synctexForward, synctexInverse } from '../latex/synctex';
 import type { Rect } from '../engine/types';
+import LatexPdfPreview from './LatexPdfPreview';
 
 type LatexProjectState = {
   projectRoot: string | null;
@@ -50,6 +52,10 @@ type CompileDiagnostic = {
   line: number;
   message: string;
 };
+
+const PDF_ZOOM_MIN = 0.35;
+const PDF_ZOOM_MAX = 4;
+const PDF_ZOOM_STEP = 0.1;
 
 function normalizePathLike(value: string): string {
   return String(value ?? '').replace(/\\/g, '/');
@@ -208,6 +214,9 @@ export default function LatexNodeEditor(props: Props) {
   const [expandedDirs, setExpandedDirs] = useState<Record<string, boolean>>({});
   const [selectedTreePath, setSelectedTreePath] = useState<string | null>(null);
   const [treeVisible, setTreeVisible] = useState(true);
+  const [isSyncingPdf, setIsSyncingPdf] = useState(false);
+  const [pdfSyncTarget, setPdfSyncTarget] = useState<{ token: number; page: number; x?: number | null; y?: number | null } | null>(null);
+  const [pdfZoom, setPdfZoom] = useState(1);
   const [logVisible, setLogVisible] = useState(false);
   const [logCollapsed, setLogCollapsed] = useState(false);
 
@@ -218,6 +227,7 @@ export default function LatexNodeEditor(props: Props) {
   const mainFileRef = useRef<string | null>(null);
   const activeFileRef = useRef<string | null>(null);
   const lastCompileLogRef = useRef<string | null>(null);
+  const syncTokenRef = useRef(0);
   const onProjectStateChangeRef = useRef<Props['onProjectStateChange']>(onProjectStateChange);
   const loadTicketRef = useRef(0);
   const anchorRectRef = useRef<Rect | null>(anchorRect ?? null);
@@ -326,6 +336,11 @@ export default function LatexNodeEditor(props: Props) {
     }
   }, [compileLog]);
 
+  useEffect(() => {
+    if (compiledPdfUrl) return;
+    setPdfSyncTarget(null);
+  }, [compiledPdfUrl]);
+
   const persistProjectState = useCallback(
     async (patch: { projectRoot?: string | null; mainFile?: string | null; activeFile?: string | null; content?: string }) => {
       try {
@@ -357,6 +372,8 @@ export default function LatexNodeEditor(props: Props) {
         setExpandedDirs({});
         setSelectedTreePath(null);
         setTreeVisible(true);
+        setIsSyncingPdf(false);
+        setPdfSyncTarget(null);
         return { ok: false, error: 'Project root is missing.' };
       }
 
@@ -407,6 +424,7 @@ export default function LatexNodeEditor(props: Props) {
         setTreeQuery('');
         setSelectedTreePath(nextActive ?? (files[0]?.path ?? null));
         setTreeVisible(true);
+        setIsSyncingPdf(false);
         setProjectError(null);
         setIsDirty(false);
         applyDraft(loadedContent);
@@ -464,6 +482,8 @@ export default function LatexNodeEditor(props: Props) {
       setExpandedDirs({});
       setSelectedTreePath(null);
       setTreeVisible(true);
+      setIsSyncingPdf(false);
+      setPdfSyncTarget(null);
       applyDraft(initialValue ?? '');
     }
 
@@ -837,6 +857,108 @@ export default function LatexNodeEditor(props: Props) {
     }
   }, [isCompiling, saveActiveFile]);
 
+  const syncSourceToPdf = useCallback(async () => {
+    const root = typeof projectRootRef.current === 'string' ? projectRootRef.current.trim() : '';
+    const main = typeof mainFileRef.current === 'string' ? mainFileRef.current.trim() : '';
+    const source = typeof activeFileRef.current === 'string' ? activeFileRef.current.trim() : '';
+    if (!root || !main || !source) {
+      setRuntimeCompileError('SyncTeX needs a project root, main file, and active source file.');
+      return;
+    }
+    if (!compiledPdfUrl) {
+      setRuntimeCompileError('Compile first to generate the PDF before SyncTeX lookup.');
+      return;
+    }
+
+    const sourceMeta = projectFileByPath.get(source) ?? null;
+    if (!sourceMeta || !sourceMeta.editable) {
+      setRuntimeCompileError('Select an editable source file before SyncTeX lookup.');
+      return;
+    }
+
+    const text = draftRef.current;
+    const selectionStart = (() => {
+      const el = taRef.current;
+      if (!el) return text.length;
+      const raw = Number(el.selectionStart);
+      if (!Number.isFinite(raw)) return text.length;
+      return Math.max(0, Math.min(text.length, Math.floor(raw)));
+    })();
+    const line = Math.max(1, text.slice(0, selectionStart).split('\n').length);
+
+    setIsSyncingPdf(true);
+    try {
+      const res = await synctexForward({
+        projectRoot: root,
+        mainFile: main,
+        sourceFile: source,
+        line,
+      });
+      if (!res.ok || !Number.isFinite(Number(res.page))) {
+        const msg = (res.error ?? 'SyncTeX forward lookup failed.').trim();
+        setRuntimeCompileError(msg || 'SyncTeX forward lookup failed.');
+        return;
+      }
+      setRuntimeCompileError(null);
+      const page = Math.max(1, Math.floor(Number(res.page)));
+      setPdfSyncTarget({
+        token: ++syncTokenRef.current,
+        page,
+        x: Number.isFinite(Number(res.x)) ? Number(res.x) : null,
+        y: Number.isFinite(Number(res.y)) ? Number(res.y) : null,
+      });
+    } finally {
+      setIsSyncingPdf(false);
+    }
+  }, [compiledPdfUrl, projectFileByPath]);
+
+  const syncPdfToSource = useCallback(
+    async (payload: { page: number; x: number; y: number }) => {
+      const root = typeof projectRootRef.current === 'string' ? projectRootRef.current.trim() : '';
+      const main = typeof mainFileRef.current === 'string' ? mainFileRef.current.trim() : '';
+      if (!root || !main) return;
+
+      const page = Math.max(1, Math.floor(Number(payload.page)));
+      const x = Number(payload.x);
+      const y = Number(payload.y);
+      if (!Number.isFinite(page) || !Number.isFinite(x) || !Number.isFinite(y)) return;
+
+      setIsSyncingPdf(true);
+      try {
+        const res = await synctexInverse({
+          projectRoot: root,
+          mainFile: main,
+          page,
+          x,
+          y,
+        });
+        if (!res.ok) {
+          const msg = (res.error ?? 'SyncTeX inverse lookup failed.').trim();
+          setRuntimeCompileError(msg || 'SyncTeX inverse lookup failed.');
+          return;
+        }
+        const pathRaw = typeof res.filePath === 'string' ? res.filePath.trim() : '';
+        const line = Number(res.line);
+        if (!pathRaw) {
+          const rawHint = typeof res.sourcePathRaw === 'string' ? res.sourcePathRaw.trim() : '';
+          setRuntimeCompileError(
+            rawHint
+              ? `SyncTeX matched "${rawHint}" but it is outside the current project root.`
+              : 'SyncTeX inverse lookup did not return a source path in this project.',
+          );
+          return;
+        }
+        const jumped = await switchActiveFile(pathRaw, { line: Number.isFinite(line) && line > 0 ? line : 1 });
+        if (!jumped) return;
+        setRuntimeCompileError(null);
+        setSelectedTreePath(pathRaw);
+      } finally {
+        setIsSyncingPdf(false);
+      }
+    },
+    [switchActiveFile],
+  );
+
   const diagnostics = useMemo<CompileDiagnostic[]>(() => {
     const raw = typeof compileLog === 'string' ? compileLog : '';
     if (!raw.trim()) return [];
@@ -1026,6 +1148,7 @@ export default function LatexNodeEditor(props: Props) {
   const statusText = useMemo(() => {
     if (projectBusy) return 'Loading project...';
     if (isSavingFile) return 'Saving file...';
+    if (isSyncingPdf) return 'SyncTeX lookup...';
     if (isCompiling) return 'Compiling...';
     if (effectiveError) return effectiveError;
     if (compileError) return compileError;
@@ -1034,7 +1157,7 @@ export default function LatexNodeEditor(props: Props) {
     }
     if (projectRoot && mainFile) return `Ready to compile ${mainFile}`;
     return 'No compiled PDF yet.';
-  }, [compileError, compiledAt, effectiveError, isCompiling, isSavingFile, mainFile, projectBusy, projectRoot]);
+  }, [compileError, compiledAt, effectiveError, isCompiling, isSavingFile, isSyncingPdf, mainFile, projectBusy, projectRoot]);
 
   const compileDisabled = isCompiling || projectBusy || isSavingFile || Boolean(projectRoot && !mainFile);
   const showMainAsActive = Boolean(projectRoot && activeFile && mainFile && activeFile !== mainFile);
@@ -1042,6 +1165,46 @@ export default function LatexNodeEditor(props: Props) {
   const hasCompileLog = Boolean(typeof compileLog === 'string' && compileLog.trim());
   const editableCount = editableProjectFiles.length;
   const assetCount = projectFiles.length - editableCount;
+  const canZoomOut = pdfZoom > PDF_ZOOM_MIN + 0.001;
+  const canZoomIn = pdfZoom < PDF_ZOOM_MAX - 0.001;
+  const zoomLabel = `${Math.round(pdfZoom * 100)}%`;
+
+  const adjustPdfZoom = useCallback((delta: number) => {
+    const d = Number(delta);
+    if (!Number.isFinite(d) || d === 0) return;
+    setPdfZoom((prev) => {
+      const next = Math.max(PDF_ZOOM_MIN, Math.min(PDF_ZOOM_MAX, prev + d));
+      return Math.round(next * 100) / 100;
+    });
+  }, []);
+
+  const resetPdfZoom = useCallback(() => {
+    setPdfZoom(1);
+  }, []);
+
+  const openCompiledPdf = useCallback(() => {
+    if (!compiledPdfUrl) return;
+    try {
+      window.open(compiledPdfUrl, '_blank', 'noopener,noreferrer');
+    } catch {
+      // ignore
+    }
+  }, [compiledPdfUrl]);
+
+  const downloadCompiledPdf = useCallback(() => {
+    if (!compiledPdfUrl || typeof document === 'undefined') return;
+    try {
+      const a = document.createElement('a');
+      a.href = compiledPdfUrl;
+      a.download = 'latex-output.pdf';
+      a.rel = 'noopener noreferrer';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch {
+      // ignore
+    }
+  }, [compiledPdfUrl]);
 
   return (
     <div
@@ -1123,6 +1286,16 @@ export default function LatexNodeEditor(props: Props) {
           {showMainAsActive ? (
             <button className="editor__btn" type="button" onClick={() => void setMainToActive()} disabled={projectBusy || isCompiling || isSavingFile}>
               Set main
+            </button>
+          ) : null}
+          {projectRoot && mainFile && activeFile ? (
+            <button
+              className="editor__btn"
+              type="button"
+              onClick={() => void syncSourceToPdf()}
+              disabled={projectBusy || isCompiling || isSavingFile || isSyncingPdf || !compiledPdfUrl}
+            >
+              {isSyncingPdf ? 'Syncing...' : 'Sync PDF'}
             </button>
           ) : null}
           <button className="editor__btn editor__btn--primary" type="button" onClick={() => void compile()} disabled={compileDisabled}>
@@ -1214,6 +1387,12 @@ export default function LatexNodeEditor(props: Props) {
                     e.preventDefault();
                     e.stopPropagation();
                     void compile();
+                    return;
+                  }
+                  if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 'l' || e.key === 'L')) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    void syncSourceToPdf();
                   }
                 }}
               />
@@ -1224,30 +1403,58 @@ export default function LatexNodeEditor(props: Props) {
         <div className="editor__pane editor__pane--preview">
           <div className="editor__paneLabelRow">
             <div className={`editor__paneLabel ${compileError || effectiveError ? 'editor__paneLabel--error' : ''}`}>{statusText}</div>
-            {hasCompileLog ? (
-              <button
-                className="editor__btn editor__btn--compact"
-                type="button"
-                onClick={() => {
-                  if (!logVisible) {
-                    setLogVisible(true);
-                    setLogCollapsed(false);
-                    return;
-                  }
-                  setLogCollapsed((v) => !v);
-                }}
-              >
-                {!logVisible ? 'Show log' : logCollapsed ? 'Expand log' : 'Minimize log'}
-              </button>
-            ) : null}
+            <div className="editor__paneActions">
+              {compiledPdfUrl ? (
+                <>
+                  <button className="editor__btn editor__btn--compact" type="button" onClick={() => adjustPdfZoom(-PDF_ZOOM_STEP)} disabled={!canZoomOut}>
+                    -
+                  </button>
+                  <button className="editor__btn editor__btn--compact" type="button" onClick={resetPdfZoom} title="Reset zoom (fit width)">
+                    {zoomLabel}
+                  </button>
+                  <button className="editor__btn editor__btn--compact" type="button" onClick={() => adjustPdfZoom(PDF_ZOOM_STEP)} disabled={!canZoomIn}>
+                    +
+                  </button>
+                  <button className="editor__btn editor__btn--compact" type="button" onClick={openCompiledPdf}>
+                    Open
+                  </button>
+                  <button className="editor__btn editor__btn--compact" type="button" onClick={downloadCompiledPdf}>
+                    Download
+                  </button>
+                </>
+              ) : null}
+              {hasCompileLog ? (
+                <button
+                  className="editor__btn editor__btn--compact"
+                  type="button"
+                  onClick={() => {
+                    if (!logVisible) {
+                      setLogVisible(true);
+                      setLogCollapsed(false);
+                      return;
+                    }
+                    setLogCollapsed((v) => !v);
+                  }}
+                >
+                  {!logVisible ? 'Show log' : logCollapsed ? 'Expand log' : 'Minimize log'}
+                </button>
+              ) : null}
+            </div>
           </div>
 
           <div className="editor__preview editor__preview--pdf">
-            {compiledPdfUrl ? (
-              <iframe className="editor__pdfPreview" src={compiledPdfUrl} title="Compiled PDF preview" />
-            ) : (
-              <div className="editor__emptyPreview">Compile the document to preview the PDF.</div>
-            )}
+            <LatexPdfPreview
+              pdfUrl={compiledPdfUrl}
+              syncTarget={pdfSyncTarget}
+              zoom={pdfZoom}
+              onInverseSync={
+                projectRoot && mainFile && compiledPdfUrl
+                  ? (payload) => {
+                      void syncPdfToSource(payload);
+                    }
+                  : undefined
+              }
+            />
           </div>
 
           {hasCompileLog && logVisible ? (

@@ -6,4 +6,6 @@ contextBridge.exposeInMainWorld('gcElectron', {
   listLatexProjectFiles: (req) => ipcRenderer.invoke('latex:list-project-files', req ?? {}),
   readLatexProjectFile: (req) => ipcRenderer.invoke('latex:read-project-file', req ?? {}),
   writeLatexProjectFile: (req) => ipcRenderer.invoke('latex:write-project-file', req ?? {}),
+  synctexForward: (req) => ipcRenderer.invoke('latex:synctex-forward', req ?? {}),
+  synctexInverse: (req) => ipcRenderer.invoke('latex:synctex-inverse', req ?? {}),
 });

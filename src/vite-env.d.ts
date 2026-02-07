@@ -38,5 +38,26 @@ interface Window {
     }>;
     readLatexProjectFile: (req: { projectRoot: string; path: string }) => Promise<{ ok: boolean; content?: string; error?: string }>;
     writeLatexProjectFile: (req: { projectRoot: string; path: string; content: string }) => Promise<{ ok: boolean; error?: string }>;
+    synctexForward: (req: {
+      projectRoot: string;
+      mainFile: string;
+      sourceFile: string;
+      line: number;
+    }) => Promise<{ ok: boolean; page?: number; x?: number | null; y?: number | null; error?: string; log?: string }>;
+    synctexInverse: (req: {
+      projectRoot: string;
+      mainFile: string;
+      page: number;
+      x: number;
+      y: number;
+    }) => Promise<{
+      ok: boolean;
+      filePath?: string | null;
+      line?: number;
+      column?: number | null;
+      sourcePathRaw?: string;
+      error?: string;
+      log?: string;
+    }>;
   };
 }
