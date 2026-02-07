@@ -65,6 +65,9 @@ export type ChatNode =
       rect: Rect;
       author: ChatAuthor;
       content: string;
+      textFormat?: 'markdown' | 'latex';
+      latexCompileError?: string | null;
+      latexCompiledAt?: number | null;
       userPreface?: {
         replyTo?: string;
         contexts?: string[];

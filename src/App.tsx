@@ -14,6 +14,7 @@ import ChatComposer from './components/ChatComposer';
 import NodeHeaderMenu from './components/NodeHeaderMenu';
 import RawPayloadViewer from './components/RawPayloadViewer';
 import TextNodeEditor from './components/TextNodeEditor';
+import LatexNodeEditor from './components/LatexNodeEditor';
 import WorkspaceSidebar from './components/WorkspaceSidebar';
 import FolderPickerDialog from './components/FolderPickerDialog';
 import { Icons } from './components/Icons';
@@ -75,6 +76,8 @@ import {
 } from './storage/persistence';
 import { getPayload, putPayload } from './storage/payloads';
 import { fontFamilyCss, normalizeFontFamilyKey, type FontFamilyKey } from './ui/typography';
+import { useAttachmentObjectUrls } from './ui/useAttachmentObjectUrls';
+import { compileLatexDocument } from './latex/compiler';
 
 type ChatTurnMeta = {
   id: string;
@@ -3619,7 +3622,18 @@ export default function App() {
 
   const editorAnchor = ui.editingNodeId ? engineRef.current?.getNodeScreenRect(ui.editingNodeId) ?? null : null;
   const editorTitle = ui.editingNodeId ? engineRef.current?.getNodeTitle(ui.editingNodeId) ?? null : null;
+  const editorTextFormat = ui.editingNodeId ? engineRef.current?.getTextNodeFormat(ui.editingNodeId) ?? 'markdown' : 'markdown';
   const editorUserPreface = ui.editingNodeId ? engineRef.current?.getTextNodeUserPreface(ui.editingNodeId) ?? null : null;
+  const editorLatexState =
+    ui.editingNodeId && editorTextFormat === 'latex'
+      ? engineRef.current?.getTextNodeLatexState(ui.editingNodeId) ?? null
+      : null;
+  const editorLatexCompiledPdfKey =
+    editorLatexState && typeof editorLatexState.compiledPdfStorageKey === 'string'
+      ? editorLatexState.compiledPdfStorageKey.trim()
+      : '';
+  const editorLatexCompiledPdfUrls = useAttachmentObjectUrls(editorLatexCompiledPdfKey ? [editorLatexCompiledPdfKey] : []);
+  const editorLatexCompiledPdfUrl = editorLatexCompiledPdfKey ? editorLatexCompiledPdfUrls[editorLatexCompiledPdfKey] ?? null : null;
   const editorZoom = debug?.zoom ?? engineRef.current?.camera.zoom ?? 1;
   const rawAnchor = rawViewer ? engineRef.current?.getTextNodeContentScreenRect(rawViewer.nodeId) ?? null : null;
   const nodeMenuButtonRect = nodeMenuId ? getNodeMenuButtonRect(nodeMenuId) : null;
@@ -6229,21 +6243,106 @@ export default function App() {
                   document.body,
                 )
               : null}
-	        {ui.editingNodeId ? (
-	          <TextNodeEditor
-	            nodeId={ui.editingNodeId}
-	            title={editorTitle}
-	            initialValue={ui.editingText}
+        {ui.editingNodeId ? (
+          editorTextFormat === 'latex' ? (
+            <LatexNodeEditor
+              nodeId={ui.editingNodeId}
+              title={editorTitle}
+              initialValue={ui.editingText}
+              compiledPdfUrl={editorLatexCompiledPdfUrl}
+              compileError={editorLatexState?.compileError ?? null}
+              compiledAt={editorLatexState?.compiledAt ?? null}
+              onDraftChange={(next) => editingDraftByNodeIdRef.current.set(ui.editingNodeId as string, next)}
+              anchorRect={editorAnchor}
+              getScreenRect={() => engineRef.current?.getNodeScreenRect(ui.editingNodeId as string) ?? null}
+              getZoom={() => engineRef.current?.camera.zoom ?? 1}
+              viewport={viewport}
+              zoom={editorZoom}
+              baseFontSizePx={nodeFontSizePx}
+              onResize={(nextRect) => engineRef.current?.setNodeScreenRect(ui.editingNodeId as string, nextRect)}
+              onResizeEnd={() => schedulePersistSoon()}
+              onCompile={async (source) => {
+                const id = String(ui.editingNodeId ?? '').trim();
+                if (!id) return;
+                const engine = engineRef.current;
+                if (!engine) return;
+
+                engine.setEditingText(source);
+                const prev = engine.getTextNodeLatexState(id);
+                const previousPdfKey =
+                  prev && typeof prev.compiledPdfStorageKey === 'string' ? prev.compiledPdfStorageKey.trim() : '';
+                const result = await compileLatexDocument({ source, engine: 'pdflatex' });
+
+                if (!result.ok || !result.pdfBase64) {
+                  const failMsg = (result.error ?? result.log ?? 'Compile failed.').trim().slice(0, 600);
+                  engine.setTextNodeLatexState(id, {
+                    latexCompileError: failMsg || 'Compile failed.',
+                  });
+                  schedulePersistSoon();
+                  return;
+                }
+
+                const blob = base64ToBlob(result.pdfBase64, 'application/pdf');
+                let storageKey: string | null = null;
+                try {
+                  storageKey = await putAttachment({
+                    blob,
+                    mimeType: 'application/pdf',
+                    name: 'latex-output.pdf',
+                    size: Number.isFinite(blob.size) ? blob.size : undefined,
+                  });
+                } catch {
+                  storageKey = null;
+                }
+
+                if (!storageKey) {
+                  engine.setTextNodeLatexState(id, {
+                    latexCompileError: 'Compile succeeded but failed to store PDF output.',
+                  });
+                  schedulePersistSoon();
+                  return;
+                }
+
+                const compiledAttachment: ChatAttachment = {
+                  kind: 'pdf',
+                  mimeType: 'application/pdf',
+                  storageKey,
+                  name: 'latex-output.pdf',
+                  size: Number.isFinite(blob.size) ? blob.size : undefined,
+                };
+
+                engine.setTextNodeLatexState(id, {
+                  attachments: [compiledAttachment],
+                  latexCompileError: null,
+                  latexCompiledAt: Date.now(),
+                });
+
+                if (previousPdfKey && previousPdfKey !== storageKey) {
+                  attachmentsGcDirtyRef.current = true;
+                }
+                schedulePersistSoon();
+              }}
+              onCommit={(next) => {
+                engineRef.current?.commitEditing(next);
+                schedulePersistSoon();
+              }}
+              onCancel={() => engineRef.current?.cancelEditing()}
+            />
+          ) : (
+            <TextNodeEditor
+              nodeId={ui.editingNodeId}
+              title={editorTitle}
+              initialValue={ui.editingText}
               userPreface={editorUserPreface}
               modelId={composerModelId}
               modelOptions={composerModelOptions}
               onDraftChange={(next) => editingDraftByNodeIdRef.current.set(ui.editingNodeId as string, next)}
-	            anchorRect={editorAnchor}
+              anchorRect={editorAnchor}
               getScreenRect={() => engineRef.current?.getNodeScreenRect(ui.editingNodeId as string) ?? null}
               getZoom={() => engineRef.current?.camera.zoom ?? 1}
-	            viewport={viewport}
-	            zoom={editorZoom}
-	            baseFontSizePx={nodeFontSizePx}
+              viewport={viewport}
+              zoom={editorZoom}
+              baseFontSizePx={nodeFontSizePx}
               onResize={(nextRect) => engineRef.current?.setNodeScreenRect(ui.editingNodeId as string, nextRect)}
               onTogglePrefaceContext={(contextIndex) =>
                 engineRef.current?.toggleTextNodePrefaceContextCollapsed(ui.editingNodeId as string, contextIndex)
@@ -6292,13 +6391,14 @@ export default function App() {
                 const screenY = placementClient.clientY - canvasRect.top;
                 engine.setExternalHeaderPlacementPreview(id, { x: screenX, y: screenY });
               }}
-	            onCommit={(next) => {
-	              engineRef.current?.commitEditing(next);
-	              schedulePersistSoon();
-	            }}
-	            onCancel={() => engineRef.current?.cancelEditing()}
-	          />
-	        ) : null}
+              onCommit={(next) => {
+                engineRef.current?.commitEditing(next);
+                schedulePersistSoon();
+              }}
+              onCancel={() => engineRef.current?.cancelEditing()}
+            />
+          )
+        ) : null}
         {rawViewer ? (
           <RawPayloadViewer
             nodeId={rawViewer.nodeId}
@@ -6754,6 +6854,20 @@ export default function App() {
                 }}
               >
                 <Icons.textBox className="toolStrip__icon" />
+              </button>
+              <button
+                className="toolStrip__btn"
+                type="button"
+                title="New LaTeX node"
+                aria-label="New LaTeX node"
+                onClick={() => {
+                  const engine = engineRef.current;
+                  if (!engine) return;
+                  engine.spawnLatexNode({ title: 'LaTeX' });
+                  schedulePersistSoon();
+                }}
+              >
+                <Icons.latexBox className="toolStrip__icon" />
               </button>
 	          <button
 	            className="toolStrip__btn"

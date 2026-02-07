@@ -360,6 +360,9 @@ type TextNode = DemoNodeBase & {
   author: ChatAuthor;
   rect: Rect;
   content: string;
+  textFormat?: 'markdown' | 'latex';
+  latexCompileError?: string | null;
+  latexCompiledAt?: number | null;
   userPreface?: { replyTo?: string; contexts?: string[] };
   collapsedPrefaceContexts?: Record<number, boolean>;
   contentHash: string;
@@ -1124,6 +1127,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           ...(n.isEditNode ? { isEditNode: true } : {}),
           author: n.author,
           content: n.content,
+          textFormat: n.textFormat ?? 'markdown',
+          latexCompileError: n.latexCompileError ?? null,
+          latexCompiledAt: Number.isFinite(n.latexCompiledAt) ? n.latexCompiledAt : null,
           ...(n.userPreface ? { userPreface: n.userPreface } : {}),
           ...(n.collapsedPrefaceContexts ? { collapsedPrefaceContexts: n.collapsedPrefaceContexts } : {}),
           isGenerating: n.isGenerating,
@@ -1264,6 +1270,18 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       })();
       if (n.kind === 'text') {
         const content = typeof n.content === 'string' ? n.content : String(n.content ?? '');
+        const rawTextFormat = (n as any)?.textFormat;
+        const textFormat: 'markdown' | 'latex' = rawTextFormat === 'latex' ? 'latex' : 'markdown';
+        const latexCompileError = (() => {
+          const raw = (n as any)?.latexCompileError;
+          if (typeof raw !== 'string') return null;
+          const next = raw.trim();
+          return next ? next : null;
+        })();
+        const latexCompiledAt = (() => {
+          const raw = Number((n as any)?.latexCompiledAt);
+          return Number.isFinite(raw) && raw > 0 ? raw : null;
+        })();
         const isEditNode = Boolean((n as any)?.isEditNode) || n.id.startsWith('n');
         const rawAuthor = (n as any)?.author;
         const author: ChatAuthor =
@@ -1382,6 +1400,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           ...(isEditNode ? { isEditNode: true } : {}),
 	          author,
 	          content,
+          textFormat,
+          latexCompileError,
+          latexCompiledAt,
 	          ...(userPreface ? { userPreface } : {}),
           collapsedPrefaceContexts,
           contentHash: fingerprintText(content),
@@ -2249,10 +2270,17 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return true;
   }
 
-  spawnTextNode(opts?: { title?: string; content?: string; author?: ChatAuthor; rect?: Rect }): string {
+  spawnTextNode(opts?: {
+    title?: string;
+    content?: string;
+    author?: ChatAuthor;
+    rect?: Rect;
+    textFormat?: 'markdown' | 'latex';
+  }): string {
     const title = typeof opts?.title === 'string' ? opts.title.trim() : '';
     const content = typeof opts?.content === 'string' ? opts.content : String(opts?.content ?? '');
     const author: ChatAuthor = opts?.author === 'assistant' ? 'assistant' : 'user';
+    const textFormat: 'markdown' | 'latex' = opts?.textFormat === 'latex' ? 'latex' : 'markdown';
 
     const id = `n${Date.now().toString(36)}-${(this.nodeSeq++).toString(36)}`;
     const nodeW = 460;
@@ -2269,6 +2297,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       isEditNode: true,
       author,
       content,
+      textFormat,
+      latexCompileError: null,
+      latexCompiledAt: null,
       contentHash: fingerprintText(content),
       displayHash: '',
     };
@@ -2378,6 +2409,33 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     }
 
     return id;
+  }
+
+  spawnLatexNode(opts?: { title?: string; rect?: Rect }): string {
+    const title = typeof opts?.title === 'string' ? opts.title.trim() : '';
+    const defaultLatex = [
+      '\\documentclass{article}',
+      '\\usepackage{amsmath,amssymb}',
+      '\\begin{document}',
+      '',
+      '\\section*{Notes}',
+      '',
+      'Write full LaTeX here.',
+      '',
+      '\\[',
+      'E = mc^2',
+      '\\]',
+      '',
+      '\\end{document}',
+    ].join('\n');
+
+    return this.spawnTextNode({
+      title: title || 'LaTeX',
+      content: defaultLatex,
+      author: 'user',
+      rect: opts?.rect,
+      textFormat: 'latex',
+    });
   }
 
   spawnInkNode(opts?: { rect?: Rect }): string {
@@ -3802,7 +3860,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           world.y <= replyArrow.y + replyArrow.h;
         if (inReplyMain || inReplyArrow) {
           nextHeaderHover = { nodeId: hit.id, kind: inReplyArrow ? 'reply_menu' : 'reply' };
-        } else if ((hit.kind === 'text' && hit.isEditNode) || hit.kind === 'ink') {
+        } else if ((hit.kind === 'text' || hit.kind === 'ink') && this.isHeaderSendEnabled(hit)) {
           const mainBtn = this.sendButtonMainRect(hit.rect);
           const arrowBtn = this.sendButtonArrowRect(hit.rect);
           const inMain =
@@ -3903,7 +3961,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         return;
       }
 
-      if ((hit.kind === 'text' && hit.isEditNode) || hit.kind === 'ink') {
+      if ((hit.kind === 'text' || hit.kind === 'ink') && this.isHeaderSendEnabled(hit)) {
         const sendBtn = this.sendButtonRect(hit.rect);
         const inSend =
           world.x >= sendBtn.x &&
@@ -3978,6 +4036,89 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   getNodeTitle(nodeId: string): string | null {
     const node = this.nodes.find((n) => n.id === nodeId);
     return node?.title ?? null;
+  }
+
+  getTextNodeFormat(nodeId: string): 'markdown' | 'latex' {
+    const id = typeof nodeId === 'string' ? nodeId : String(nodeId ?? '');
+    if (!id) return 'markdown';
+    const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === id) ?? null;
+    if (!node) return 'markdown';
+    return this.textNodeFormat(node);
+  }
+
+  getTextNodeLatexState(nodeId: string): {
+    compileError: string | null;
+    compiledAt: number | null;
+    compiledPdfStorageKey: string | null;
+  } | null {
+    const id = typeof nodeId === 'string' ? nodeId : String(nodeId ?? '');
+    if (!id) return null;
+    const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === id) ?? null;
+    if (!node || this.textNodeFormat(node) !== 'latex') return null;
+    const attachments = Array.isArray(node.attachments) ? node.attachments : [];
+    const compiledPdfStorageKey =
+      attachments.find((att) => att?.kind === 'pdf' && typeof att.storageKey === 'string' && att.storageKey.trim())
+        ?.storageKey ?? null;
+    return {
+      compileError: typeof node.latexCompileError === 'string' && node.latexCompileError.trim() ? node.latexCompileError : null,
+      compiledAt: Number.isFinite(node.latexCompiledAt) && (node.latexCompiledAt as number) > 0 ? (node.latexCompiledAt as number) : null,
+      compiledPdfStorageKey,
+    };
+  }
+
+  setTextNodeLatexState(
+    nodeId: string,
+    patch: {
+      content?: string;
+      attachments?: ChatAttachment[] | null;
+      latexCompileError?: string | null;
+      latexCompiledAt?: number | null;
+    },
+  ): void {
+    const id = typeof nodeId === 'string' ? nodeId : String(nodeId ?? '');
+    if (!id) return;
+    const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === id) ?? null;
+    if (!node || this.textNodeFormat(node) !== 'latex') return;
+
+    let changed = false;
+    if (patch.content !== undefined) {
+      const text = typeof patch.content === 'string' ? patch.content : String(patch.content ?? '');
+      if (node.content !== text) {
+        node.content = text;
+        node.contentHash = fingerprintText(text);
+        changed = true;
+      }
+    }
+    if (patch.attachments !== undefined) {
+      const next = Array.isArray(patch.attachments) ? patch.attachments : undefined;
+      node.attachments = next;
+      node.selectedAttachmentKeys = undefined;
+      changed = true;
+    }
+    if (patch.latexCompileError !== undefined) {
+      const next =
+        typeof patch.latexCompileError === 'string' && patch.latexCompileError.trim()
+          ? patch.latexCompileError.trim()
+          : null;
+      if ((node.latexCompileError ?? null) !== next) {
+        node.latexCompileError = next;
+        changed = true;
+      }
+    }
+    if (patch.latexCompiledAt !== undefined) {
+      const raw = Number(patch.latexCompiledAt);
+      const next = Number.isFinite(raw) && raw > 0 ? raw : null;
+      if ((node.latexCompiledAt ?? null) !== next) {
+        node.latexCompiledAt = next;
+        changed = true;
+      }
+    }
+
+    if (!changed) return;
+    this.recomputeTextNodeDisplayHash(node);
+    this.textRasterGeneration += 1;
+    this.requestRender();
+    this.emitUiState();
   }
 
   getTextNodeUserPreface(nodeId: string): { replyTo: string; contexts: string[]; collapsedPrefaceContexts: Record<number, boolean> } | null {
@@ -4237,7 +4378,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       this.nodes.find((n): n is TextNode | InkNode => (n.kind === 'text' || n.kind === 'ink') && n.id === nodeId) ??
       null;
     if (!node) return null;
-    if (node.kind === 'text' && !node.isEditNode) return null;
+    if (!this.isHeaderSendEnabled(node)) return null;
     const btn = this.sendButtonRect(node.rect);
     const tl = this.camera.worldToScreen({ x: btn.x, y: btn.y });
     const br = this.camera.worldToScreen({ x: btn.x + btn.w, y: btn.y + btn.h });
@@ -4249,7 +4390,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       this.nodes.find((n): n is TextNode | InkNode => (n.kind === 'text' || n.kind === 'ink') && n.id === nodeId) ??
       null;
     if (!node) return null;
-    if (node.kind === 'text' && !node.isEditNode) return null;
+    if (!this.isHeaderSendEnabled(node)) return null;
     const btn = this.sendButtonArrowRect(node.rect);
     const tl = this.camera.worldToScreen({ x: btn.x, y: btn.y });
     const br = this.camera.worldToScreen({ x: btn.x + btn.w, y: btn.y + btn.h });
@@ -4261,7 +4402,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       this.nodes.find((n): n is TextNode | InkNode => (n.kind === 'text' || n.kind === 'ink') && n.id === nodeId) ??
       null;
     if (!node) return null;
-    if (node.kind === 'text' && !node.isEditNode) return null;
+    if (!this.isHeaderSendEnabled(node)) return null;
 
     const sx = Number(screen?.x);
     const sy = Number(screen?.y);
@@ -4284,7 +4425,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       this.clearExternalHeaderPlacementPreview();
       return;
     }
-    if (node.kind === 'text' && !node.isEditNode) {
+    if (!this.isHeaderSendEnabled(node)) {
       this.clearExternalHeaderPlacementPreview();
       return;
     }
@@ -4352,6 +4493,19 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
   beginEditingNode(nodeId: string): void {
     this.tryBeginEditingNode(nodeId);
+  }
+
+  private textNodeFormat(node: TextNode): 'markdown' | 'latex' {
+    return node.textFormat === 'latex' ? 'latex' : 'markdown';
+  }
+
+  private isLatexTextNode(node: TextNode): boolean {
+    return this.textNodeFormat(node) === 'latex';
+  }
+
+  private isHeaderSendEnabled(node: TextNode | InkNode): boolean {
+    if (node.kind === 'ink') return true;
+    return Boolean(node.isEditNode) && !this.isLatexTextNode(node);
   }
 
   private canEditTextNode(node: TextNode): boolean {
@@ -5020,7 +5174,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     };
 
     const controls: string[] = [];
-    if (node.isEditNode) controls.push(splitButton('Send', 68, { accent: 'blue' }));
+    if (this.isHeaderSendEnabled(node)) controls.push(splitButton('Send', 68, { accent: 'blue' }));
     controls.push(splitButton('Reply', 74));
     controls.push(buttonBox('⋮', { width: 28 }));
 
@@ -5056,6 +5210,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     parts.push(node.contentHash);
     parts.push(node.author);
     parts.push(node.isGenerating ? 'gen:1' : 'gen:0');
+    parts.push(`fmt:${this.textNodeFormat(node)}`);
+    parts.push(`latex_err:${node.latexCompileError ?? ''}`);
+    parts.push(`latex_at:${Number.isFinite(node.latexCompiledAt) ? node.latexCompiledAt : ''}`);
 
     const atts = Array.isArray(node.attachments) ? node.attachments : [];
     if (atts.length > 0) {
@@ -5466,11 +5623,37 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   }
 
   private renderTextNodeHtml(node: TextNode): string {
+    const textFormat = this.textNodeFormat(node);
     const isUser = node.author === 'user';
     const isAssistant = node.author === 'assistant';
     const content = typeof node.content === 'string' ? node.content : String(node.content ?? '');
     const hasContent = Boolean(content.trim());
     const parts: string[] = [];
+
+    if (textFormat === 'latex') {
+      const atts = Array.isArray(node.attachments) ? node.attachments : [];
+      const hasCompiledPdf = atts.some((att) => att?.kind === 'pdf');
+      const compiledAt = Number.isFinite(node.latexCompiledAt) ? node.latexCompiledAt : null;
+      const compileError = typeof node.latexCompileError === 'string' ? node.latexCompileError.trim() : '';
+      const previewSource = content.trim() ? content : '% Empty document';
+
+      parts.push('<div style="margin:4px 0 10px;padding:8px 10px;border:1px solid rgba(255,255,255,0.12);border-radius:12px;background:rgba(0,0,0,0.18);font-size:0.86em;color:rgba(255,255,255,0.88);">');
+      parts.push('<div style="font-weight:600;opacity:0.94;margin:0 0 6px;">LaTeX document</div>');
+      if (compileError) {
+        parts.push(`<div style="color:rgba(255,120,120,0.95);margin:0 0 4px;">Last compile failed: ${escapeHtml(compileError.slice(0, 220))}</div>`);
+      } else if (compiledAt) {
+        parts.push(`<div style="opacity:0.86;margin:0 0 4px;">Compiled ${escapeHtml(new Date(compiledAt).toLocaleString())}</div>`);
+      } else {
+        parts.push('<div style="opacity:0.72;margin:0 0 4px;">Not compiled yet.</div>');
+      }
+      parts.push(`<div style="opacity:0.72;">PDF preview: ${hasCompiledPdf ? 'ready' : 'missing'}</div>`);
+      parts.push('</div>');
+
+      parts.push('<pre style="margin:0;white-space:pre-wrap;word-break:break-word;font-size:0.92em;line-height:1.45;">');
+      parts.push(escapeHtml(previewSource.slice(0, 1800)));
+      parts.push('</pre>');
+      return parts.join('');
+    }
 
     if (node.isGenerating && !hasContent) {
       parts.push('<div style="margin:8px 0 6px;color:rgba(255,255,255,0.55);font-size:0.93em;">Thinking...</div>');
@@ -8240,7 +8423,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       return 'node';
     }
 
-    if ((hit.kind === 'text' && hit.isEditNode) || hit.kind === 'ink') {
+    if ((hit.kind === 'text' || hit.kind === 'ink') && this.isHeaderSendEnabled(hit)) {
       const sendMainBtn = this.sendButtonMainRect(hit.rect);
       const sendArrowBtn = this.sendButtonArrowRect(hit.rect);
       const inSendMain =
@@ -9363,7 +9546,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         return;
       }
 
-      if ((hit.kind === 'text' && hit.isEditNode) || hit.kind === 'ink') {
+      if ((hit.kind === 'text' || hit.kind === 'ink') && this.isHeaderSendEnabled(hit)) {
         const mainBtn = this.sendButtonMainRect(hit.rect);
         const arrowBtn = this.sendButtonArrowRect(hit.rect);
         const inMain =
@@ -10187,7 +10370,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         hovered: hoverReply || hoverReplyMenu,
         arrowHovered: hoverReplyMenu,
       });
-      if ((node.kind === 'text' && node.isEditNode) || node.kind === 'ink') {
+      if ((node.kind === 'text' || node.kind === 'ink') && this.isHeaderSendEnabled(node)) {
         this.drawSendButton(node.rect, {
           active: isSelected,
           hovered: hoverSend || hoverSendMenu,

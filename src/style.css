@@ -2761,6 +2761,45 @@ body {
   touch-action: auto;
 }
 
+.editor--latex {
+  border-color: rgba(248, 207, 121, 0.65);
+}
+
+.editor--latex .editor__btn--primary {
+  border-color: rgba(248, 207, 121, 0.5);
+  background: rgba(248, 207, 121, 0.25);
+  color: rgba(19, 14, 6, 0.96);
+}
+
+.editor--latex .editor__btn--primary:hover {
+  background: rgba(248, 207, 121, 0.35);
+}
+
+.editor__textarea--latex {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  line-height: 1.45;
+  white-space: pre;
+}
+
+.editor__preview--pdf {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: calc(10px * var(--editor-scale, 1));
+  background: rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+
+.editor__pdfPreview {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.editor__paneLabel--error {
+  color: rgba(255, 124, 124, 0.95);
+}
+
 .editor__previewScaled {
   width: calc(100% / var(--editor-scale, 1));
   transform: scale(var(--editor-scale, 1));

@@ -10,6 +10,23 @@ npm install
 npm run dev
 ```
 
+## Run (desktop / standalone with local LaTeX compile)
+
+Requirements:
+- Install a TeX toolchain with `latexmk` available on `PATH` (for macOS this is typically MacTeX).
+
+Then run:
+
+```bash
+cd graphchatv1
+npm install
+npm run dev
+# in a second terminal:
+npm run electron:dev
+```
+
+In desktop mode, LaTeX nodes use local compilation via Electron IPC + `latexmk` and render PDF in the node editor.
+
 ## OpenAI (local dev)
 
 Create `graphchatv1/.env.local`:
@@ -38,6 +55,7 @@ GraphChat calls provider APIs from the browser (BYO API key).
 - Resize node: drag a corner handle
 - Edit node: double-click / `Enter` (commit with click-outside / Done, cancel with `Esc`)
 - Import PDF: click `Import PDF` (creates a new PDF node)
+- New LaTeX node: click `+LaTeX`, write `.tex` on the left, click `Compile`, and preview PDF on the right
 - Ink: draw on the canvas (world ink) or inside an ink node; `New Ink Node` creates another; `Clear Ink` clears world ink
 
 ## One-time import from graphchatgem

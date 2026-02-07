@@ -97,4 +97,20 @@ export const Icons = {
       <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 15h6" />
     </svg>
   ),
+  latexBox: (props: IconProps) => (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      {...props}
+    >
+      <rect x="3.5" y="3.5" width="17" height="17" rx="2.75" ry="2.75" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M8 9l3 6" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M14 9l-3 6" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15.5 15h2.5" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M16.75 13.75v2.5" />
+    </svg>
+  ),
 };

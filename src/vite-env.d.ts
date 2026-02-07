@@ -15,3 +15,14 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+interface Window {
+  gcElectron?: {
+    compileLatex: (req: { source: string; engine?: 'pdflatex' | 'xelatex' | 'lualatex' }) => Promise<{
+      ok: boolean;
+      pdfBase64?: string;
+      log?: string;
+      error?: string;
+    }>;
+  };
+}
