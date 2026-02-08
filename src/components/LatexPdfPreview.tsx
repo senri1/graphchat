@@ -497,7 +497,7 @@ function LatexPdfPreviewImpl(props: Props) {
     };
   }, [metas, visiblePageKey, visiblePageSet]);
 
-  useEffect(() => {
+  const syncTextLayerOverlay = useCallback(() => {
     const overlay = pdfTextOverlayRef.current;
     if (!overlay) return;
 
@@ -592,7 +592,37 @@ function LatexPdfPreviewImpl(props: Props) {
         return { viewport, textContentSource };
       },
     });
-  }, [activeTextLayerPage, containerHeight, containerWidth, error, loading, metas, pdfUrl, scrollTop, scrollViewportH, visiblePageKey]);
+  }, [activeTextLayerPage, error, loading, metas, pdfUrl]);
+
+  useEffect(() => {
+    syncTextLayerOverlay();
+  }, [syncTextLayerOverlay]);
+
+  const shouldTrackOverlay = Boolean(pdfUrl && !loading && !error && metas.length > 0);
+
+  useEffect(() => {
+    if (!shouldTrackOverlay) return;
+    let raf = 0;
+    let cancelled = false;
+
+    const tick = () => {
+      if (cancelled) return;
+      syncTextLayerOverlay();
+      raf = requestAnimationFrame(tick);
+    };
+
+    raf = requestAnimationFrame(tick);
+    return () => {
+      cancelled = true;
+      if (raf) {
+        try {
+          cancelAnimationFrame(raf);
+        } catch {
+          // ignore
+        }
+      }
+    };
+  }, [shouldTrackOverlay, syncTextLayerOverlay]);
 
   useEffect(() => {
     const t = syncTarget;
