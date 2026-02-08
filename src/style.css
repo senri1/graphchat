@@ -2958,6 +2958,19 @@ body {
   color: rgba(255, 255, 255, 0.92);
 }
 
+/* Keep LaTeX textarea scrollbar visuals stable while the PDF text overlay captures pointer hover. */
+.editor--latex .editor__textarea {
+  scrollbar-color: rgba(255, 255, 255, 0.35) transparent;
+}
+
+.editor--latex .editor__textarea::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.32);
+}
+
+.editor--latex .editor__textarea::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.45);
+}
+
 @media (max-width: 900px) {
   .editor__latexWorkspace {
     flex-direction: column;
@@ -2992,6 +3005,36 @@ body {
   padding: 8px;
   box-sizing: border-box;
   background: rgba(26, 26, 26, 0.85);
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.35) transparent;
+}
+
+.editor__pdfCanvasScroll--fit {
+  overflow-x: hidden;
+}
+
+.editor__pdfCanvasScroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.editor__pdfCanvasScroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.editor__pdfCanvasScroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.32);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+.editor__pdfCanvasScroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.45);
+  border: 2px solid transparent;
+  background-clip: content-box;
 }
 
 .editor__pdfCanvasPageWrap {

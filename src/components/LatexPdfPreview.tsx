@@ -89,6 +89,7 @@ function LatexPdfPreviewImpl(props: Props) {
   const [scrollTop, setScrollTop] = useState(0);
   const [scrollViewportH, setScrollViewportH] = useState(0);
   const [activeTextLayerPage, setActiveTextLayerPage] = useState<number | null>(null);
+  const isFitZoomMode = zoomMode === 'fit-width' || zoomMode === 'fit-page';
 
   useEffect(() => {
     onInverseSyncRef.current = onInverseSync;
@@ -137,32 +138,38 @@ function LatexPdfPreviewImpl(props: Props) {
     }
   }, []);
 
-  const handleOverlayWheel = useCallback((payload: PdfOverlayWheelPayload): boolean => {
-    const el = containerRef.current;
-    if (!el) return false;
-    if (payload.ctrlKey) return false;
+  const handleOverlayWheel = useCallback(
+    (payload: PdfOverlayWheelPayload): boolean => {
+      const el = containerRef.current;
+      if (!el) return false;
+      if (payload.ctrlKey) return false;
 
-    const hasHorizontal = el.scrollWidth > el.clientWidth + 1;
-    const hasVertical = el.scrollHeight > el.clientHeight + 1;
-    if (!hasHorizontal && !hasVertical) return false;
+      const hasHorizontal = !isFitZoomMode && el.scrollWidth > el.clientWidth + 1;
+      const hasVertical = el.scrollHeight > el.clientHeight + 1;
+      if (!hasHorizontal && !hasVertical) return false;
 
-    const mode = Number(payload.deltaMode) || 0;
-    const unit = mode === 1 ? 16 : mode === 2 ? Math.max(1, el.clientHeight) : 1;
-    let dx = (Number(payload.deltaX) || 0) * unit;
-    let dy = (Number(payload.deltaY) || 0) * unit;
-    if (payload.shiftKey && Math.abs(dx) < 0.01 && Math.abs(dy) >= 0.01) {
-      dx = dy;
-      dy = 0;
-    }
+      const mode = Number(payload.deltaMode) || 0;
+      const unit = mode === 1 ? 16 : mode === 2 ? Math.max(1, el.clientHeight) : 1;
+      let dx = (Number(payload.deltaX) || 0) * unit;
+      let dy = (Number(payload.deltaY) || 0) * unit;
 
-    const maxLeft = Math.max(0, el.scrollWidth - el.clientWidth);
-    const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
-    const nextLeft = hasHorizontal ? clamp(el.scrollLeft + dx, 0, maxLeft) : el.scrollLeft;
-    const nextTop = hasVertical ? clamp(el.scrollTop + dy, 0, maxTop) : el.scrollTop;
-    if (Math.abs(nextLeft - el.scrollLeft) >= 0.01) el.scrollLeft = nextLeft;
-    if (Math.abs(nextTop - el.scrollTop) >= 0.01) el.scrollTop = nextTop;
-    return true;
-  }, []);
+      if (isFitZoomMode) {
+        dx = 0;
+      } else if (payload.shiftKey && Math.abs(dx) < 0.01 && Math.abs(dy) >= 0.01) {
+        dx = dy;
+        dy = 0;
+      }
+
+      const maxLeft = Math.max(0, el.scrollWidth - el.clientWidth);
+      const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+      const nextLeft = hasHorizontal ? clamp(el.scrollLeft + dx, 0, maxLeft) : el.scrollLeft;
+      const nextTop = hasVertical ? clamp(el.scrollTop + dy, 0, maxTop) : el.scrollTop;
+      if (Math.abs(nextLeft - el.scrollLeft) >= 0.01) el.scrollLeft = nextLeft;
+      if (Math.abs(nextTop - el.scrollTop) >= 0.01) el.scrollTop = nextTop;
+      return true;
+    },
+    [isFitZoomMode],
+  );
 
   useEffect(() => {
     if (typeof document === 'undefined') return;
@@ -366,17 +373,19 @@ function LatexPdfPreviewImpl(props: Props) {
           zoomMode === 'fit-page' ? 'fit-page' : zoomMode === 'fit-width' ? 'fit-width' : 'manual';
         const zoomRaw = Number(zoom);
         const zoomFactor = Number.isFinite(zoomRaw) ? clamp(zoomRaw, 0.35, 4) : 1;
-        const widthTarget = Math.max(180, (containerWidth || 680) * zoomFactor);
-        const widthFitTarget = Math.max(180, (containerWidth || 680) - 12);
+        const viewportWidth = Math.max(1, containerWidth || 680);
+        // Leave a small buffer so fit-width mode never oscillates around a 1px overflow.
+        const fitWidthTarget = Math.max(180, viewportWidth - SCROLL_PAD_PX * 2 - 2);
+        const manualWidthTarget = Math.max(180, fitWidthTarget * zoomFactor);
         const heightFitTarget = Math.max(180, (containerHeight || scrollViewportH || 900) - SCROLL_PAD_PX * 2);
         const nextMetas: RenderPageMeta[] = [];
         for (let pageNumber = 1; pageNumber <= count; pageNumber += 1) {
           const page = await doc.getPage(pageNumber);
           const base = page.getViewport({ scale: 1 });
-          const manualScale = clamp((widthTarget - 12) / Math.max(1, base.width), 0.45, 2.4);
-          const fitWidthScale = clamp(widthFitTarget / Math.max(1, base.width), 0.45, 2.4);
+          const manualScale = clamp(manualWidthTarget / Math.max(1, base.width), 0.45, 2.4);
+          const fitWidthScale = clamp(fitWidthTarget / Math.max(1, base.width), 0.45, 2.4);
           const fitPageScale = clamp(
-            Math.min(widthFitTarget / Math.max(1, base.width), heightFitTarget / Math.max(1, base.height)),
+            Math.min(fitWidthTarget / Math.max(1, base.width), heightFitTarget / Math.max(1, base.height)),
             0.45,
             2.4,
           );
@@ -663,7 +672,7 @@ function LatexPdfPreviewImpl(props: Props) {
     if (error) return <div className="editor__emptyPreview">{error}</div>;
     if (!pageCount) return <div className="editor__emptyPreview">PDF has no pages.</div>;
     return (
-      <div ref={containerRef} className="editor__pdfCanvasScroll">
+      <div ref={containerRef} className={`editor__pdfCanvasScroll ${isFitZoomMode ? 'editor__pdfCanvasScroll--fit' : ''}`}>
         {metas.map((meta) => {
           const showMarker = marker && marker.page === meta.pageNumber;
           return (
@@ -719,7 +728,7 @@ function LatexPdfPreviewImpl(props: Props) {
         })}
       </div>
     );
-  }, [activateTextLayerPage, error, handlePageClick, loading, marker, metas, pageCount, showEmpty]);
+  }, [activateTextLayerPage, error, handlePageClick, isFitZoomMode, loading, marker, metas, pageCount, showEmpty]);
 
   return <>{content}</>;
 }
