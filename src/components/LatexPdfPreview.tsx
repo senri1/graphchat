@@ -483,6 +483,20 @@ function LatexPdfPreviewImpl(props: Props) {
       overlay.hide();
       return;
     }
+    const clipRectRaw = containerRef.current?.getBoundingClientRect() ?? null;
+    const clipRect =
+      clipRectRaw &&
+      Number.isFinite(clipRectRaw.width) &&
+      Number.isFinite(clipRectRaw.height) &&
+      clipRectRaw.width > 0.5 &&
+      clipRectRaw.height > 0.5
+        ? {
+            x: clipRectRaw.left,
+            y: clipRectRaw.top,
+            w: clipRectRaw.width,
+            h: clipRectRaw.height,
+          }
+        : null;
 
     const pageKey = `${loadedPdfUrlRef.current ?? ''}|${pageNumber}|${meta.width}x${meta.height}@${meta.scale.toFixed(5)}`;
     const zoomX = rect.width / Math.max(1, meta.width);
@@ -505,6 +519,7 @@ function LatexPdfPreviewImpl(props: Props) {
         w: rect.width,
         h: rect.height,
       },
+      clipRect,
       worldW: meta.width,
       worldH: meta.height,
       zoom: overlayZoom,

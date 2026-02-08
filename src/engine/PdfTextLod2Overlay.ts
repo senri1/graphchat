@@ -890,6 +890,7 @@ export class PdfTextLod2Overlay {
     mode: PdfTextLod2Mode;
     interactive?: boolean;
     screenRect: Rect;
+    clipRect?: Rect | null;
     worldW: number;
     worldH: number;
     zoom: number;
@@ -906,18 +907,56 @@ export class PdfTextLod2Overlay {
     const z = Math.max(0.001, Number.isFinite(opts.zoom) ? opts.zoom : 1);
     this.lastZoom = z;
 
+    const rawLeft = Number.isFinite(opts.screenRect.x as number) ? Number(opts.screenRect.x) : 0;
+    const rawTop = Number.isFinite(opts.screenRect.y as number) ? Number(opts.screenRect.y) : 0;
+    const rawWidth = Math.max(1, Number.isFinite(opts.screenRect.w as number) ? Number(opts.screenRect.w) : 1);
+    const rawHeight = Math.max(1, Number.isFinite(opts.screenRect.h as number) ? Number(opts.screenRect.h) : 1);
+    const rawRight = rawLeft + rawWidth;
+    const rawBottom = rawTop + rawHeight;
+
+    let clippedLeft = rawLeft;
+    let clippedTop = rawTop;
+    let clippedRight = rawRight;
+    let clippedBottom = rawBottom;
+
+    const clip = opts.clipRect;
+    if (clip) {
+      const clipLeft = Number(clip.x);
+      const clipTop = Number(clip.y);
+      const clipWidth = Number(clip.w);
+      const clipHeight = Number(clip.h);
+      if (Number.isFinite(clipLeft) && Number.isFinite(clipTop) && Number.isFinite(clipWidth) && Number.isFinite(clipHeight)) {
+        const clipRight = clipLeft + Math.max(0, clipWidth);
+        const clipBottom = clipTop + Math.max(0, clipHeight);
+        clippedLeft = Math.max(rawLeft, clipLeft);
+        clippedTop = Math.max(rawTop, clipTop);
+        clippedRight = Math.min(rawRight, clipRight);
+        clippedBottom = Math.min(rawBottom, clipBottom);
+      }
+    }
+
+    const clippedWidth = Math.max(0, clippedRight - clippedLeft);
+    const clippedHeight = Math.max(0, clippedBottom - clippedTop);
+    if (clippedWidth <= 0.5 || clippedHeight <= 0.5) {
+      this.root.style.display = 'none';
+      this.root.style.pointerEvents = 'none';
+      return;
+    }
+
     this.root.style.display = 'block';
     this.root.style.pointerEvents = this.interactive ? 'auto' : 'none';
-    this.root.style.left = `${Math.round(opts.screenRect.x)}px`;
-    this.root.style.top = `${Math.round(opts.screenRect.y)}px`;
-    this.root.style.width = `${Math.max(1, Math.round(opts.screenRect.w))}px`;
-    this.root.style.height = `${Math.max(1, Math.round(opts.screenRect.h))}px`;
+    this.root.style.left = `${Math.round(clippedLeft)}px`;
+    this.root.style.top = `${Math.round(clippedTop)}px`;
+    this.root.style.width = `${Math.max(1, Math.round(clippedWidth))}px`;
+    this.root.style.height = `${Math.max(1, Math.round(clippedHeight))}px`;
 
     const worldW = Math.max(1, opts.worldW);
     const worldH = Math.max(1, opts.worldH);
     this.scaled.style.width = `${worldW}px`;
     this.scaled.style.height = `${worldH}px`;
-    this.scaled.style.transform = `scale(${z})`;
+    const cropWorldX = (clippedLeft - rawLeft) / z;
+    const cropWorldY = (clippedTop - rawTop) / z;
+    this.scaled.style.transform = `translate(${-cropWorldX}px, ${-cropWorldY}px) scale(${z})`;
 
     if (keyChanged) {
       this.visibleKey = opts.pageKey;
