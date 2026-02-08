@@ -53,6 +53,8 @@ type CompileDiagnostic = {
   message: string;
 };
 
+type PdfZoomMode = 'manual' | 'fit-width' | 'fit-page';
+
 const PDF_ZOOM_MIN = 0.35;
 const PDF_ZOOM_MAX = 4;
 const PDF_ZOOM_STEP = 0.1;
@@ -216,6 +218,7 @@ export default function LatexNodeEditor(props: Props) {
   const [treeVisible, setTreeVisible] = useState(true);
   const [isSyncingPdf, setIsSyncingPdf] = useState(false);
   const [pdfSyncTarget, setPdfSyncTarget] = useState<{ token: number; page: number; x?: number | null; y?: number | null } | null>(null);
+  const [pdfZoomMode, setPdfZoomMode] = useState<PdfZoomMode>('fit-width');
   const [pdfZoom, setPdfZoom] = useState(1);
   const [logVisible, setLogVisible] = useState(false);
   const [logCollapsed, setLogCollapsed] = useState(false);
@@ -1189,18 +1192,26 @@ export default function LatexNodeEditor(props: Props) {
   const assetCount = projectFiles.length - editableCount;
   const canZoomOut = pdfZoom > PDF_ZOOM_MIN + 0.001;
   const canZoomIn = pdfZoom < PDF_ZOOM_MAX - 0.001;
-  const zoomLabel = `${Math.round(pdfZoom * 100)}%`;
+  const zoomLabel =
+    pdfZoomMode === 'fit-page' ? 'Fit page' : pdfZoomMode === 'fit-width' ? 'Fit width' : `${Math.round(pdfZoom * 100)}%`;
 
   const adjustPdfZoom = useCallback((delta: number) => {
     const d = Number(delta);
     if (!Number.isFinite(d) || d === 0) return;
+    setPdfZoomMode('manual');
     setPdfZoom((prev) => {
       const next = Math.max(PDF_ZOOM_MIN, Math.min(PDF_ZOOM_MAX, prev + d));
       return Math.round(next * 100) / 100;
     });
   }, []);
 
-  const resetPdfZoom = useCallback(() => {
+  const fitPdfWidth = useCallback(() => {
+    setPdfZoomMode('fit-width');
+    setPdfZoom(1);
+  }, []);
+
+  const fitPdfPage = useCallback(() => {
+    setPdfZoomMode('fit-page');
     setPdfZoom(1);
   }, []);
 
@@ -1431,11 +1442,17 @@ export default function LatexNodeEditor(props: Props) {
                   <button className="editor__btn editor__btn--compact" type="button" onClick={() => adjustPdfZoom(-PDF_ZOOM_STEP)} disabled={!canZoomOut}>
                     -
                   </button>
-                  <button className="editor__btn editor__btn--compact" type="button" onClick={resetPdfZoom} title="Reset zoom (fit width)">
+                  <button className="editor__btn editor__btn--compact" type="button" disabled title="Current zoom mode/value">
                     {zoomLabel}
                   </button>
                   <button className="editor__btn editor__btn--compact" type="button" onClick={() => adjustPdfZoom(PDF_ZOOM_STEP)} disabled={!canZoomIn}>
                     +
+                  </button>
+                  <button className="editor__btn editor__btn--compact" type="button" onClick={fitPdfWidth} title="Fit PDF to pane width">
+                    Fit width
+                  </button>
+                  <button className="editor__btn editor__btn--compact" type="button" onClick={fitPdfPage} title="Fit whole page in pane">
+                    Fit page
                   </button>
                   <button className="editor__btn editor__btn--compact" type="button" onClick={openCompiledPdf}>
                     Open
@@ -1469,6 +1486,7 @@ export default function LatexNodeEditor(props: Props) {
               pdfUrl={compiledPdfUrl}
               syncTarget={pdfSyncTarget}
               zoom={pdfZoom}
+              zoomMode={pdfZoomMode}
               onInverseSync={canInverseSync ? handlePdfInverseSync : undefined}
             />
           </div>

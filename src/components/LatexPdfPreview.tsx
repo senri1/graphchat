@@ -13,6 +13,7 @@ type Props = {
   pdfUrl: string | null;
   syncTarget: SyncTarget | null;
   zoom?: number;
+  zoomMode?: 'manual' | 'fit-width' | 'fit-page';
   onInverseSync?: (payload: { page: number; x: number; y: number }) => void;
 };
 
@@ -34,7 +35,7 @@ function clamp(v: number, min: number, max: number): number {
 }
 
 function LatexPdfPreviewImpl(props: Props) {
-  const { pdfUrl, syncTarget, zoom, onInverseSync } = props;
+  const { pdfUrl, syncTarget, zoom, zoomMode, onInverseSync } = props;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRefByPage = useRef<Map<number, HTMLCanvasElement>>(new Map());
@@ -46,6 +47,7 @@ function LatexPdfPreviewImpl(props: Props) {
   const lastAppliedSyncTokenRef = useRef<number | null>(null);
 
   const [containerWidth, setContainerWidth] = useState(0);
+  const [containerHeight, setContainerHeight] = useState(0);
   const [metas, setMetas] = useState<RenderPageMeta[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -56,12 +58,15 @@ function LatexPdfPreviewImpl(props: Props) {
   useEffect(() => {
     const el = containerRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
-    const applyWidth = () => {
-      const next = Math.max(1, Math.floor(el.getBoundingClientRect().width));
-      setContainerWidth((prev) => (Math.abs(prev - next) >= 2 ? next : prev));
+    const applySize = () => {
+      const rect = el.getBoundingClientRect();
+      const nextW = Math.max(1, Math.floor(rect.width));
+      const nextH = Math.max(1, Math.floor(rect.height));
+      setContainerWidth((prev) => (Math.abs(prev - nextW) >= 2 ? nextW : prev));
+      setContainerHeight((prev) => (Math.abs(prev - nextH) >= 2 ? nextH : prev));
     };
-    applyWidth();
-    const ro = new ResizeObserver(() => applyWidth());
+    applySize();
+    const ro = new ResizeObserver(() => applySize());
     ro.observe(el);
     return () => {
       try {
@@ -188,14 +193,26 @@ function LatexPdfPreviewImpl(props: Props) {
         }
 
         const count = Math.max(0, Number(doc.numPages) || 0);
+        const effectiveMode: 'manual' | 'fit-width' | 'fit-page' =
+          zoomMode === 'fit-page' ? 'fit-page' : zoomMode === 'fit-width' ? 'fit-width' : 'manual';
         const zoomRaw = Number(zoom);
         const zoomFactor = Number.isFinite(zoomRaw) ? clamp(zoomRaw, 0.35, 4) : 1;
         const widthTarget = Math.max(180, (containerWidth || 680) * zoomFactor);
+        const widthFitTarget = Math.max(180, (containerWidth || 680) - 12);
+        const heightFitTarget = Math.max(180, (containerHeight || scrollViewportH || 900) - SCROLL_PAD_PX * 2);
         const nextMetas: RenderPageMeta[] = [];
         for (let pageNumber = 1; pageNumber <= count; pageNumber += 1) {
           const page = await doc.getPage(pageNumber);
           const base = page.getViewport({ scale: 1 });
-          const scale = clamp((widthTarget - 12) / Math.max(1, base.width), 0.45, 2.4);
+          const manualScale = clamp((widthTarget - 12) / Math.max(1, base.width), 0.45, 2.4);
+          const fitWidthScale = clamp(widthFitTarget / Math.max(1, base.width), 0.45, 2.4);
+          const fitPageScale = clamp(
+            Math.min(widthFitTarget / Math.max(1, base.width), heightFitTarget / Math.max(1, base.height)),
+            0.45,
+            2.4,
+          );
+          const scale =
+            effectiveMode === 'fit-page' ? fitPageScale : effectiveMode === 'fit-width' ? fitWidthScale : manualScale;
           const viewport = page.getViewport({ scale });
           nextMetas.push({
             pageNumber,
@@ -220,7 +237,7 @@ function LatexPdfPreviewImpl(props: Props) {
     return () => {
       cancelled = true;
     };
-  }, [pdfUrl, containerWidth, zoom]);
+  }, [pdfUrl, containerWidth, containerHeight, scrollViewportH, zoom, zoomMode]);
 
   const visiblePageSet = useMemo(() => {
     if (metas.length === 0) return new Set<number>();
@@ -415,6 +432,7 @@ const LatexPdfPreview = React.memo(LatexPdfPreviewImpl, (prev, next) => {
   return (
     prev.pdfUrl === next.pdfUrl &&
     prev.zoom === next.zoom &&
+    prev.zoomMode === next.zoomMode &&
     prev.onInverseSync === next.onInverseSync &&
     syncTargetsEqual(prev.syncTarget, next.syncTarget)
   );
