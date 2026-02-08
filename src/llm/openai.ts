@@ -16,8 +16,26 @@ export type OpenAIChatSettings = {
   inkExport?: InkExportOptions;
 };
 
+export const OPENAI_LATEX_TOOL_NAMES = {
+  listFiles: 'latex_list_files',
+  readFile: 'latex_read_file',
+  writeFile: 'latex_write_file',
+  replaceInFile: 'latex_replace_in_file',
+} as const;
+
+export type OpenAILatexToolName = (typeof OPENAI_LATEX_TOOL_NAMES)[keyof typeof OPENAI_LATEX_TOOL_NAMES];
+
+export type OpenAILatexToolContext = {
+  latexNodeId: string;
+  projectRoot: string;
+  mainFile: string | null;
+  activeFile: string | null;
+};
+
 const INK_NODE_IMAGE_PREFACE =
   'The contents of this message are in the provided image.';
+
+const LATEX_FILE_KINDS = ['tex', 'bib', 'style', 'class', 'asset', 'other'] as const;
 
 async function attachmentToOpenAIContent(att: any): Promise<any | null> {
   if (!att) return null;
@@ -250,6 +268,167 @@ function supportsVerbosity(modelApiName: string): boolean {
   return typeof modelApiName === 'string' && modelApiName.startsWith('gpt-5');
 }
 
+function trimToNull(value: unknown): string | null {
+  const raw = typeof value === 'string' ? value.trim() : String(value ?? '').trim();
+  return raw ? raw : null;
+}
+
+export function resolveOpenAILatexToolContext(args: {
+  nodes: ChatNode[];
+  leafUserNodeId: string;
+}): OpenAILatexToolContext | null {
+  const byId = new Map<string, ChatNode>();
+  for (const n of args.nodes ?? []) byId.set(n.id, n);
+
+  let cur: ChatNode | null = byId.get(args.leafUserNodeId) ?? null;
+  while (cur) {
+    if (cur.kind === 'text' && cur.textFormat === 'latex') {
+      const projectRoot = trimToNull((cur as any).latexProjectRoot);
+      if (projectRoot) {
+        return {
+          latexNodeId: cur.id,
+          projectRoot,
+          mainFile: trimToNull((cur as any).latexMainFile),
+          activeFile: trimToNull((cur as any).latexActiveFile),
+        };
+      }
+    }
+    const parentId = trimToNull((cur as any)?.parentId);
+    cur = parentId ? byId.get(parentId) ?? null : null;
+  }
+
+  return null;
+}
+
+function buildOpenAILatexToolDefinitions(): any[] {
+  return [
+    {
+      type: 'function',
+      name: OPENAI_LATEX_TOOL_NAMES.listFiles,
+      description:
+        'List files in the selected LaTeX project. Use this first to discover available editable files and likely targets.',
+      strict: true,
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          path_prefix: { type: ['string', 'null'], description: 'Optional project-relative folder prefix to scope results.' },
+          editable_only: { type: ['boolean', 'null'], description: 'If true, return only editable text files.' },
+          kinds: {
+            type: ['array', 'null'],
+            description: 'Optional file kind filters.',
+            items: { type: 'string', enum: LATEX_FILE_KINDS },
+            maxItems: LATEX_FILE_KINDS.length,
+          },
+          limit: { type: ['integer', 'null'], minimum: 1, maximum: 5000, description: 'Maximum files returned in this page.' },
+          cursor: { type: ['string', 'null'], description: 'Pagination cursor from a previous latex_list_files call.' },
+        },
+        required: ['path_prefix', 'editable_only', 'kinds', 'limit', 'cursor'],
+      },
+    },
+    {
+      type: 'function',
+      name: OPENAI_LATEX_TOOL_NAMES.readFile,
+      description:
+        'Read a UTF-8 text file from the selected LaTeX project. Returns content, size, and a version hash for safe edits.',
+      strict: true,
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          path: { type: 'string', description: 'Project-relative file path.' },
+          max_bytes: { type: ['integer', 'null'], minimum: 1, maximum: 2000000, description: 'Optional maximum bytes returned.' },
+          start_line: { type: ['integer', 'null'], minimum: 1, maximum: 10000000, description: 'Optional 1-based start line.' },
+          end_line: { type: ['integer', 'null'], minimum: 1, maximum: 10000000, description: 'Optional 1-based end line.' },
+        },
+        required: ['path', 'max_bytes', 'start_line', 'end_line'],
+      },
+    },
+    {
+      type: 'function',
+      name: OPENAI_LATEX_TOOL_NAMES.writeFile,
+      description:
+        'Write full UTF-8 text content to a project file. Use expected_version from latex_read_file to avoid overwriting newer edits.',
+      strict: true,
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          path: { type: 'string', description: 'Project-relative file path.' },
+          content: { type: 'string', description: 'Complete new file content.' },
+          expected_version: {
+            type: 'string',
+            description:
+              'Version hash from latex_read_file; write fails if file content changed. Use "missing" only for create_if_missing=true when creating a new file.',
+          },
+          create_if_missing: { type: ['boolean', 'null'], description: 'If true, allows creating the file if missing.' },
+        },
+        required: ['path', 'content', 'expected_version', 'create_if_missing'],
+      },
+    },
+    {
+      type: 'function',
+      name: OPENAI_LATEX_TOOL_NAMES.replaceInFile,
+      description:
+        'Apply one or more literal text replacements in a UTF-8 project file. Prefer this over full rewrites for localized edits.',
+      strict: true,
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          path: { type: 'string', description: 'Project-relative file path.' },
+          replacements: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 200,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                old_text: { type: 'string', description: 'Exact literal text to match.' },
+                new_text: { type: 'string', description: 'Replacement text.' },
+                replace_all: { type: ['boolean', 'null'], description: 'If true, replace every match in scope.' },
+                start_line: { type: ['integer', 'null'], minimum: 1, maximum: 10000000, description: 'Optional 1-based start line scope.' },
+                end_line: { type: ['integer', 'null'], minimum: 1, maximum: 10000000, description: 'Optional 1-based end line scope.' },
+              },
+              required: ['old_text', 'new_text', 'replace_all', 'start_line', 'end_line'],
+            },
+          },
+          expected_version: {
+            type: 'string',
+            description: 'Version hash from latex_read_file; operation fails if file content changed.',
+          },
+          dry_run: { type: ['boolean', 'null'], description: 'If true, report what would change without writing.' },
+          max_total_replacements: {
+            type: ['integer', 'null'],
+            minimum: 1,
+            maximum: 200000,
+            description: 'Hard cap on total applied replacements for safety.',
+          },
+        },
+        required: ['path', 'replacements', 'expected_version', 'dry_run', 'max_total_replacements'],
+      },
+    },
+  ];
+}
+
+function buildOpenAILatexToolInstruction(context: OpenAILatexToolContext): string {
+  const hints: string[] = [];
+  if (context.activeFile) hints.push(`Active file hint: ${context.activeFile}`);
+  if (context.mainFile) hints.push(`Main file hint: ${context.mainFile}`);
+
+  const header = [
+    'You can edit files in the selected LaTeX project via tools.',
+    `Project root is preselected and not user-specified. ${hints.join(' ')}`.trim(),
+    'For small/local edits, prefer latex_replace_in_file.',
+    'Use latex_write_file only when a full rewrite is necessary.',
+    'For latex_write_file and latex_replace_in_file, always pass expected_version from latex_read_file.',
+    'Always read the target file before editing it.',
+  ].join('\n');
+
+  return header;
+}
+
 export async function buildOpenAIResponseRequest(args: {
   nodes: ChatNode[];
   leafUserNodeId: string;
@@ -259,11 +438,17 @@ export async function buildOpenAIResponseRequest(args: {
   const info = getModelInfo(modelId);
   const apiModel = info?.apiModel || modelId;
   const input = await buildOpenAIInputFromChatNodes(args.nodes, args.leafUserNodeId, { inkExport: args.settings.inkExport });
+  const latexToolContext = resolveOpenAILatexToolContext({ nodes: args.nodes, leafUserNodeId: args.leafUserNodeId });
+
+  const resolvedSystemInstruction = resolveSystemInstruction(args.settings.systemInstruction);
+  const instructions = latexToolContext
+    ? `${resolvedSystemInstruction}\n\n${buildOpenAILatexToolInstruction(latexToolContext)}`
+    : resolvedSystemInstruction;
 
   const body: any = {
     model: apiModel,
     input,
-    instructions: resolveSystemInstruction(args.settings.systemInstruction),
+    instructions,
     store: true,
   };
 
@@ -272,8 +457,14 @@ export async function buildOpenAIResponseRequest(args: {
     body.text = { verbosity };
   }
 
-  if (args.settings.webSearchEnabled && info?.parameters.webSearch) {
-    body.tools = [{ type: 'web_search' }];
+  const tools: any[] = [];
+  if (args.settings.webSearchEnabled && info?.parameters.webSearch) tools.push({ type: 'web_search' });
+  if (latexToolContext) {
+    tools.push(...buildOpenAILatexToolDefinitions());
+    body.parallel_tool_calls = false;
+  }
+  if (tools.length > 0) {
+    body.tools = tools;
     body.tool_choice = 'auto';
   }
 

@@ -48,7 +48,13 @@ import { getAnthropicApiKey, sendAnthropicMessage, streamAnthropicMessage } from
 import { getXaiApiKey, retrieveXaiResponse, sendXaiResponse, streamXaiResponse } from './services/xaiService';
 import type { ChatAttachment, ChatNode, InkStroke, ThinkingSummaryChunk } from './model/chat';
 import { normalizeBackgroundLibrary, type BackgroundLibraryItem } from './model/backgrounds';
-import { buildOpenAIResponseRequest, type OpenAIChatSettings } from './llm/openai';
+import {
+  buildOpenAIResponseRequest,
+  OPENAI_LATEX_TOOL_NAMES,
+  resolveOpenAILatexToolContext,
+  type OpenAIChatSettings,
+  type OpenAILatexToolContext,
+} from './llm/openai';
 import { buildGeminiContext, type GeminiChatSettings } from './llm/gemini';
 import { buildXaiResponseRequest, type XaiChatSettings } from './llm/xai';
 import { buildAnthropicMessageRequest, type AnthropicChatSettings } from './llm/anthropic';
@@ -78,6 +84,7 @@ import { getPayload, putPayload } from './storage/payloads';
 import { fontFamilyCss, normalizeFontFamilyKey, type FontFamilyKey } from './ui/typography';
 import { useAttachmentObjectUrls } from './ui/useAttachmentObjectUrls';
 import { compileLatexDocument } from './latex/compiler';
+import { listLatexProjectFiles, readLatexProjectFile, writeLatexProjectFile } from './latex/project';
 
 type ChatTurnMeta = {
   id: string;
@@ -554,6 +561,648 @@ function findChatNameAndFolderPath(
   };
 
   return walk(root, []);
+}
+
+const OPENAI_TOOL_LOOP_MAX_ROUNDS = 24;
+const OPENAI_TOOL_CALL_REPEAT_LIMIT = 4;
+const OPENAI_LATEX_LIST_DEFAULT_LIMIT = 500;
+const OPENAI_LATEX_LIST_MAX_LIMIT = 5000;
+const OPENAI_LATEX_READ_MAX_BYTES = 2_000_000;
+const OPENAI_LATEX_REPLACE_DEFAULT_MAX_TOTAL = 200;
+const OPENAI_LATEX_LIST_CURSOR_PREFIX = 'offset:';
+
+const OPENAI_LATEX_TOOL_NAME_SET = new Set<string>(Object.values(OPENAI_LATEX_TOOL_NAMES));
+
+type OpenAIFunctionCall = {
+  callId: string;
+  name: string;
+  argumentsJson: string;
+};
+
+type OpenAIFunctionCallOutput = {
+  callId: string;
+  output: Record<string, unknown>;
+};
+
+function buildOpenAIToolError(
+  errorCode: string,
+  error: string,
+  extra?: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    ok: false,
+    error_code: errorCode,
+    error,
+    ...(extra ?? {}),
+  };
+}
+
+function normalizeOpenAILatexPath(raw: unknown, opts?: { allowEmpty?: boolean }): { ok: true; value: string } | { ok: false; error: string } {
+  const allowEmpty = Boolean(opts?.allowEmpty);
+  const asString = typeof raw === 'string' ? raw.trim() : '';
+  if (!asString) {
+    if (allowEmpty) return { ok: true, value: '' };
+    return { ok: false, error: 'Path is required.' };
+  }
+  if (asString.includes('\0')) return { ok: false, error: 'Path contains an invalid character.' };
+  const slash = asString.replace(/\\/g, '/');
+  if (slash.startsWith('/')) return { ok: false, error: 'Absolute paths are not allowed.' };
+  if (/^[a-zA-Z]:\//.test(slash)) return { ok: false, error: 'Absolute paths are not allowed.' };
+
+  const segments = slash.split('/').filter(Boolean);
+  if (!segments.length) {
+    if (allowEmpty) return { ok: true, value: '' };
+    return { ok: false, error: 'Path is required.' };
+  }
+  for (const seg of segments) {
+    if (seg === '.' || seg === '..') return { ok: false, error: 'Path cannot contain "." or ".." segments.' };
+  }
+  return { ok: true, value: segments.join('/') };
+}
+
+function parseOpenAIOptionalPositiveInteger(
+  raw: unknown,
+  fieldName: string,
+  maxValue: number,
+): { ok: true; value: number | undefined } | { ok: false; error: string } {
+  if (raw === undefined || raw === null || raw === '') return { ok: true, value: undefined };
+  const n =
+    typeof raw === 'number'
+      ? raw
+      : typeof raw === 'string' && raw.trim()
+        ? Number(raw)
+        : Number.NaN;
+  if (!Number.isFinite(n) || n < 1) return { ok: false, error: `${fieldName} must be a positive integer.` };
+  const i = Math.floor(n);
+  if (i < 1 || i > maxValue) return { ok: false, error: `${fieldName} must be <= ${maxValue}.` };
+  return { ok: true, value: i };
+}
+
+function getOpenAIUtf8ByteLength(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+function truncateOpenAITextByUtf8Bytes(text: string, maxBytes: number): { text: string; truncated: boolean } {
+  const safeMax = Math.max(1, Math.floor(maxBytes));
+  if (getOpenAIUtf8ByteLength(text) <= safeMax) return { text, truncated: false };
+
+  let lo = 0;
+  let hi = text.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    const candidate = text.slice(0, mid);
+    if (getOpenAIUtf8ByteLength(candidate) <= safeMax) lo = mid;
+    else hi = mid - 1;
+  }
+  return { text: text.slice(0, lo), truncated: true };
+}
+
+function buildOpenAILineStarts(text: string): number[] {
+  const starts = [0];
+  for (let i = 0; i < text.length; i += 1) {
+    if (text.charCodeAt(i) === 10) starts.push(i + 1);
+  }
+  return starts;
+}
+
+function resolveOpenAILineRangeOffsets(args: {
+  content: string;
+  startLine?: number;
+  endLine?: number;
+}): { ok: true; startOffset: number; endOffsetExclusive: number } | { ok: false; error: string } {
+  const starts = buildOpenAILineStarts(args.content);
+  const lineCount = Math.max(1, starts.length);
+  const startLine = args.startLine ?? 1;
+  const endLine = args.endLine ?? lineCount;
+
+  if (!Number.isFinite(startLine) || startLine < 1 || startLine > lineCount) {
+    return { ok: false, error: `start_line must be between 1 and ${lineCount}.` };
+  }
+  if (!Number.isFinite(endLine) || endLine < 1 || endLine > lineCount) {
+    return { ok: false, error: `end_line must be between 1 and ${lineCount}.` };
+  }
+  if (endLine < startLine) return { ok: false, error: 'end_line must be greater than or equal to start_line.' };
+
+  const startOffset = starts[startLine - 1];
+  const endOffsetExclusive = endLine < lineCount ? starts[endLine] : args.content.length;
+  return { ok: true, startOffset, endOffsetExclusive };
+}
+
+function countOpenAILiteralMatches(content: string, needle: string): number {
+  if (!needle) return 0;
+  let count = 0;
+  let from = 0;
+  while (from <= content.length) {
+    const idx = content.indexOf(needle, from);
+    if (idx === -1) break;
+    count += 1;
+    from = idx + needle.length;
+  }
+  return count;
+}
+
+function applyOpenAILiteralReplacement(args: {
+  content: string;
+  oldText: string;
+  newText: string;
+  replaceAll: boolean;
+  startLine?: number;
+  endLine?: number;
+}):
+  | { ok: true; content: string; count: number }
+  | { ok: false; errorCode: string; error: string } {
+  if (!args.oldText) return { ok: false, errorCode: 'INVALID_ARGUMENT', error: 'old_text must be non-empty.' };
+  const scope = resolveOpenAILineRangeOffsets({
+    content: args.content,
+    startLine: args.startLine,
+    endLine: args.endLine,
+  });
+  if (!scope.ok) return { ok: false, errorCode: 'INVALID_ARGUMENT', error: scope.error };
+
+  const head = args.content.slice(0, scope.startOffset);
+  const body = args.content.slice(scope.startOffset, scope.endOffsetExclusive);
+  const tail = args.content.slice(scope.endOffsetExclusive);
+
+  const first = body.indexOf(args.oldText);
+  if (first === -1) {
+    return { ok: false, errorCode: 'NO_MATCH', error: 'No match found for old_text in the selected scope.' };
+  }
+
+  if (!args.replaceAll) {
+    const second = body.indexOf(args.oldText, first + args.oldText.length);
+    if (second !== -1) {
+      return {
+        ok: false,
+        errorCode: 'AMBIGUOUS_MATCH',
+        error: 'Found multiple matches. Set replace_all=true or narrow the line range.',
+      };
+    }
+    const replaced = `${body.slice(0, first)}${args.newText}${body.slice(first + args.oldText.length)}`;
+    return { ok: true, content: `${head}${replaced}${tail}`, count: 1 };
+  }
+
+  const count = countOpenAILiteralMatches(body, args.oldText);
+  const replaced = body.split(args.oldText).join(args.newText);
+  return { ok: true, content: `${head}${replaced}${tail}`, count };
+}
+
+function openAIFallbackHash(text: string): string {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < text.length; i += 1) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return `fnv1a:${h.toString(16).padStart(8, '0')}`;
+}
+
+async function computeOpenAIContentVersion(content: string): Promise<string> {
+  try {
+    if (globalThis.crypto && globalThis.crypto.subtle) {
+      const data = new TextEncoder().encode(content);
+      const digest = await globalThis.crypto.subtle.digest('SHA-256', data);
+      const out = Array.from(new Uint8Array(digest))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+      return `sha256:${out}`;
+    }
+  } catch {
+    // ignore and fall back
+  }
+  return openAIFallbackHash(content);
+}
+
+function parseOpenAIListCursor(raw: unknown): number {
+  const s = typeof raw === 'string' ? raw.trim() : '';
+  if (!s.startsWith(OPENAI_LATEX_LIST_CURSOR_PREFIX)) return 0;
+  const n = Number(s.slice(OPENAI_LATEX_LIST_CURSOR_PREFIX.length));
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.floor(n);
+}
+
+function buildOpenAIListCursor(offset: number): string {
+  const safe = Math.max(0, Math.floor(offset));
+  return `${OPENAI_LATEX_LIST_CURSOR_PREFIX}${safe}`;
+}
+
+function mapOpenAILatexProjectErrorCode(message: string): string {
+  const msg = message.toLowerCase();
+  if (msg.includes('not found') || msg.includes('no such file') || msg.includes('enoent')) return 'NOT_FOUND';
+  if (msg.includes('outside project root') || msg.includes('invalid file path') || msg.includes('path')) return 'INVALID_PATH';
+  if (msg.includes('editable text files')) return 'NOT_EDITABLE';
+  if (msg.includes('too large')) return 'FILE_TOO_LARGE';
+  if (msg.includes('project root')) return 'PROJECT_NOT_SET';
+  return 'TOOL_EXECUTION_FAILED';
+}
+
+function isOpenAIMissingFileError(message: string): boolean {
+  const msg = message.toLowerCase();
+  return msg.includes('not found') || msg.includes('no such file') || msg.includes('enoent');
+}
+
+function parseOpenAIFunctionCallArguments(argumentsJson: string): Record<string, unknown> | null {
+  const raw = typeof argumentsJson === 'string' ? argumentsJson.trim() : '';
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function requestIncludesOpenAILatexTools(request: Record<string, unknown>): boolean {
+  const tools = Array.isArray((request as any)?.tools) ? ((request as any).tools as any[]) : [];
+  return tools.some((tool) => {
+    if (!tool || typeof tool !== 'object') return false;
+    if (tool.type !== 'function') return false;
+    const name = typeof tool.name === 'string' ? tool.name.trim() : '';
+    return OPENAI_LATEX_TOOL_NAME_SET.has(name);
+  });
+}
+
+function extractOpenAIResponseId(raw: unknown): string {
+  const anyRaw: any = raw as any;
+  const direct = typeof anyRaw?.id === 'string' ? String(anyRaw.id).trim() : '';
+  if (direct) return direct;
+  const nested = typeof anyRaw?.response?.id === 'string' ? String(anyRaw.response.id).trim() : '';
+  return nested || '';
+}
+
+function extractOpenAIFunctionCalls(raw: unknown): OpenAIFunctionCall[] {
+  const anyRaw: any = raw as any;
+  const output =
+    Array.isArray(anyRaw?.output)
+      ? (anyRaw.output as any[])
+      : Array.isArray(anyRaw?.response?.output)
+        ? (anyRaw.response.output as any[])
+        : [];
+  const out: OpenAIFunctionCall[] = [];
+  for (const item of output) {
+    if (!item || typeof item !== 'object') continue;
+    if (item.type !== 'function_call') continue;
+    const status = typeof item.status === 'string' ? String(item.status).trim().toLowerCase() : '';
+    if (status && status !== 'completed') continue;
+
+    const callId = typeof item.call_id === 'string' ? String(item.call_id).trim() : '';
+    const name = typeof item.name === 'string' ? String(item.name).trim() : '';
+    if (!callId || !name) continue;
+    let argumentsJson = '{}';
+    if (typeof item.arguments === 'string') argumentsJson = item.arguments;
+    else if (item.arguments && typeof item.arguments === 'object') {
+      try {
+        argumentsJson = JSON.stringify(item.arguments);
+      } catch {
+        argumentsJson = '{}';
+      }
+    }
+    out.push({ callId, name, argumentsJson });
+  }
+  return out;
+}
+
+function buildOpenAIFunctionCallContinuationRequest(args: {
+  baseRequest: Record<string, unknown>;
+  responseId: string;
+  outputs: OpenAIFunctionCallOutput[];
+}): Record<string, unknown> {
+  const base = args.baseRequest as any;
+  const input = args.outputs.map((item) => ({
+    type: 'function_call_output',
+    call_id: item.callId,
+    output: JSON.stringify(item.output),
+  }));
+  const next: Record<string, unknown> = {
+    model: base.model,
+    previous_response_id: args.responseId,
+    input,
+    store: true,
+  };
+  if (typeof base.instructions === 'string') next.instructions = base.instructions;
+  if (Array.isArray(base.tools)) next.tools = base.tools;
+  if (base.tool_choice !== undefined) next.tool_choice = base.tool_choice;
+  if (typeof base.parallel_tool_calls === 'boolean') next.parallel_tool_calls = base.parallel_tool_calls;
+  if (base.reasoning && typeof base.reasoning === 'object') next.reasoning = base.reasoning;
+  if (base.text && typeof base.text === 'object') next.text = base.text;
+  if (Array.isArray(base.include)) next.include = base.include;
+  return next;
+}
+
+async function executeOpenAILatexListFilesTool(args: {
+  toolArgs: Record<string, unknown>;
+  context: OpenAILatexToolContext;
+}): Promise<Record<string, unknown>> {
+  const prefixParsed = normalizeOpenAILatexPath(args.toolArgs.path_prefix, { allowEmpty: true });
+  if (!prefixParsed.ok) return buildOpenAIToolError('INVALID_ARGUMENT', prefixParsed.error);
+  const pathPrefix = prefixParsed.value;
+
+  const editableOnly = typeof args.toolArgs.editable_only === 'boolean' ? args.toolArgs.editable_only : true;
+  const kindsInput = Array.isArray(args.toolArgs.kinds) ? (args.toolArgs.kinds as unknown[]) : [];
+  const kindFilter = new Set<string>();
+  for (const raw of kindsInput) {
+    const kind = typeof raw === 'string' ? raw.trim() : '';
+    if (!kind) continue;
+    kindFilter.add(kind);
+  }
+
+  const limitParsed = parseOpenAIOptionalPositiveInteger(args.toolArgs.limit, 'limit', OPENAI_LATEX_LIST_MAX_LIMIT);
+  if (!limitParsed.ok) return buildOpenAIToolError('INVALID_ARGUMENT', limitParsed.error);
+  const limit = limitParsed.value ?? OPENAI_LATEX_LIST_DEFAULT_LIMIT;
+  const offset = parseOpenAIListCursor(args.toolArgs.cursor);
+
+  const listed = await listLatexProjectFiles(args.context.projectRoot);
+  if (!listed.ok || !listed.index) {
+    const error = listed.error ?? 'Failed to list project files.';
+    return buildOpenAIToolError(mapOpenAILatexProjectErrorCode(error), error);
+  }
+
+  const files = (listed.index.files ?? []).filter((file) => {
+    if (!file || typeof file.path !== 'string') return false;
+    if (editableOnly && !file.editable) return false;
+    if (kindFilter.size > 0 && !kindFilter.has(file.kind)) return false;
+    if (!pathPrefix) return true;
+    if (file.path === pathPrefix) return true;
+    return file.path.startsWith(`${pathPrefix}/`);
+  });
+
+  const start = Math.max(0, Math.min(offset, files.length));
+  const end = Math.max(start, Math.min(start + limit, files.length));
+  const page = files.slice(start, end);
+  const nextCursor = end < files.length ? buildOpenAIListCursor(end) : null;
+
+  return {
+    ok: true,
+    files: page.map((file) => ({ path: file.path, kind: file.kind, editable: Boolean(file.editable) })),
+    suggested_main_file: listed.index.suggestedMainFile ?? args.context.mainFile ?? null,
+    next_cursor: nextCursor,
+    truncated: Boolean(nextCursor),
+  };
+}
+
+async function executeOpenAILatexReadFileTool(args: {
+  toolArgs: Record<string, unknown>;
+  context: OpenAILatexToolContext;
+}): Promise<Record<string, unknown>> {
+  const pathParsed = normalizeOpenAILatexPath(args.toolArgs.path);
+  if (!pathParsed.ok) return buildOpenAIToolError('INVALID_ARGUMENT', pathParsed.error);
+  const path = pathParsed.value;
+
+  const maxBytesParsed = parseOpenAIOptionalPositiveInteger(args.toolArgs.max_bytes, 'max_bytes', OPENAI_LATEX_READ_MAX_BYTES);
+  if (!maxBytesParsed.ok) return buildOpenAIToolError('INVALID_ARGUMENT', maxBytesParsed.error);
+  const maxBytes = maxBytesParsed.value ?? OPENAI_LATEX_READ_MAX_BYTES;
+
+  const startLineParsed = parseOpenAIOptionalPositiveInteger(args.toolArgs.start_line, 'start_line', 10_000_000);
+  if (!startLineParsed.ok) return buildOpenAIToolError('INVALID_ARGUMENT', startLineParsed.error);
+  const endLineParsed = parseOpenAIOptionalPositiveInteger(args.toolArgs.end_line, 'end_line', 10_000_000);
+  if (!endLineParsed.ok) return buildOpenAIToolError('INVALID_ARGUMENT', endLineParsed.error);
+
+  const read = await readLatexProjectFile(args.context.projectRoot, path);
+  if (!read.ok) {
+    const error = read.error ?? 'Failed to read file.';
+    return buildOpenAIToolError(mapOpenAILatexProjectErrorCode(error), error, { path });
+  }
+
+  const fullContent = typeof read.content === 'string' ? read.content : '';
+  const version = await computeOpenAIContentVersion(fullContent);
+  const fullSizeBytes = getOpenAIUtf8ByteLength(fullContent);
+
+  let selected = fullContent;
+  if (startLineParsed.value !== undefined || endLineParsed.value !== undefined) {
+    const scoped = resolveOpenAILineRangeOffsets({
+      content: fullContent,
+      startLine: startLineParsed.value,
+      endLine: endLineParsed.value,
+    });
+    if (!scoped.ok) return buildOpenAIToolError('INVALID_ARGUMENT', scoped.error);
+    selected = fullContent.slice(scoped.startOffset, scoped.endOffsetExclusive);
+  }
+
+  const truncated = truncateOpenAITextByUtf8Bytes(selected, maxBytes);
+  return {
+    ok: true,
+    path,
+    content: truncated.text,
+    encoding: 'utf-8',
+    size_bytes: fullSizeBytes,
+    truncated: truncated.truncated,
+    version,
+  };
+}
+
+async function executeOpenAILatexWriteFileTool(args: {
+  toolArgs: Record<string, unknown>;
+  context: OpenAILatexToolContext;
+}): Promise<Record<string, unknown>> {
+  const pathParsed = normalizeOpenAILatexPath(args.toolArgs.path);
+  if (!pathParsed.ok) return buildOpenAIToolError('INVALID_ARGUMENT', pathParsed.error);
+  const path = pathParsed.value;
+
+  const content =
+    typeof args.toolArgs.content === 'string' ? args.toolArgs.content : String(args.toolArgs.content ?? '');
+  const expectedVersion =
+    typeof args.toolArgs.expected_version === 'string' ? args.toolArgs.expected_version.trim() : '';
+  if (!expectedVersion) {
+    return buildOpenAIToolError('EXPECTED_VERSION_REQUIRED', 'expected_version is required for latex_write_file.');
+  }
+  const createIfMissing = typeof args.toolArgs.create_if_missing === 'boolean' ? args.toolArgs.create_if_missing : true;
+
+  const current = await readLatexProjectFile(args.context.projectRoot, path);
+  if (current.ok) {
+    const currentVersion = await computeOpenAIContentVersion(current.content ?? '');
+    if (expectedVersion !== currentVersion) {
+      return buildOpenAIToolError('VERSION_CONFLICT', 'File changed since it was last read.', {
+        path,
+        expected_version: expectedVersion,
+        current_version: currentVersion,
+      });
+    }
+  } else {
+    const readError = current.error ?? 'Failed to read file.';
+    if (!isOpenAIMissingFileError(readError)) {
+      return buildOpenAIToolError(mapOpenAILatexProjectErrorCode(readError), readError, { path });
+    }
+    if (!createIfMissing) return buildOpenAIToolError('NOT_FOUND', 'File does not exist.', { path });
+    if (expectedVersion !== 'missing') {
+      return buildOpenAIToolError('VERSION_CONFLICT', 'File does not exist. Use expected_version="missing" to create it.', {
+        path,
+        expected_version: expectedVersion,
+        current_version: 'missing',
+      });
+    }
+  }
+
+  const written = await writeLatexProjectFile(args.context.projectRoot, path, content);
+  if (!written.ok) {
+    const error = written.error ?? 'Failed to write file.';
+    return buildOpenAIToolError(mapOpenAILatexProjectErrorCode(error), error, { path });
+  }
+
+  const version = await computeOpenAIContentVersion(content);
+  return {
+    ok: true,
+    path,
+    bytes_written: getOpenAIUtf8ByteLength(content),
+    version,
+  };
+}
+
+async function executeOpenAILatexReplaceFileTool(args: {
+  toolArgs: Record<string, unknown>;
+  context: OpenAILatexToolContext;
+}): Promise<Record<string, unknown>> {
+  const pathParsed = normalizeOpenAILatexPath(args.toolArgs.path);
+  if (!pathParsed.ok) return buildOpenAIToolError('INVALID_ARGUMENT', pathParsed.error);
+  const path = pathParsed.value;
+
+  const replacements = Array.isArray(args.toolArgs.replacements) ? (args.toolArgs.replacements as unknown[]) : [];
+  if (replacements.length === 0) {
+    return buildOpenAIToolError('INVALID_ARGUMENT', 'replacements must include at least one item.');
+  }
+
+  const expectedVersion =
+    typeof args.toolArgs.expected_version === 'string' ? args.toolArgs.expected_version.trim() : '';
+  if (!expectedVersion) {
+    return buildOpenAIToolError('EXPECTED_VERSION_REQUIRED', 'expected_version is required for latex_replace_in_file.');
+  }
+  const dryRun = typeof args.toolArgs.dry_run === 'boolean' ? args.toolArgs.dry_run : false;
+  const maxTotalParsed = parseOpenAIOptionalPositiveInteger(
+    args.toolArgs.max_total_replacements,
+    'max_total_replacements',
+    200_000,
+  );
+  if (!maxTotalParsed.ok) return buildOpenAIToolError('INVALID_ARGUMENT', maxTotalParsed.error);
+  const maxTotalReplacements = maxTotalParsed.value ?? OPENAI_LATEX_REPLACE_DEFAULT_MAX_TOTAL;
+
+  const read = await readLatexProjectFile(args.context.projectRoot, path);
+  if (!read.ok) {
+    const error = read.error ?? 'Failed to read file.';
+    return buildOpenAIToolError(mapOpenAILatexProjectErrorCode(error), error, { path });
+  }
+
+  const originalContent = typeof read.content === 'string' ? read.content : '';
+  const initialVersion = await computeOpenAIContentVersion(originalContent);
+  if (expectedVersion !== initialVersion) {
+    return buildOpenAIToolError('VERSION_CONFLICT', 'File changed since it was last read.', {
+      path,
+      expected_version: expectedVersion,
+      current_version: initialVersion,
+    });
+  }
+
+  let nextContent = originalContent;
+  let totalReplacements = 0;
+  const applied: Array<{ index: number; count: number }> = [];
+
+  for (let i = 0; i < replacements.length; i += 1) {
+    const item = replacements[i];
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      return buildOpenAIToolError('INVALID_ARGUMENT', `replacements[${i}] must be an object.`);
+    }
+    const rep = item as Record<string, unknown>;
+    const oldText = typeof rep.old_text === 'string' ? rep.old_text : '';
+    const newText = typeof rep.new_text === 'string' ? rep.new_text : String(rep.new_text ?? '');
+    if (!oldText) return buildOpenAIToolError('INVALID_ARGUMENT', `replacements[${i}].old_text must be non-empty.`);
+    const replaceAll = typeof rep.replace_all === 'boolean' ? rep.replace_all : false;
+
+    const startLineParsed = parseOpenAIOptionalPositiveInteger(rep.start_line, `replacements[${i}].start_line`, 10_000_000);
+    if (!startLineParsed.ok) return buildOpenAIToolError('INVALID_ARGUMENT', startLineParsed.error);
+    const endLineParsed = parseOpenAIOptionalPositiveInteger(rep.end_line, `replacements[${i}].end_line`, 10_000_000);
+    if (!endLineParsed.ok) return buildOpenAIToolError('INVALID_ARGUMENT', endLineParsed.error);
+
+    const replaced = applyOpenAILiteralReplacement({
+      content: nextContent,
+      oldText,
+      newText,
+      replaceAll,
+      startLine: startLineParsed.value,
+      endLine: endLineParsed.value,
+    });
+    if (!replaced.ok) {
+      return buildOpenAIToolError(replaced.errorCode, replaced.error, { replacement_index: i });
+    }
+
+    totalReplacements += replaced.count;
+    if (totalReplacements > maxTotalReplacements) {
+      return buildOpenAIToolError(
+        'MAX_REPLACEMENTS_EXCEEDED',
+        `Replacement cap exceeded (${maxTotalReplacements}).`,
+        { replacement_index: i, total_replacements: totalReplacements },
+      );
+    }
+    nextContent = replaced.content;
+    applied.push({ index: i, count: replaced.count });
+  }
+
+  if (totalReplacements < 1) {
+    return buildOpenAIToolError('NO_MATCH', 'No replacements were applied.');
+  }
+
+  if (dryRun) {
+    return {
+      ok: true,
+      path,
+      dry_run: true,
+      applied,
+      total_replacements: totalReplacements,
+      version: initialVersion,
+    };
+  }
+
+  // Best-effort guard in case local content changed between read and write.
+  const latest = await readLatexProjectFile(args.context.projectRoot, path);
+  if (!latest.ok) {
+    const error = latest.error ?? 'Failed to read file.';
+    return buildOpenAIToolError(mapOpenAILatexProjectErrorCode(error), error, { path });
+  }
+  const latestVersion = await computeOpenAIContentVersion(latest.content ?? '');
+  if (latestVersion !== initialVersion) {
+    return buildOpenAIToolError('VERSION_CONFLICT', 'File changed before replacement write.', {
+      path,
+      expected_version: initialVersion,
+      current_version: latestVersion,
+    });
+  }
+
+  const write = await writeLatexProjectFile(args.context.projectRoot, path, nextContent);
+  if (!write.ok) {
+    const error = write.error ?? 'Failed to write file.';
+    return buildOpenAIToolError(mapOpenAILatexProjectErrorCode(error), error, { path });
+  }
+  const nextVersion = await computeOpenAIContentVersion(nextContent);
+
+  return {
+    ok: true,
+    path,
+    dry_run: false,
+    applied,
+    total_replacements: totalReplacements,
+    bytes_written: getOpenAIUtf8ByteLength(nextContent),
+    version: nextVersion,
+  };
+}
+
+async function executeOpenAILatexFunctionCall(args: {
+  call: OpenAIFunctionCall;
+  context: OpenAILatexToolContext | null;
+}): Promise<Record<string, unknown>> {
+  if (!args.context) return buildOpenAIToolError('PROJECT_NOT_SET', 'No LaTeX project is currently selected.');
+  const parsedArgs = parseOpenAIFunctionCallArguments(args.call.argumentsJson);
+  if (!parsedArgs) return buildOpenAIToolError('INVALID_ARGUMENT', 'Tool arguments must be a JSON object.');
+
+  if (args.call.name === OPENAI_LATEX_TOOL_NAMES.listFiles) {
+    return await executeOpenAILatexListFilesTool({ toolArgs: parsedArgs, context: args.context });
+  }
+  if (args.call.name === OPENAI_LATEX_TOOL_NAMES.readFile) {
+    return await executeOpenAILatexReadFileTool({ toolArgs: parsedArgs, context: args.context });
+  }
+  if (args.call.name === OPENAI_LATEX_TOOL_NAMES.writeFile) {
+    return await executeOpenAILatexWriteFileTool({ toolArgs: parsedArgs, context: args.context });
+  }
+  if (args.call.name === OPENAI_LATEX_TOOL_NAMES.replaceInFile) {
+    return await executeOpenAILatexReplaceFileTool({ toolArgs: parsedArgs, context: args.context });
+  }
+
+  return buildOpenAIToolError('UNKNOWN_TOOL', `Unsupported tool: ${args.call.name}`);
 }
 
 export default function App() {
@@ -1799,9 +2448,10 @@ export default function App() {
 
     void (async () => {
       let request: Record<string, unknown>;
+      const nodesForRequest = args.nodesOverride ?? state?.nodes ?? [];
       try {
         request = await buildOpenAIResponseRequest({
-          nodes: args.nodesOverride ?? state?.nodes ?? [],
+          nodes: nodesForRequest,
           leafUserNodeId: args.userNodeId,
           settings,
         });
@@ -1812,8 +2462,14 @@ export default function App() {
       }
 	      if (job.closed || job.abortController.signal.aborted) return;
 
+	      const hasLatexTools = requestIncludesOpenAILatexTools(request);
+	      const latexToolContext = hasLatexTools
+	        ? resolveOpenAILatexToolContext({ nodes: nodesForRequest, leafUserNodeId: args.userNodeId })
+	        : null;
+	      const latexToolLoopEnabled = hasLatexTools && Boolean(latexToolContext);
 	      const streamingEnabled = typeof settings.stream === 'boolean' ? settings.stream : true;
-	      const backgroundEnabled = Boolean(settings.background);
+	      const backgroundEnabled = Boolean(settings.background) && !latexToolLoopEnabled;
+	      job.background = backgroundEnabled;
 	      const sentRequest = backgroundEnabled
 	        ? { ...(request ?? {}), background: true, ...(streamingEnabled ? { stream: true } : {}) }
 	        : streamingEnabled
@@ -1943,7 +2599,86 @@ export default function App() {
 	        return { ok: false as const, text: job.fullText, error: 'Canceled', cancelled: true };
 	      };
 
-		      const res = backgroundEnabled
+	      const runOpenAILatexToolLoop = async () => {
+	        let currentRequest: Record<string, unknown> = { ...(sentRequest ?? {}) };
+	        let useStreaming = Boolean((currentRequest as any)?.stream === true);
+	        let lastResponse: unknown = undefined;
+	        const executedCallIds = new Set<string>();
+	        const repeatedCallFingerprintCount = new Map<string, number>();
+
+	        for (let round = 0; round < OPENAI_TOOL_LOOP_MAX_ROUNDS; round += 1) {
+	          const r = useStreaming
+	            ? await streamOpenAIResponse({
+	                apiKey,
+	                request: currentRequest,
+	                signal: job.abortController.signal,
+	                callbacks,
+	              })
+	            : await sendOpenAIResponse({
+	                apiKey,
+	                request: currentRequest,
+	                signal: job.abortController.signal,
+	              });
+
+	          if (job.closed || job.abortController.signal.aborted) {
+	            return { ok: false as const, text: job.fullText, error: 'Canceled', cancelled: true, response: r.response };
+	          }
+	          lastResponse = r.response;
+	          if (!r.ok) return r;
+
+	          const calls = extractOpenAIFunctionCalls(r.response);
+	          if (calls.length === 0) return r;
+	          const pendingCalls = calls.filter((call) => !executedCallIds.has(call.callId));
+	          if (pendingCalls.length === 0) return r;
+
+	          const responseId = extractOpenAIResponseId(r.response);
+	          if (!responseId) {
+	            return {
+	              ok: false as const,
+	              text: typeof r.text === 'string' ? r.text : job.fullText,
+	              error: 'Tool call response is missing a response id.',
+	              response: r.response,
+	            };
+	          }
+
+	          const outputs: OpenAIFunctionCallOutput[] = [];
+	          for (const call of pendingCalls) {
+	            executedCallIds.add(call.callId);
+	            const fingerprint = `${call.name}\n${call.argumentsJson.trim()}`;
+	            const repeatCount = (repeatedCallFingerprintCount.get(fingerprint) ?? 0) + 1;
+	            repeatedCallFingerprintCount.set(fingerprint, repeatCount);
+	            if (repeatCount > OPENAI_TOOL_CALL_REPEAT_LIMIT) {
+	              return {
+	                ok: false as const,
+	                text: typeof r.text === 'string' ? r.text : job.fullText,
+	                error: `Model repeated the same tool call too many times (${OPENAI_TOOL_CALL_REPEAT_LIMIT}).`,
+	                response: r.response,
+	              };
+	            }
+	            const output = await executeOpenAILatexFunctionCall({ call, context: latexToolContext });
+	            outputs.push({ callId: call.callId, output });
+	          }
+	          if (outputs.length === 0) return r;
+
+	          currentRequest = buildOpenAIFunctionCallContinuationRequest({
+	            baseRequest: request,
+	            responseId,
+	            outputs,
+	          });
+	          useStreaming = false;
+	        }
+
+	        return {
+	          ok: false as const,
+	          text: job.fullText,
+	          error: `Exceeded tool call limit (${OPENAI_TOOL_LOOP_MAX_ROUNDS}).`,
+	          response: lastResponse,
+	        };
+	      };
+
+		      const res = latexToolLoopEnabled
+	        ? await runOpenAILatexToolLoop()
+	        : backgroundEnabled
 		        ? await (async () => {
 		            const startNonStreamingBackground = async () => {
 		              const started = await startOpenAIBackgroundResponse({
