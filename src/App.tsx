@@ -6362,6 +6362,44 @@ export default function App() {
                 }
                 schedulePersistSoon();
               }}
+              onReplyToSelection={(selectionText) => {
+                const id = String(ui.editingNodeId ?? '').trim();
+                if (!id) return;
+                const engine = engineRef.current;
+                if (!engine) return;
+                engine.onRequestReplyToSelection?.(id, selectionText);
+              }}
+              onAddToContextSelection={(selectionText) => {
+                const id = String(ui.editingNodeId ?? '').trim();
+                if (!id) return;
+                const engine = engineRef.current;
+                if (!engine) return;
+                engine.onRequestAddToContextSelection?.(id, selectionText);
+              }}
+              onAnnotateTextSelection={(payload) => {
+                const id = String(ui.editingNodeId ?? '').trim();
+                if (!id) return;
+                const engine = engineRef.current;
+                if (!engine) return;
+                engine.requestAnnotateTextNodeSelection({
+                  textNodeId: id,
+                  selectionText: payload.selectionText,
+                  kind: 'text',
+                  client: payload.client ?? null,
+                });
+              }}
+              onAnnotateInkSelection={(payload) => {
+                const id = String(ui.editingNodeId ?? '').trim();
+                if (!id) return;
+                const engine = engineRef.current;
+                if (!engine) return;
+                engine.requestAnnotateTextNodeSelection({
+                  textNodeId: id,
+                  selectionText: payload.selectionText,
+                  kind: 'ink',
+                  client: payload.client ?? null,
+                });
+              }}
               onCommit={(next) => {
                 engineRef.current?.commitEditing(next);
                 schedulePersistSoon();

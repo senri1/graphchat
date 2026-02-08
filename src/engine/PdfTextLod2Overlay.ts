@@ -9,6 +9,7 @@ export type PdfSelectionStartAnchor = { pageNumber: number; yPct: number };
 
 type TextContentSource = ReadableStream<unknown> | unknown;
 type AnnotatePointerTrigger = { pointerId: number; pointerType: string };
+type OverlayPositionMode = 'absolute' | 'fixed';
 
 function clamp(v: number, min: number, max: number): number {
   if (v < min) return min;
@@ -187,6 +188,8 @@ export class PdfTextLod2Overlay {
   private selectAnchor: Range | null = null;
   private selectRange: Range | null = null;
   private selectLastClient: { x: number; y: number } | null = null;
+  private selectStartClient: { x: number; y: number } | null = null;
+  private selectHasDrag = false;
   private selectRaf: number | null = null;
   private suppressAnnotateClick = false;
 
@@ -212,6 +215,7 @@ export class PdfTextLod2Overlay {
     client?: { x: number; y: number },
     trigger?: AnnotatePointerTrigger | null,
   ) => void;
+  onRequestClickWithoutSelection?: (pageNumber: number, client: { x: number; y: number }) => void;
 
   private readonly onDocPointerDownCapture = (e: Event) => {
     if (!this.isMenuOpen()) return;
@@ -241,6 +245,8 @@ export class PdfTextLod2Overlay {
     this.selectAnchor = null;
     this.selectRange = null;
     this.selectLastClient = { x: e.clientX, y: e.clientY };
+    this.selectStartClient = { x: e.clientX, y: e.clientY };
+    this.selectHasDrag = false;
     if (this.selectRaf != null) {
       try {
         cancelAnimationFrame(this.selectRaf);
@@ -357,6 +363,11 @@ export class PdfTextLod2Overlay {
     if (this.selectPointerId == null || this.selectPointerId !== e.pointerId) return;
     e.stopPropagation();
     e.preventDefault();
+    if (this.selectStartClient) {
+      const dx = Number(e.clientX) - Number(this.selectStartClient.x);
+      const dy = Number(e.clientY) - Number(this.selectStartClient.y);
+      if (dx * dx + dy * dy >= 16) this.selectHasDrag = true;
+    }
     this.selectLastClient = { x: e.clientX, y: e.clientY };
     this.schedulePointerSelectionUpdate();
   };
@@ -435,11 +446,21 @@ export class PdfTextLod2Overlay {
     } else {
       this.clearHighlights();
       this.closeMenu({ suppressCallback: true });
+      const pageNumber = this.visiblePageNumber;
+      if (!this.selectHasDrag && Number.isFinite(pageNumber) && pageNumber != null && pageNumber >= 1) {
+        try {
+          this.onRequestClickWithoutSelection?.(pageNumber, { x: Number(e.clientX), y: Number(e.clientY) });
+        } catch {
+          // ignore
+        }
+      }
     }
 
     this.selectAnchor = null;
     this.selectRange = null;
     this.selectLastClient = null;
+    this.selectStartClient = null;
+    this.selectHasDrag = false;
   };
 
   private readonly onNativePointerCancelCapture = (e: PointerEvent) => {
@@ -468,12 +489,16 @@ export class PdfTextLod2Overlay {
     this.selectAnchor = null;
     this.selectRange = null;
     this.selectLastClient = null;
+    this.selectStartClient = null;
+    this.selectHasDrag = false;
     this.clearHighlights();
     this.closeMenu({ suppressCallback: true });
   };
 
   constructor(opts: {
     host: HTMLElement;
+    positionMode?: OverlayPositionMode;
+    zIndex?: number;
     onRequestCloseSelection?: () => void;
     onTextLayerReady?: () => void;
     onRequestReplyToSelection?: (nodeId: string, selectionText: string) => void;
@@ -504,14 +529,16 @@ export class PdfTextLod2Overlay {
     const root = document.createElement('div');
     root.className = 'gc-pdfTextLod2';
     root.style.display = 'none';
-    root.style.position = 'absolute';
+    root.style.position = opts.positionMode === 'fixed' ? 'fixed' : 'absolute';
     root.style.left = '0';
     root.style.top = '0';
     root.style.width = '1px';
     root.style.height = '1px';
     root.style.overflow = 'hidden';
     root.style.pointerEvents = 'none';
-    root.style.zIndex = '10';
+    const zIndexRaw = Number(opts.zIndex);
+    const zIndex = Number.isFinite(zIndexRaw) ? Math.max(0, Math.floor(zIndexRaw)) : 10;
+    root.style.zIndex = String(zIndex);
     root.style.contain = 'layout paint style';
     this.root = root;
 
@@ -919,6 +946,8 @@ export class PdfTextLod2Overlay {
     this.selectAnchor = null;
     this.selectRange = null;
     this.selectLastClient = null;
+    this.selectStartClient = null;
+    this.selectHasDrag = false;
     if (this.selectRaf != null) {
       try {
         cancelAnimationFrame(this.selectRaf);

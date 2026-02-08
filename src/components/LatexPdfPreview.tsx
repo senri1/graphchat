@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { loadPdfDocument } from '../engine/pdf/pdfjs';
+import { PdfTextLod2Overlay, type PdfSelectionStartAnchor } from '../engine/PdfTextLod2Overlay';
 import type { PDFDocumentProxy, PageViewport } from 'pdfjs-dist';
 
 type SyncTarget = {
@@ -15,6 +16,18 @@ type Props = {
   zoom?: number;
   zoomMode?: 'manual' | 'fit-width' | 'fit-page';
   onInverseSync?: (payload: { page: number; x: number; y: number }) => void;
+  onReplyToSelection?: (selectionText: string) => void;
+  onAddToContextSelection?: (selectionText: string) => void;
+  onAnnotateTextSelection?: (payload: {
+    selectionText: string;
+    anchor: PdfSelectionStartAnchor | null;
+    client?: { x: number; y: number } | null;
+  }) => void;
+  onAnnotateInkSelection?: (payload: {
+    selectionText: string;
+    anchor: PdfSelectionStartAnchor | null;
+    client?: { x: number; y: number } | null;
+  }) => void;
 };
 
 type RenderPageMeta = {
@@ -35,7 +48,17 @@ function clamp(v: number, min: number, max: number): number {
 }
 
 function LatexPdfPreviewImpl(props: Props) {
-  const { pdfUrl, syncTarget, zoom, zoomMode, onInverseSync } = props;
+  const {
+    pdfUrl,
+    syncTarget,
+    zoom,
+    zoomMode,
+    onInverseSync,
+    onReplyToSelection,
+    onAddToContextSelection,
+    onAnnotateTextSelection,
+    onAnnotateInkSelection,
+  } = props;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRefByPage = useRef<Map<number, HTMLCanvasElement>>(new Map());
@@ -45,6 +68,13 @@ function LatexPdfPreviewImpl(props: Props) {
   const loadedPdfUrlRef = useRef<string | null>(null);
   const renderTokenRef = useRef(0);
   const lastAppliedSyncTokenRef = useRef<number | null>(null);
+  const pdfTextOverlayRef = useRef<PdfTextLod2Overlay | null>(null);
+
+  const onInverseSyncRef = useRef<Props['onInverseSync']>(onInverseSync);
+  const onReplyToSelectionRef = useRef<Props['onReplyToSelection']>(onReplyToSelection);
+  const onAddToContextSelectionRef = useRef<Props['onAddToContextSelection']>(onAddToContextSelection);
+  const onAnnotateTextSelectionRef = useRef<Props['onAnnotateTextSelection']>(onAnnotateTextSelection);
+  const onAnnotateInkSelectionRef = useRef<Props['onAnnotateInkSelection']>(onAnnotateInkSelection);
 
   const [containerWidth, setContainerWidth] = useState(0);
   const [containerHeight, setContainerHeight] = useState(0);
@@ -54,6 +84,109 @@ function LatexPdfPreviewImpl(props: Props) {
   const [marker, setMarker] = useState<{ page: number; left: number; top: number } | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [scrollViewportH, setScrollViewportH] = useState(0);
+  const [activeTextLayerPage, setActiveTextLayerPage] = useState<number | null>(null);
+
+  useEffect(() => {
+    onInverseSyncRef.current = onInverseSync;
+  }, [onInverseSync]);
+
+  useEffect(() => {
+    onReplyToSelectionRef.current = onReplyToSelection;
+  }, [onReplyToSelection]);
+
+  useEffect(() => {
+    onAddToContextSelectionRef.current = onAddToContextSelection;
+  }, [onAddToContextSelection]);
+
+  useEffect(() => {
+    onAnnotateTextSelectionRef.current = onAnnotateTextSelection;
+  }, [onAnnotateTextSelection]);
+
+  useEffect(() => {
+    onAnnotateInkSelectionRef.current = onAnnotateInkSelection;
+  }, [onAnnotateInkSelection]);
+
+  const inverseSyncAtClient = useCallback((pageNumber: number, client: { x: number; y: number }) => {
+    const onInverse = onInverseSyncRef.current;
+    if (!onInverse) return;
+
+    const page = Math.max(1, Math.floor(Number(pageNumber) || 1));
+    const viewport = viewportRefByPage.current.get(page);
+    const wrapper = wrapperRefByPage.current.get(page);
+    if (!viewport || !wrapper) return;
+
+    const rect = wrapper.getBoundingClientRect();
+    if (!Number.isFinite(rect.width) || !Number.isFinite(rect.height) || rect.width <= 0.5 || rect.height <= 0.5) return;
+
+    const localX = clamp(Number(client.x) - rect.left, 0, rect.width);
+    const localY = clamp(Number(client.y) - rect.top, 0, rect.height);
+    const pxX = (localX * Math.max(1, Number(viewport.width) || 1)) / Math.max(1, rect.width);
+    const pxY = (localY * Math.max(1, Number(viewport.height) || 1)) / Math.max(1, rect.height);
+    try {
+      const point = viewport.convertToPdfPoint(pxX, pxY);
+      const x = Number(point[0]);
+      const y = Number(point[1]);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      onInverse({ page, x, y });
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const overlay = new PdfTextLod2Overlay({
+      host: document.body,
+      positionMode: 'fixed',
+      zIndex: 30,
+    });
+
+    overlay.onRequestReplyToSelection = (_nodeId, selectionText) => {
+      const fn = onReplyToSelectionRef.current;
+      if (!fn) return;
+      fn(selectionText);
+    };
+
+    overlay.onRequestAddToContext = (_nodeId, selectionText) => {
+      const fn = onAddToContextSelectionRef.current;
+      if (!fn) return;
+      fn(selectionText);
+    };
+
+    overlay.onRequestAnnotateTextSelection = (_nodeId, selectionText, anchor, client) => {
+      const fn = onAnnotateTextSelectionRef.current;
+      if (!fn) return;
+      fn({
+        selectionText,
+        anchor: anchor ?? null,
+        client: client ?? null,
+      });
+    };
+
+    overlay.onRequestAnnotateInkSelection = (_nodeId, selectionText, anchor, client) => {
+      const fn = onAnnotateInkSelectionRef.current;
+      if (!fn) return;
+      fn({
+        selectionText,
+        anchor: anchor ?? null,
+        client: client ?? null,
+      });
+    };
+
+    overlay.onRequestClickWithoutSelection = (pageNumber, client) => {
+      inverseSyncAtClient(pageNumber, client);
+    };
+
+    pdfTextOverlayRef.current = overlay;
+    return () => {
+      try {
+        overlay.dispose();
+      } catch {
+        // ignore
+      }
+      if (pdfTextOverlayRef.current === overlay) pdfTextOverlayRef.current = null;
+    };
+  }, [inverseSyncAtClient]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -137,6 +270,7 @@ function LatexPdfPreviewImpl(props: Props) {
 
     if (!pdfUrl) {
       setMarker(null);
+      setActiveTextLayerPage(null);
       viewportRefByPage.current.clear();
       setMetas([]);
       setLoading(false);
@@ -258,8 +392,21 @@ function LatexPdfPreviewImpl(props: Props) {
 
   const visiblePageKey = useMemo(() => {
     if (visiblePageSet.size === 0) return '';
-    return Array.from(visiblePageSet).sort((a, b) => a - b).join(',');
+    return Array.from(visiblePageSet)
+      .sort((a, b) => a - b)
+      .join(',');
   }, [visiblePageSet]);
+
+  useEffect(() => {
+    if (!pdfUrl) {
+      setActiveTextLayerPage(null);
+      return;
+    }
+    if (!metas.length) return;
+    if (activeTextLayerPage != null && metas.some((m) => m.pageNumber === activeTextLayerPage)) return;
+    const next = metas.find((m) => visiblePageSet.has(m.pageNumber))?.pageNumber ?? metas[0]?.pageNumber ?? null;
+    if (next != null) setActiveTextLayerPage(next);
+  }, [activeTextLayerPage, metas, pdfUrl, visiblePageKey, visiblePageSet]);
 
   useEffect(() => {
     const token = ++renderTokenRef.current;
@@ -307,6 +454,88 @@ function LatexPdfPreviewImpl(props: Props) {
   }, [metas, visiblePageKey, visiblePageSet]);
 
   useEffect(() => {
+    const overlay = pdfTextOverlayRef.current;
+    if (!overlay) return;
+
+    if (!pdfUrl || loading || !!error || metas.length === 0) {
+      overlay.hide();
+      return;
+    }
+
+    const pageNumber =
+      activeTextLayerPage != null && metas.some((m) => m.pageNumber === activeTextLayerPage)
+        ? activeTextLayerPage
+        : metas[0]?.pageNumber ?? null;
+    if (!pageNumber) {
+      overlay.hide();
+      return;
+    }
+
+    const meta = metas.find((m) => m.pageNumber === pageNumber) ?? null;
+    const wrapper = wrapperRefByPage.current.get(pageNumber) ?? null;
+    if (!meta || !wrapper) {
+      overlay.hide();
+      return;
+    }
+
+    const rect = wrapper.getBoundingClientRect();
+    if (!Number.isFinite(rect.width) || !Number.isFinite(rect.height) || rect.width <= 0.5 || rect.height <= 0.5) {
+      overlay.hide();
+      return;
+    }
+
+    const pageKey = `${loadedPdfUrlRef.current ?? ''}|${pageNumber}|${meta.width}x${meta.height}@${meta.scale.toFixed(5)}`;
+    const zoomX = rect.width / Math.max(1, meta.width);
+    const zoomY = rect.height / Math.max(1, meta.height);
+    const overlayZoom = (() => {
+      const zx = Number.isFinite(zoomX) && zoomX > 0 ? zoomX : 1;
+      const zy = Number.isFinite(zoomY) && zoomY > 0 ? zoomY : 1;
+      return (zx + zy) * 0.5;
+    })();
+
+    overlay.show({
+      nodeId: 'latex-preview',
+      token: 1,
+      pageNumber,
+      mode: 'select',
+      interactive: true,
+      screenRect: {
+        x: rect.left,
+        y: rect.top,
+        w: rect.width,
+        h: rect.height,
+      },
+      worldW: meta.width,
+      worldH: meta.height,
+      zoom: overlayZoom,
+      pageKey,
+      ensureTextLayer: async () => {
+        const doc = docRef.current;
+        if (!doc) return null;
+        let page: any;
+        try {
+          page = await doc.getPage(pageNumber);
+        } catch {
+          return null;
+        }
+
+        const viewport: PageViewport = page.getViewport({ scale: meta.scale });
+        let textContentSource: any;
+        try {
+          textContentSource = page.streamTextContent();
+        } catch {
+          try {
+            textContentSource = await page.getTextContent();
+          } catch {
+            return null;
+          }
+        }
+        return { viewport, textContentSource };
+      },
+    });
+  }, [activeTextLayerPage, containerHeight, containerWidth, error, loading, metas, pdfUrl, scrollTop, scrollViewportH, visiblePageKey]);
+
+  useEffect(() => {
     const t = syncTarget;
     if (!t) return;
     if (lastAppliedSyncTokenRef.current === t.token) return;
@@ -318,6 +547,8 @@ function LatexPdfPreviewImpl(props: Props) {
     } catch {
       wrapper.scrollIntoView();
     }
+
+    setActiveTextLayerPage(t.page);
 
     const viewport = viewportRefByPage.current.get(t.page);
     if (!viewport || !Number.isFinite(t.x as number) || !Number.isFinite(t.y as number)) {
@@ -345,8 +576,15 @@ function LatexPdfPreviewImpl(props: Props) {
   const pageCount = metas.length;
   const showEmpty = !loading && !error && !pdfUrl;
 
+  const activateTextLayerPage = useCallback((pageNumber: number) => {
+    if (!Number.isFinite(pageNumber) || pageNumber < 1) return;
+    const next = Math.floor(pageNumber);
+    setActiveTextLayerPage((prev) => (prev === next ? prev : next));
+  }, []);
+
   const handlePageClick = useCallback(
     (pageNumber: number, e: React.MouseEvent<HTMLCanvasElement>) => {
+      setActiveTextLayerPage(pageNumber);
       if (!onInverseSync) return;
       const canvas = e.currentTarget;
       const viewport = viewportRefByPage.current.get(pageNumber);
@@ -390,6 +628,20 @@ function LatexPdfPreviewImpl(props: Props) {
                 wrapperRefByPage.current.set(meta.pageNumber, el);
               }}
               style={{ width: `${meta.width}px`, minHeight: `${meta.height}px` }}
+              onPointerEnter={(e) => {
+                if ((e.pointerType || 'mouse') !== 'mouse') return;
+                activateTextLayerPage(meta.pageNumber);
+              }}
+              onPointerMove={(e) => {
+                if ((e.pointerType || 'mouse') !== 'mouse') return;
+                if ((e.buttons ?? 0) !== 0) return;
+                activateTextLayerPage(meta.pageNumber);
+              }}
+              onPointerDown={(e) => {
+                if ((e.pointerType || 'mouse') !== 'mouse') return;
+                if (e.button !== 0) return;
+                activateTextLayerPage(meta.pageNumber);
+              }}
             >
               <canvas
                 className="editor__pdfCanvasPage"
@@ -417,7 +669,7 @@ function LatexPdfPreviewImpl(props: Props) {
         })}
       </div>
     );
-  }, [error, handlePageClick, loading, marker, metas, pageCount, showEmpty]);
+  }, [activateTextLayerPage, error, handlePageClick, loading, marker, metas, pageCount, showEmpty]);
 
   return <>{content}</>;
 }
@@ -434,6 +686,10 @@ const LatexPdfPreview = React.memo(LatexPdfPreviewImpl, (prev, next) => {
     prev.zoom === next.zoom &&
     prev.zoomMode === next.zoomMode &&
     prev.onInverseSync === next.onInverseSync &&
+    prev.onReplyToSelection === next.onReplyToSelection &&
+    prev.onAddToContextSelection === next.onAddToContextSelection &&
+    prev.onAnnotateTextSelection === next.onAnnotateTextSelection &&
+    prev.onAnnotateInkSelection === next.onAnnotateInkSelection &&
     syncTargetsEqual(prev.syncTarget, next.syncTarget)
   );
 });

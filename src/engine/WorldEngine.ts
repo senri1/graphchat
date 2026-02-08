@@ -2042,6 +2042,27 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.replySpawnKind = next;
   }
 
+  requestAnnotateTextNodeSelection(opts: {
+    textNodeId: string;
+    selectionText: string;
+    kind: 'text' | 'ink';
+    client?: { x: number; y: number } | null;
+  }): void {
+    const textNodeId = typeof opts?.textNodeId === 'string' ? opts.textNodeId.trim() : '';
+    const selectionText = String(opts?.selectionText ?? '');
+    if (!textNodeId || !selectionText.trim()) return;
+    const hit = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === textNodeId) ?? null;
+    if (!hit) return;
+
+    this.beginTextAnnotationPlacement({
+      kind: opts?.kind === 'ink' ? 'ink' : 'text',
+      textNodeId,
+      selectionText,
+      client: opts?.client ?? null,
+      trigger: null,
+    });
+  }
+
   cancelPdfAnnotationPlacement(): boolean {
     const hadPlacement = this.pdfAnnotationPlacement != null;
     const g = this.activeGesture;

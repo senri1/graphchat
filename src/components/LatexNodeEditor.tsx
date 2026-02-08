@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { listLatexProjectFiles, pickLatexProject, readLatexProjectFile, type LatexProjectFile, writeLatexProjectFile } from '../latex/project';
 import { synctexForward, synctexInverse } from '../latex/synctex';
 import type { Rect } from '../engine/types';
@@ -9,6 +10,9 @@ type LatexProjectState = {
   mainFile: string | null;
   activeFile: string | null;
 };
+
+type PdfSelectionAnchor = { pageNumber: number; yPct: number };
+type SelectionSourceKind = 'source' | 'pdf';
 
 type Props = {
   nodeId: string;
@@ -37,6 +41,20 @@ type Props = {
   onCommit: (next: string) => void;
   onCancel: () => void;
   onCompile: (req: { source: string; projectRoot?: string | null; mainFile?: string | null }) => Promise<void>;
+  onReplyToSelection?: (selectionText: string) => void;
+  onAddToContextSelection?: (selectionText: string) => void;
+  onAnnotateTextSelection?: (payload: {
+    selectionText: string;
+    source: SelectionSourceKind;
+    client?: { x: number; y: number } | null;
+    anchor?: PdfSelectionAnchor | null;
+  }) => void;
+  onAnnotateInkSelection?: (payload: {
+    selectionText: string;
+    source: SelectionSourceKind;
+    client?: { x: number; y: number } | null;
+    anchor?: PdfSelectionAnchor | null;
+  }) => void;
 };
 
 type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
@@ -199,6 +217,10 @@ export default function LatexNodeEditor(props: Props) {
     onCommit,
     onCancel,
     onCompile,
+    onReplyToSelection,
+    onAddToContextSelection,
+    onAnnotateTextSelection,
+    onAnnotateInkSelection,
   } = props;
 
   const [draft, setDraft] = useState(() => initialValue ?? '');
@@ -222,6 +244,12 @@ export default function LatexNodeEditor(props: Props) {
   const [pdfZoom, setPdfZoom] = useState(1);
   const [logVisible, setLogVisible] = useState(false);
   const [logCollapsed, setLogCollapsed] = useState(false);
+  const [sourceSelectionMenu, setSourceSelectionMenu] = useState<{
+    text: string;
+    x: number;
+    y: number;
+    client: { x: number; y: number } | null;
+  } | null>(null);
 
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -240,8 +268,13 @@ export default function LatexNodeEditor(props: Props) {
   const onResizeEndRef = useRef(onResizeEnd);
   const onCompileRef = useRef(onCompile);
   const onDraftChangeRef = useRef<Props['onDraftChange']>(onDraftChange);
+  const onReplyToSelectionRef = useRef<Props['onReplyToSelection']>(onReplyToSelection);
+  const onAddToContextSelectionRef = useRef<Props['onAddToContextSelection']>(onAddToContextSelection);
+  const onAnnotateTextSelectionRef = useRef<Props['onAnnotateTextSelection']>(onAnnotateTextSelection);
+  const onAnnotateInkSelectionRef = useRef<Props['onAnnotateInkSelection']>(onAnnotateInkSelection);
   const getScreenRectRef = useRef<Props['getScreenRect']>(getScreenRect);
   const getZoomRef = useRef<Props['getZoom']>(getZoom);
+  const sourceSelectionMenuRef = useRef<HTMLDivElement | null>(null);
   const resizeRef = useRef<{
     pointerId: number;
     corner: ResizeCorner;
@@ -300,7 +333,23 @@ export default function LatexNodeEditor(props: Props) {
     onCompileRef.current = onCompile;
     onDraftChangeRef.current = onDraftChange;
     onProjectStateChangeRef.current = onProjectStateChange;
-  }, [onCancel, onCommit, onCompile, onDraftChange, onProjectStateChange, onResize, onResizeEnd]);
+    onReplyToSelectionRef.current = onReplyToSelection;
+    onAddToContextSelectionRef.current = onAddToContextSelection;
+    onAnnotateTextSelectionRef.current = onAnnotateTextSelection;
+    onAnnotateInkSelectionRef.current = onAnnotateInkSelection;
+  }, [
+    onAddToContextSelection,
+    onAnnotateInkSelection,
+    onAnnotateTextSelection,
+    onCancel,
+    onCommit,
+    onCompile,
+    onDraftChange,
+    onProjectStateChange,
+    onReplyToSelection,
+    onResize,
+    onResizeEnd,
+  ]);
 
   useEffect(() => {
     getScreenRectRef.current = getScreenRect;
@@ -338,6 +387,143 @@ export default function LatexNodeEditor(props: Props) {
       setLogCollapsed(false);
     }
   }, [compileLog]);
+
+  const closeSourceSelectionMenu = useCallback(() => {
+    setSourceSelectionMenu(null);
+  }, []);
+
+  const openSourceSelectionMenuFromSelection = useCallback((client?: { x: number; y: number } | null) => {
+    const ta = taRef.current;
+    if (!ta) {
+      setSourceSelectionMenu(null);
+      return;
+    }
+
+    const rawStart = Number(ta.selectionStart);
+    const rawEnd = Number(ta.selectionEnd);
+    const start = Math.max(0, Math.floor(Number.isFinite(rawStart) ? rawStart : 0));
+    const end = Math.max(0, Math.floor(Number.isFinite(rawEnd) ? rawEnd : 0));
+    if (end <= start) {
+      setSourceSelectionMenu(null);
+      return;
+    }
+
+    const rawText = draftRef.current.slice(start, end);
+    if (!rawText.trim()) {
+      setSourceSelectionMenu(null);
+      return;
+    }
+
+    const fallbackClient = (() => {
+      const r = ta.getBoundingClientRect();
+      const cx = r.left + Math.min(Math.max(18, r.width * 0.5), Math.max(18, r.width - 18));
+      const cy = r.top + Math.min(Math.max(18, r.height * 0.28), Math.max(18, r.height - 18));
+      return { x: cx, y: cy };
+    })();
+    const base = client ?? fallbackClient;
+
+    const menuW = 220;
+    const menuH = 260;
+    const pad = 8;
+    const left = Math.round(Math.min(Math.max(pad, base.x + 10), Math.max(pad, window.innerWidth - menuW - pad)));
+    const top = Math.round(Math.min(Math.max(pad, base.y + 10), Math.max(pad, window.innerHeight - menuH - pad)));
+    setSourceSelectionMenu({
+      text: rawText,
+      x: left,
+      y: top,
+      client: { x: Number(base.x), y: Number(base.y) },
+    });
+  }, []);
+
+  const copySelectionText = useCallback(async (text: string): Promise<void> => {
+    const t = String(text ?? '');
+    if (!t.trim()) return;
+    try {
+      await navigator.clipboard.writeText(t);
+      return;
+    } catch {
+      // ignore
+    }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = t;
+      ta.style.position = 'fixed';
+      ta.style.left = '-99999px';
+      ta.style.top = '0';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const submitSourceReplySelection = useCallback(() => {
+    const text = sourceSelectionMenu?.text ?? '';
+    if (!text.trim()) {
+      closeSourceSelectionMenu();
+      return;
+    }
+    onReplyToSelectionRef.current?.(text);
+    closeSourceSelectionMenu();
+  }, [closeSourceSelectionMenu, sourceSelectionMenu?.text]);
+
+  const submitSourceAddContextSelection = useCallback(() => {
+    const text = sourceSelectionMenu?.text ?? '';
+    if (!text.trim()) {
+      closeSourceSelectionMenu();
+      return;
+    }
+    onAddToContextSelectionRef.current?.(text);
+    closeSourceSelectionMenu();
+  }, [closeSourceSelectionMenu, sourceSelectionMenu?.text]);
+
+  const submitSourceAnnotateSelection = useCallback(
+    (kind: 'text' | 'ink') => {
+      const text = sourceSelectionMenu?.text ?? '';
+      if (!text.trim()) {
+        closeSourceSelectionMenu();
+        return;
+      }
+      const payload = {
+        selectionText: text,
+        source: 'source' as const,
+        client: sourceSelectionMenu?.client ?? null,
+        anchor: null,
+      };
+      if (kind === 'text') onAnnotateTextSelectionRef.current?.(payload);
+      else onAnnotateInkSelectionRef.current?.(payload);
+      closeSourceSelectionMenu();
+    },
+    [closeSourceSelectionMenu, sourceSelectionMenu],
+  );
+
+  useEffect(() => {
+    if (!sourceSelectionMenu) return;
+    const onPointerDownCapture = (e: Event) => {
+      const target = e.target as Node | null;
+      if (target && sourceSelectionMenuRef.current?.contains(target)) return;
+      setSourceSelectionMenu(null);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      setSourceSelectionMenu(null);
+    };
+    document.addEventListener('pointerdown', onPointerDownCapture, true);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDownCapture, true);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [sourceSelectionMenu]);
+
+  useEffect(() => {
+    setSourceSelectionMenu(null);
+  }, [activeFile, nodeId, projectRoot]);
 
   useEffect(() => {
     if (compiledPdfUrl) return;
@@ -1403,6 +1589,21 @@ export default function LatexNodeEditor(props: Props) {
                   applyDraft(next);
                   if (projectRootRef.current && activeFileRef.current) setIsDirty(true);
                 }}
+                onPointerUp={(e) => {
+                  openSourceSelectionMenuFromSelection({ x: Number(e.clientX), y: Number(e.clientY) });
+                }}
+                onKeyUp={(e) => {
+                  if (e.key === 'Escape') {
+                    closeSourceSelectionMenu();
+                    return;
+                  }
+                  const key = e.key;
+                  const lower = key.toLowerCase();
+                  const mayChangeSelection =
+                    e.shiftKey || key.startsWith('Arrow') || key === 'Home' || key === 'End' || ((e.metaKey || e.ctrlKey) && lower === 'a');
+                  if (!mayChangeSelection) return;
+                  openSourceSelectionMenuFromSelection(null);
+                }}
                 onKeyDown={(e) => {
                   if (e.key === 'Escape') {
                     e.preventDefault();
@@ -1487,6 +1688,28 @@ export default function LatexNodeEditor(props: Props) {
               syncTarget={pdfSyncTarget}
               zoom={pdfZoom}
               zoomMode={pdfZoomMode}
+              onReplyToSelection={(selectionText) => {
+                onReplyToSelectionRef.current?.(selectionText);
+              }}
+              onAddToContextSelection={(selectionText) => {
+                onAddToContextSelectionRef.current?.(selectionText);
+              }}
+              onAnnotateTextSelection={(payload) => {
+                onAnnotateTextSelectionRef.current?.({
+                  selectionText: payload.selectionText,
+                  source: 'pdf',
+                  client: payload.client ?? null,
+                  anchor: payload.anchor ?? null,
+                });
+              }}
+              onAnnotateInkSelection={(payload) => {
+                onAnnotateInkSelectionRef.current?.({
+                  selectionText: payload.selectionText,
+                  source: 'pdf',
+                  client: payload.client ?? null,
+                  anchor: payload.anchor ?? null,
+                });
+              }}
               onInverseSync={canInverseSync ? handlePdfInverseSync : undefined}
             />
           </div>
@@ -1540,6 +1763,46 @@ export default function LatexNodeEditor(props: Props) {
           ) : null}
         </div>
       </div>
+      {typeof document !== 'undefined' && sourceSelectionMenu ? (
+        createPortal(
+          <div
+            ref={sourceSelectionMenuRef}
+            className="gc-selectionMenu"
+            style={{
+              position: 'fixed',
+              left: `${sourceSelectionMenu.x}px`,
+              top: `${sourceSelectionMenu.y}px`,
+              zIndex: 44,
+              pointerEvents: 'auto',
+              userSelect: 'none',
+            }}
+          >
+            <button
+              className="gc-selectionMenu__btn"
+              type="button"
+              onClick={() => {
+                void copySelectionText(sourceSelectionMenu.text);
+                closeSourceSelectionMenu();
+              }}
+            >
+              Copy
+            </button>
+            <button className="gc-selectionMenu__btn" type="button" onClick={submitSourceReplySelection}>
+              Reply to
+            </button>
+            <button className="gc-selectionMenu__btn" type="button" onClick={submitSourceAddContextSelection}>
+              Add to context
+            </button>
+            <button className="gc-selectionMenu__btn" type="button" onClick={() => submitSourceAnnotateSelection('text')}>
+              Annotate with text
+            </button>
+            <button className="gc-selectionMenu__btn" type="button" onClick={() => submitSourceAnnotateSelection('ink')}>
+              Annotate with ink
+            </button>
+          </div>,
+          document.body,
+        )
+      ) : null}
     </div>
   );
 }
