@@ -242,6 +242,7 @@ export default function LatexNodeEditor(props: Props) {
   const [pdfSyncTarget, setPdfSyncTarget] = useState<{ token: number; page: number; x?: number | null; y?: number | null } | null>(null);
   const [pdfZoomMode, setPdfZoomMode] = useState<PdfZoomMode>('fit-width');
   const [pdfZoom, setPdfZoom] = useState(1);
+  const [pdfFitRequestToken, setPdfFitRequestToken] = useState(0);
   const [logVisible, setLogVisible] = useState(false);
   const [logCollapsed, setLogCollapsed] = useState(false);
   const [sourceSelectionMenu, setSourceSelectionMenu] = useState<{
@@ -1394,12 +1395,12 @@ export default function LatexNodeEditor(props: Props) {
   const fitPdfWidth = useCallback(() => {
     setPdfZoomMode('fit-width');
     setPdfZoom(1);
+    setPdfFitRequestToken((prev) => prev + 1);
   }, []);
 
   const fitPdfPage = useCallback(() => {
-    setPdfZoomMode('fit-page');
-    setPdfZoom(1);
-  }, []);
+    fitPdfWidth();
+  }, [fitPdfWidth]);
 
   const openCompiledPdf = useCallback(() => {
     if (!compiledPdfUrl) return;
@@ -1652,7 +1653,7 @@ export default function LatexNodeEditor(props: Props) {
                   <button className="editor__btn editor__btn--compact" type="button" onClick={fitPdfWidth} title="Fit PDF to pane width">
                     Fit width
                   </button>
-                  <button className="editor__btn editor__btn--compact" type="button" onClick={fitPdfPage} title="Fit whole page in pane">
+                  <button className="editor__btn editor__btn--compact" type="button" onClick={fitPdfPage} title="Fit PDF to pane width">
                     Fit page
                   </button>
                   <button className="editor__btn editor__btn--compact" type="button" onClick={openCompiledPdf}>
@@ -1688,6 +1689,7 @@ export default function LatexNodeEditor(props: Props) {
               syncTarget={pdfSyncTarget}
               zoom={pdfZoom}
               zoomMode={pdfZoomMode}
+              fitRequestToken={pdfFitRequestToken}
               onReplyToSelection={(selectionText) => {
                 onReplyToSelectionRef.current?.(selectionText);
               }}

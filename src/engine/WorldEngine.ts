@@ -821,6 +821,14 @@ export class WorldEngine {
   private readonly inlineThumbDataUrlMaxEntries = 220;
   private readonly inlineThumbDataUrlMaxBytes = 32 * 1024 * 1024;
 
+  private readonly latexPdfThumbDataUrlByKey = new Map<string, { key: string; dataUrl: string; rev: number; size: number }>();
+  private latexPdfThumbDataUrlBytes = 0;
+  private readonly latexPdfThumbDataUrlInFlight = new Set<string>();
+  private readonly latexPdfThumbDataUrlFailed = new Set<string>();
+  private readonly latexPdfThumbDataUrlRevByKey = new Map<string, number>();
+  private readonly latexPdfThumbDataUrlMaxEntries = 140;
+  private readonly latexPdfThumbDataUrlMaxBytes = 48 * 1024 * 1024;
+
   private readonly textRasterCache = new Map<
     string,
     {
@@ -3801,6 +3809,11 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     for (const entry of this.pdfPageCache.values()) this.closeImage(entry.image);
     this.pdfPageCache.clear();
     this.pdfPageCacheBytes = 0;
+    this.latexPdfThumbDataUrlByKey.clear();
+    this.latexPdfThumbDataUrlInFlight.clear();
+    this.latexPdfThumbDataUrlFailed.clear();
+    this.latexPdfThumbDataUrlRevByKey.clear();
+    this.latexPdfThumbDataUrlBytes = 0;
 
     this.fullTextNodeRasterGeneration += 1;
     this.fullTextNodeRasterQueueByNodeId.clear();
@@ -5310,7 +5323,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       `top:${TEXT_NODE_HEADER_H_PX - TEXT_NODE_HEADER_GAP_PX}px;height:1px;background:rgba(255,255,255,0.10);"></div>` +
       `<div style="position:absolute;left:${TEXT_NODE_PAD_PX}px;right:${TEXT_NODE_PAD_PX}px;` +
       `top:${TEXT_NODE_HEADER_H_PX}px;bottom:${TEXT_NODE_PAD_PX}px;overflow:hidden;">` +
-      `<div style="${translate}">${contentHtml}</div>` +
+      `<div style="width:100%;height:100%;${translate}">${contentHtml}</div>` +
       `</div>` +
       `</div>`
     );
@@ -5347,13 +5360,15 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 	            const name = typeof a.name === 'string' ? a.name.trim() : '';
 	            return `i:${storageOk ? storageKey : inlineKey}:${rev}:${dataLen}:${name}`;
 	          }
-	          if (a.kind === 'pdf') {
-	            const storageKey = typeof a.storageKey === 'string' ? a.storageKey.trim() : '';
-	            const dataLen = typeof a.data === 'string' ? a.data.length : 0;
-	            const name = typeof a.name === 'string' ? a.name.trim() : '';
-	            const size = Number.isFinite(a.size) ? a.size : '';
-	            return `p:${storageKey}:${dataLen}:${name}:${size}`;
-	          }
+          if (a.kind === 'pdf') {
+            const storageKey = typeof a.storageKey === 'string' ? a.storageKey.trim() : '';
+            const previewRev = storageKey ? (this.latexPdfThumbDataUrlByKey.get(storageKey)?.rev ?? 0) : 0;
+            const previewFailed = storageKey && this.latexPdfThumbDataUrlFailed.has(storageKey) ? 1 : 0;
+            const dataLen = typeof a.data === 'string' ? a.data.length : 0;
+            const name = typeof a.name === 'string' ? a.name.trim() : '';
+            const size = Number.isFinite(a.size) ? a.size : '';
+            return `p:${storageKey}:${previewRev}:${previewFailed}:${dataLen}:${name}:${size}`;
+          }
 	          if (a.kind === 'ink') {
 	            const storageKey = typeof a.storageKey === 'string' ? a.storageKey.trim() : '';
 	            const rev = Number.isFinite(a.rev) ? a.rev : '';
@@ -5724,6 +5739,154 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return null;
   }
 
+  private touchLatexPdfThumbDataUrl(storageKey: string): void {
+    const key = typeof storageKey === 'string' ? storageKey.trim() : '';
+    if (!key) return;
+    const entry = this.latexPdfThumbDataUrlByKey.get(key);
+    if (!entry) return;
+    this.latexPdfThumbDataUrlByKey.delete(key);
+    this.latexPdfThumbDataUrlByKey.set(key, entry);
+  }
+
+  private evictOldLatexPdfThumbDataUrls(): void {
+    while (
+      this.latexPdfThumbDataUrlByKey.size > this.latexPdfThumbDataUrlMaxEntries ||
+      this.latexPdfThumbDataUrlBytes > this.latexPdfThumbDataUrlMaxBytes
+    ) {
+      const oldestKey = this.latexPdfThumbDataUrlByKey.keys().next().value as string | undefined;
+      if (!oldestKey) return;
+      const entry = this.latexPdfThumbDataUrlByKey.get(oldestKey);
+      if (entry) this.latexPdfThumbDataUrlBytes -= entry.size || 0;
+      this.latexPdfThumbDataUrlByKey.delete(oldestKey);
+    }
+  }
+
+  private refreshLatexPdfPreviewNodes(storageKey: string): void {
+    const key = typeof storageKey === 'string' ? storageKey.trim() : '';
+    if (!key) return;
+
+    let anyTextChanged = false;
+    for (const node of this.nodes) {
+      if (node.kind !== 'text') continue;
+      if (!this.isLatexTextNode(node)) continue;
+      const atts = Array.isArray(node.attachments) ? node.attachments : [];
+      const usesKey = atts.some(
+        (a) => a?.kind === 'pdf' && typeof a.storageKey === 'string' && a.storageKey.trim() === key,
+      );
+      if (!usesKey) continue;
+      const prevHash = node.displayHash;
+      this.recomputeTextNodeDisplayHash(node);
+      if (node.displayHash !== prevHash) anyTextChanged = true;
+    }
+
+    if (!anyTextChanged) return;
+    this.textRasterGeneration += 1;
+    this.fullTextNodeRasterGeneration += 1;
+    this.requestRender();
+  }
+
+  private async prefetchLatexPdfThumbDataUrl(storageKey: string): Promise<void> {
+    const key = typeof storageKey === 'string' ? storageKey.trim() : '';
+    if (!key) return;
+    if (this.latexPdfThumbDataUrlByKey.has(key)) return;
+    if (this.latexPdfThumbDataUrlInFlight.has(key)) return;
+    if (this.latexPdfThumbDataUrlFailed.has(key)) return;
+
+    this.latexPdfThumbDataUrlInFlight.add(key);
+    try {
+      if (typeof document === 'undefined') {
+        this.latexPdfThumbDataUrlFailed.add(key);
+        this.refreshLatexPdfPreviewNodes(key);
+        return;
+      }
+
+      const rec = await getStoredAttachment(key);
+      const blob = rec?.blob ?? null;
+      if (!blob) {
+        this.latexPdfThumbDataUrlFailed.add(key);
+        this.refreshLatexPdfPreviewNodes(key);
+        return;
+      }
+
+      const pdf = await loadPdfDocument(await blob.arrayBuffer());
+      let thumbDataUrl: string | null = null;
+      try {
+        const page = await pdf.getPage(1);
+        const baseViewport = page.getViewport({ scale: 1 });
+        const baseWidth = Math.max(1, Number(baseViewport.width) || 1);
+        const targetWidthPx = 560;
+        const viewport = page.getViewport({ scale: Math.max(0.2, targetWidthPx / baseWidth) });
+
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(viewport.width));
+        canvas.height = Math.max(1, Math.round(viewport.height));
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          this.latexPdfThumbDataUrlFailed.add(key);
+          this.refreshLatexPdfPreviewNodes(key);
+          return;
+        }
+
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        try {
+          thumbDataUrl = canvas.toDataURL('image/png');
+        } catch {
+          thumbDataUrl = null;
+        }
+      } finally {
+        try {
+          void pdf.destroy();
+        } catch {
+          // ignore
+        }
+      }
+
+      if (!thumbDataUrl) {
+        this.latexPdfThumbDataUrlFailed.add(key);
+        this.refreshLatexPdfPreviewNodes(key);
+        return;
+      }
+
+      const size = Math.max(0, thumbDataUrl.length || 0);
+      const rev = (this.latexPdfThumbDataUrlRevByKey.get(key) ?? 0) + 1;
+      this.latexPdfThumbDataUrlRevByKey.set(key, rev);
+
+      const prev = this.latexPdfThumbDataUrlByKey.get(key);
+      if (prev) this.latexPdfThumbDataUrlBytes -= prev.size || 0;
+      this.latexPdfThumbDataUrlByKey.set(key, { key, dataUrl: thumbDataUrl, rev, size });
+      this.latexPdfThumbDataUrlBytes += size;
+      this.touchLatexPdfThumbDataUrl(key);
+      this.evictOldLatexPdfThumbDataUrls();
+      this.latexPdfThumbDataUrlFailed.delete(key);
+
+      this.refreshLatexPdfPreviewNodes(key);
+    } catch {
+      this.latexPdfThumbDataUrlFailed.add(key);
+      try {
+        this.refreshLatexPdfPreviewNodes(key);
+      } catch {
+        // ignore
+      }
+    } finally {
+      this.latexPdfThumbDataUrlInFlight.delete(key);
+    }
+  }
+
+  private resolveLatexCompiledPdfPreviewSrc(storageKeyRaw: string): string | null {
+    const key = typeof storageKeyRaw === 'string' ? storageKeyRaw.trim() : '';
+    if (!key) return null;
+
+    const entry = this.latexPdfThumbDataUrlByKey.get(key);
+    if (entry?.dataUrl) {
+      this.touchLatexPdfThumbDataUrl(key);
+      return entry.dataUrl;
+    }
+    if (!this.latexPdfThumbDataUrlFailed.has(key)) void this.prefetchLatexPdfThumbDataUrl(key);
+    return null;
+  }
+
   private recomputeTextNodeDisplayHash(node: TextNode): void {
     node.displayHash = fingerprintText(this.buildTextNodeDisplaySig(node));
   }
@@ -5746,14 +5909,24 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     if (textFormat === 'latex') {
       const atts = Array.isArray(node.attachments) ? node.attachments : [];
-      const hasCompiledPdf = atts.some((att) => att?.kind === 'pdf');
+      const compiledPdfAttachment =
+        atts.find((att): att is Extract<ChatAttachment, { kind: 'pdf' }> => att?.kind === 'pdf') ?? null;
+      const hasCompiledPdf = Boolean(compiledPdfAttachment);
+      const compiledPdfStorageKey =
+        compiledPdfAttachment && typeof compiledPdfAttachment.storageKey === 'string'
+          ? compiledPdfAttachment.storageKey.trim()
+          : '';
+      const pdfPreviewSrc = compiledPdfStorageKey ? this.resolveLatexCompiledPdfPreviewSrc(compiledPdfStorageKey) : null;
+      const pdfPreviewFailed = Boolean(compiledPdfStorageKey && this.latexPdfThumbDataUrlFailed.has(compiledPdfStorageKey));
+      const pdfPreviewPending = Boolean(compiledPdfStorageKey && this.latexPdfThumbDataUrlInFlight.has(compiledPdfStorageKey));
       const compiledAt = Number.isFinite(node.latexCompiledAt) ? node.latexCompiledAt : null;
       const compileError = typeof node.latexCompileError === 'string' ? node.latexCompileError.trim() : '';
       const projectRoot = typeof node.latexProjectRoot === 'string' ? node.latexProjectRoot.trim() : '';
       const mainFile = typeof node.latexMainFile === 'string' ? node.latexMainFile.trim() : '';
       const previewSource = content.trim() ? content : '% Empty document';
 
-      parts.push('<div style="margin:4px 0 10px;padding:8px 10px;border:1px solid rgba(255,255,255,0.12);border-radius:12px;background:rgba(0,0,0,0.18);font-size:0.86em;color:rgba(255,255,255,0.88);">');
+      parts.push('<div style="display:flex;flex-direction:column;height:100%;min-height:0;">');
+      parts.push('<div style="margin:0 0 8px;padding:8px 10px;border:1px solid rgba(255,255,255,0.12);border-radius:12px;background:rgba(0,0,0,0.18);font-size:0.86em;color:rgba(255,255,255,0.88);">');
       parts.push('<div style="font-weight:600;opacity:0.94;margin:0 0 6px;">LaTeX document</div>');
       if (compileError) {
         parts.push(`<div style="color:rgba(255,120,120,0.95);margin:0 0 4px;">Last compile issue: ${escapeHtml(compileError.slice(0, 220))}</div>`);
@@ -5768,9 +5941,42 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       parts.push(`<div style="opacity:0.72;">PDF preview: ${hasCompiledPdf ? 'ready' : 'missing'}</div>`);
       parts.push('</div>');
 
-      parts.push('<pre style="margin:0;white-space:pre-wrap;word-break:break-word;font-size:0.92em;line-height:1.45;">');
-      parts.push(escapeHtml(previewSource.slice(0, 1800)));
+      parts.push('<div style="display:flex;gap:10px;align-items:stretch;flex:1;min-height:0;">');
+      parts.push('<div style="flex:1 1 52%;min-width:0;display:flex;flex-direction:column;min-height:0;">');
+      parts.push('<div style="font-size:0.76em;letter-spacing:0.03em;text-transform:uppercase;opacity:0.7;margin:0 0 6px;">Source</div>');
+      parts.push(
+        '<pre style="margin:0;flex:1;min-height:0;overflow:auto;white-space:pre-wrap;word-break:break-word;' +
+          'font-size:0.9em;line-height:1.42;padding:10px 12px;border-radius:10px;border:1px solid rgba(255,255,255,0.12);' +
+          'background:rgba(0,0,0,0.20);">',
+      );
+      parts.push(escapeHtml(previewSource.slice(0, 9000)));
       parts.push('</pre>');
+      parts.push('</div>');
+
+      parts.push('<div style="flex:1 1 48%;min-width:0;display:flex;flex-direction:column;min-height:0;">');
+      parts.push('<div style="font-size:0.76em;letter-spacing:0.03em;text-transform:uppercase;opacity:0.7;margin:0 0 6px;">PDF</div>');
+      parts.push(
+        '<div style="flex:1;min-height:0;padding:6px;border-radius:10px;border:1px solid rgba(255,255,255,0.12);' +
+          'background:rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:center;overflow:hidden;">',
+      );
+      if (pdfPreviewSrc) {
+        parts.push(
+          `<img src="${escapeHtml(pdfPreviewSrc)}" alt="Compiled PDF page preview" ` +
+            'style="display:block;width:100%;height:100%;object-fit:contain;background:#fff;border-radius:6px;" />',
+        );
+      } else if (!hasCompiledPdf) {
+        parts.push('<div style="text-align:center;font-size:0.86em;opacity:0.72;">No compiled PDF yet.</div>');
+      } else if (pdfPreviewFailed) {
+        parts.push('<div style="text-align:center;font-size:0.86em;opacity:0.72;">Compiled PDF preview unavailable.</div>');
+      } else if (pdfPreviewPending) {
+        parts.push('<div style="text-align:center;font-size:0.86em;opacity:0.72;">Rendering PDF preview...</div>');
+      } else {
+        parts.push('<div style="text-align:center;font-size:0.86em;opacity:0.72;">Preparing PDF preview...</div>');
+      }
+      parts.push('</div>');
+      parts.push('</div>');
+      parts.push('</div>');
+      parts.push('</div>');
       return parts.join('');
     }
 

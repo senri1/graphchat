@@ -19,6 +19,7 @@ type Props = {
   syncTarget: SyncTarget | null;
   zoom?: number;
   zoomMode?: 'manual' | 'fit-width' | 'fit-page';
+  fitRequestToken?: number;
   onInverseSync?: (payload: { page: number; x: number; y: number }) => void;
   onReplyToSelection?: (selectionText: string) => void;
   onAddToContextSelection?: (selectionText: string) => void;
@@ -43,6 +44,7 @@ type RenderPageMeta = {
 
 const PAGE_GAP_PX = 10;
 const SCROLL_PAD_PX = 8;
+const FIT_WIDTH_BUFFER_PX = 1;
 const VISIBLE_OVERSCAN_PX = 1200;
 
 function clamp(v: number, min: number, max: number): number {
@@ -57,6 +59,7 @@ function LatexPdfPreviewImpl(props: Props) {
     syncTarget,
     zoom,
     zoomMode,
+    fitRequestToken,
     onInverseSync,
     onReplyToSelection,
     onAddToContextSelection,
@@ -234,9 +237,10 @@ function LatexPdfPreviewImpl(props: Props) {
     const el = containerRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
     const applySize = () => {
-      const rect = el.getBoundingClientRect();
-      const nextW = Math.max(1, Math.floor(rect.width));
-      const nextH = Math.max(1, Math.floor(rect.height));
+      // client sizes reflect the actual scrollable interior (excluding scrollbar gutter),
+      // which makes fit-width calculations line up with what the user sees.
+      const nextW = Math.max(1, Math.floor(el.clientWidth));
+      const nextH = Math.max(1, Math.floor(el.clientHeight));
       setContainerWidth((prev) => (Math.abs(prev - nextW) >= 2 ? nextW : prev));
       setContainerHeight((prev) => (Math.abs(prev - nextH) >= 2 ? nextH : prev));
     };
@@ -374,8 +378,9 @@ function LatexPdfPreviewImpl(props: Props) {
         const zoomRaw = Number(zoom);
         const zoomFactor = Number.isFinite(zoomRaw) ? clamp(zoomRaw, 0.35, 4) : 1;
         const viewportWidth = Math.max(1, containerWidth || 680);
-        // Leave a small buffer so fit-width mode never oscillates around a 1px overflow.
-        const fitWidthTarget = Math.max(180, viewportWidth - SCROLL_PAD_PX * 2 - 2);
+        const horizontalPadPx = effectiveMode === 'fit-width' ? 0 : SCROLL_PAD_PX * 2;
+        // Leave a tiny buffer so fit-width mode avoids 1px oscillation.
+        const fitWidthTarget = Math.max(180, viewportWidth - horizontalPadPx - FIT_WIDTH_BUFFER_PX);
         const manualWidthTarget = Math.max(180, fitWidthTarget * zoomFactor);
         const heightFitTarget = Math.max(180, (containerHeight || scrollViewportH || 900) - SCROLL_PAD_PX * 2);
         const nextMetas: RenderPageMeta[] = [];
@@ -415,7 +420,7 @@ function LatexPdfPreviewImpl(props: Props) {
     return () => {
       cancelled = true;
     };
-  }, [pdfUrl, containerWidth, containerHeight, scrollViewportH, zoom, zoomMode]);
+  }, [pdfUrl, containerWidth, containerHeight, scrollViewportH, zoom, zoomMode, fitRequestToken]);
 
   const visiblePageSet = useMemo(() => {
     if (metas.length === 0) return new Set<number>();
@@ -774,6 +779,7 @@ const LatexPdfPreview = React.memo(LatexPdfPreviewImpl, (prev, next) => {
     prev.pdfUrl === next.pdfUrl &&
     prev.zoom === next.zoom &&
     prev.zoomMode === next.zoomMode &&
+    prev.fitRequestToken === next.fitRequestToken &&
     prev.onInverseSync === next.onInverseSync &&
     prev.onReplyToSelection === next.onReplyToSelection &&
     prev.onAddToContextSelection === next.onAddToContextSelection &&

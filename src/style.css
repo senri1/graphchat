@@ -3013,6 +3013,14 @@ body {
 
 .editor__pdfCanvasScroll--fit {
   overflow-x: hidden;
+  padding-left: 0;
+  padding-right: 0;
+  scrollbar-gutter: auto;
+}
+
+.editor__pdfCanvasScroll--fit .editor__pdfCanvasPageWrap {
+  box-shadow: none;
+  border-radius: 0;
 }
 
 .editor__pdfCanvasScroll::-webkit-scrollbar {
