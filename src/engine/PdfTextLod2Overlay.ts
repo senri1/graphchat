@@ -6,6 +6,15 @@ export type PdfTextLod2Mode = 'select';
 
 export type HighlightRect = { left: number; top: number; width: number; height: number };
 export type PdfSelectionStartAnchor = { pageNumber: number; yPct: number };
+export type PdfOverlayWheelPayload = {
+  deltaX: number;
+  deltaY: number;
+  deltaMode: number;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+  metaKey: boolean;
+};
 
 type TextContentSource = ReadableStream<unknown> | unknown;
 type AnnotatePointerTrigger = { pointerId: number; pointerType: string };
@@ -216,6 +225,7 @@ export class PdfTextLod2Overlay {
     trigger?: AnnotatePointerTrigger | null,
   ) => void;
   onRequestClickWithoutSelection?: (pageNumber: number, client: { x: number; y: number }) => void;
+  onRequestWheel?: (payload: PdfOverlayWheelPayload) => boolean | void;
 
   private readonly onDocPointerDownCapture = (e: Event) => {
     if (!this.isMenuOpen()) return;
@@ -230,6 +240,23 @@ export class PdfTextLod2Overlay {
       e.preventDefault();
       this.closeMenu();
     }
+  };
+
+  private readonly onRootWheel = (e: WheelEvent) => {
+    if (!this.interactive) return;
+    const handled =
+      this.onRequestWheel?.({
+        deltaX: Number(e.deltaX) || 0,
+        deltaY: Number(e.deltaY) || 0,
+        deltaMode: Number(e.deltaMode) || 0,
+        ctrlKey: Boolean(e.ctrlKey),
+        shiftKey: Boolean(e.shiftKey),
+        altKey: Boolean(e.altKey),
+        metaKey: Boolean(e.metaKey),
+      }) === true;
+    if (!handled) return;
+    e.stopPropagation();
+    e.preventDefault();
   };
 
   private readonly onRootPointerDown = (e: PointerEvent) => {
@@ -580,6 +607,7 @@ export class PdfTextLod2Overlay {
     this.host.appendChild(root);
 
     root.addEventListener('pointerdown', this.onRootPointerDown);
+    root.addEventListener('wheel', this.onRootWheel, { passive: false });
 
     const menu = document.createElement('div');
     menu.className = 'gc-selectionMenu';
@@ -753,6 +781,7 @@ export class PdfTextLod2Overlay {
       document.removeEventListener('pointermove', this.onNativePointerMoveCapture, true);
       document.removeEventListener('pointerup', this.onNativePointerUpCapture, true);
       document.removeEventListener('pointercancel', this.onNativePointerCancelCapture, true);
+      this.root.removeEventListener('wheel', this.onRootWheel);
     } catch {
       // ignore
     }

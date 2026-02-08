@@ -1,6 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { loadPdfDocument } from '../engine/pdf/pdfjs';
-import { PdfTextLod2Overlay, type PdfSelectionStartAnchor } from '../engine/PdfTextLod2Overlay';
+import {
+  PdfTextLod2Overlay,
+  type PdfOverlayWheelPayload,
+  type PdfSelectionStartAnchor,
+} from '../engine/PdfTextLod2Overlay';
 import type { PDFDocumentProxy, PageViewport } from 'pdfjs-dist';
 
 type SyncTarget = {
@@ -133,6 +137,33 @@ function LatexPdfPreviewImpl(props: Props) {
     }
   }, []);
 
+  const handleOverlayWheel = useCallback((payload: PdfOverlayWheelPayload): boolean => {
+    const el = containerRef.current;
+    if (!el) return false;
+    if (payload.ctrlKey) return false;
+
+    const hasHorizontal = el.scrollWidth > el.clientWidth + 1;
+    const hasVertical = el.scrollHeight > el.clientHeight + 1;
+    if (!hasHorizontal && !hasVertical) return false;
+
+    const mode = Number(payload.deltaMode) || 0;
+    const unit = mode === 1 ? 16 : mode === 2 ? Math.max(1, el.clientHeight) : 1;
+    let dx = (Number(payload.deltaX) || 0) * unit;
+    let dy = (Number(payload.deltaY) || 0) * unit;
+    if (payload.shiftKey && Math.abs(dx) < 0.01 && Math.abs(dy) >= 0.01) {
+      dx = dy;
+      dy = 0;
+    }
+
+    const maxLeft = Math.max(0, el.scrollWidth - el.clientWidth);
+    const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    const nextLeft = hasHorizontal ? clamp(el.scrollLeft + dx, 0, maxLeft) : el.scrollLeft;
+    const nextTop = hasVertical ? clamp(el.scrollTop + dy, 0, maxTop) : el.scrollTop;
+    if (Math.abs(nextLeft - el.scrollLeft) >= 0.01) el.scrollLeft = nextLeft;
+    if (Math.abs(nextTop - el.scrollTop) >= 0.01) el.scrollTop = nextTop;
+    return true;
+  }, []);
+
   useEffect(() => {
     if (typeof document === 'undefined') return;
     const overlay = new PdfTextLod2Overlay({
@@ -177,6 +208,10 @@ function LatexPdfPreviewImpl(props: Props) {
       inverseSyncAtClient(pageNumber, client);
     };
 
+    overlay.onRequestWheel = (payload) => {
+      return handleOverlayWheel(payload);
+    };
+
     pdfTextOverlayRef.current = overlay;
     return () => {
       try {
@@ -186,7 +221,7 @@ function LatexPdfPreviewImpl(props: Props) {
       }
       if (pdfTextOverlayRef.current === overlay) pdfTextOverlayRef.current = null;
     };
-  }, [inverseSyncAtClient]);
+  }, [handleOverlayWheel, inverseSyncAtClient]);
 
   useEffect(() => {
     const el = containerRef.current;
