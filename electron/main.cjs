@@ -69,6 +69,20 @@ function latexmkArgs(engine, targetFile) {
   ];
 }
 
+function resolveElectronStartUrl() {
+  const envUrl = asTrimmedString(process.env.ELECTRON_START_URL);
+  if (envUrl) return envUrl;
+
+  const prefix = '--dev-url=';
+  for (const arg of process.argv) {
+    const value = asTrimmedString(arg);
+    if (!value.startsWith(prefix)) continue;
+    const parsed = asTrimmedString(value.slice(prefix.length));
+    if (parsed) return parsed;
+  }
+  return '';
+}
+
 function asTrimmedString(value) {
   return typeof value === 'string' ? value.trim() : String(value ?? '').trim();
 }
@@ -647,7 +661,7 @@ function createWindow() {
     console.error('[electron] did-fail-load', { errorCode, errorDescription, validatedURL });
   });
 
-  const devUrl = process.env.ELECTRON_START_URL;
+  const devUrl = resolveElectronStartUrl();
   if (devUrl) {
     win.loadURL(devUrl);
     win.webContents.openDevTools({ mode: 'detach' });
