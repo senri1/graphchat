@@ -46,6 +46,13 @@ import {
 import { getGeminiApiKey, sendGeminiResponse, streamGeminiResponse } from './services/geminiService';
 import { getAnthropicApiKey, sendAnthropicMessage, streamAnthropicMessage } from './services/anthropicService';
 import { getXaiApiKey, retrieveXaiResponse, sendXaiResponse, streamXaiResponse } from './services/xaiService';
+import {
+  clearRuntimeApiKey,
+  getRuntimeApiKeys,
+  setRuntimeApiKey,
+  type RuntimeApiKeys,
+  type RuntimeApiProvider,
+} from './services/runtimeApiKeys';
 import type { ChatAttachment, ChatNode, InkStroke, ThinkingSummaryChunk } from './model/chat';
 import { normalizeBackgroundLibrary, type BackgroundLibraryItem } from './model/backgrounds';
 import {
@@ -149,6 +156,13 @@ type StorageDataDirInfo = {
   path: string;
   defaultPath: string;
   isDefault: boolean;
+};
+
+const API_PROVIDER_LABELS: Record<RuntimeApiProvider, string> = {
+  openai: 'OpenAI',
+  gemini: 'Gemini',
+  anthropic: 'Anthropic',
+  xai: 'xAI',
 };
 
 type MenuPos = { left: number; top?: number; bottom?: number; maxHeight: number };
@@ -1346,6 +1360,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsPanel, setSettingsPanel] = useState<'appearance' | 'models' | 'debug' | 'data' | 'reset'>('appearance');
   const [storageDataDirInfo, setStorageDataDirInfo] = useState<StorageDataDirInfo | null>(null);
+  const [runtimeApiKeys, setRuntimeApiKeys] = useState<RuntimeApiKeys>(() => getRuntimeApiKeys());
   const [debugHudVisible, setDebugHudVisible] = useState(DEFAULT_DEBUG_HUD_VISIBLE);
   const [sendAllEnabled, setSendAllEnabled] = useState(DEFAULT_SEND_ALL_ENABLED);
   const sendAllEnabledRef = useRef<boolean>(sendAllEnabled);
@@ -2411,7 +2426,7 @@ export default function App() {
 
     const apiKey = getOpenAIApiKey();
     if (!apiKey) {
-      const msg = 'OpenAI API key missing. Set OPENAI_API_KEY in graphchatv1/.env.local';
+      const msg = 'OpenAI API key missing. Add it in Settings -> Models -> API keys or set OPENAI_API_KEY in .env.local.';
       updateStoredTextNode(chatId, args.assistantNodeId, { content: msg, isGenerating: false, llmError: msg });
       if (activeChatIdRef.current === chatId) {
         engineRef.current?.setTextNodeContent(args.assistantNodeId, msg, { streaming: false });
@@ -2997,7 +3012,7 @@ export default function App() {
 
     const apiKey = getXaiApiKey();
     if (!apiKey) {
-      const msg = 'xAI API key missing. Set XAI_API_KEY in graphchatv1/.env.local';
+      const msg = 'xAI API key missing. Add it in Settings -> Models -> API keys or set XAI_API_KEY in .env.local.';
       updateStoredTextNode(chatId, args.assistantNodeId, { content: msg, isGenerating: false, llmError: msg });
       if (activeChatIdRef.current === chatId) {
         engineRef.current?.setTextNodeContent(args.assistantNodeId, msg, { streaming: false });
@@ -3256,7 +3271,7 @@ export default function App() {
 
     const apiKey = getGeminiApiKey();
     if (!apiKey) {
-      const msg = 'Gemini API key missing. Set GEMINI_API_KEY in graphchatv1/.env.local';
+      const msg = 'Gemini API key missing. Add it in Settings -> Models -> API keys or set GEMINI_API_KEY in .env.local.';
       updateStoredTextNode(chatId, args.assistantNodeId, { content: msg, isGenerating: false, llmError: msg });
       if (activeChatIdRef.current === chatId) {
         engineRef.current?.setTextNodeContent(args.assistantNodeId, msg, { streaming: false });
@@ -3400,7 +3415,7 @@ export default function App() {
 
     const apiKey = getAnthropicApiKey();
     if (!apiKey) {
-      const msg = 'Anthropic API key missing. Set ANTHROPIC_API_KEY in graphchatv1/.env.local';
+      const msg = 'Anthropic API key missing. Add it in Settings -> Models -> API keys or set ANTHROPIC_API_KEY in .env.local.';
       updateStoredTextNode(chatId, args.assistantNodeId, { content: msg, isGenerating: false, llmError: msg });
       if (activeChatIdRef.current === chatId) {
         engineRef.current?.setTextNodeContent(args.assistantNodeId, msg, { streaming: false });
@@ -3649,7 +3664,7 @@ export default function App() {
 
 	    const apiKey = getOpenAIApiKey();
 	    if (!apiKey) {
-	      const msg = 'OpenAI API key missing. Set OPENAI_API_KEY in graphchatv1/.env.local';
+	      const msg = 'OpenAI API key missing. Add it in Settings -> Models -> API keys or set OPENAI_API_KEY in .env.local.';
 	      updateStoredTextNode(chatId, assistantNodeId, { isGenerating: false, llmError: msg, llmTask: undefined });
 	      if (activeChatIdRef.current === chatId) {
 	        engineRef.current?.setTextNodeLlmState(assistantNodeId, { isGenerating: false, llmError: msg, llmTask: null } as any);
@@ -5616,6 +5631,53 @@ export default function App() {
       }
     })();
   };
+
+  useEffect(() => {
+    if (!settingsOpen || settingsPanel !== 'models') return;
+    setRuntimeApiKeys(getRuntimeApiKeys());
+  }, [settingsOpen, settingsPanel]);
+
+  const saveRuntimeProviderApiKey = (provider: RuntimeApiProvider, value: string) => {
+    const next = setRuntimeApiKey(provider, value);
+    setRuntimeApiKeys(next);
+    const label = API_PROVIDER_LABELS[provider];
+    showToast(`${label} API key saved.`, 'success');
+  };
+
+  const clearRuntimeProviderApiKey = (provider: RuntimeApiProvider) => {
+    const next = clearRuntimeApiKey(provider);
+    setRuntimeApiKeys(next);
+    const label = API_PROVIDER_LABELS[provider];
+    showToast(`${label} API key cleared.`, 'info');
+  };
+
+  useEffect(() => {
+    const api = (window as any)?.gcElectron;
+    if (!api || typeof api.latexToolchainStatus !== 'function') return;
+    let canceled = false;
+    void (async () => {
+      try {
+        const res = await api.latexToolchainStatus();
+        if (canceled || !res?.ok) return;
+        const missing: string[] = [];
+        if (!res?.latexmk) missing.push('latexmk');
+        if (!res?.synctex) missing.push('synctex');
+        if (!missing.length) return;
+        const installHint =
+          navigator.platform.toLowerCase().includes('mac')
+            ? 'Install MacTeX and restart the app.'
+            : navigator.platform.toLowerCase().includes('win')
+              ? 'Install MiKTeX or TeX Live and restart the app.'
+              : 'Install a TeX distribution that provides latexmk and synctex, then restart the app.';
+        showToast(`LaTeX tools missing: ${missing.join(', ')}. ${installHint}`, 'info', 12000);
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      canceled = true;
+    };
+  }, []);
 
   const sendTurn = (args: SendTurnArgs): { chatId: string; userNodeId: string; assistantNodeId: string } | null => {
     const engine = engineRef.current;
@@ -7897,17 +7959,20 @@ export default function App() {
             setActiveChatSystemInstructionOverride(next);
             schedulePersistSoon();
           }}
-          onResetChatSystemInstructionOverride={() => {
-            const chatId = String(activeChatIdRef.current ?? '').trim();
-            if (!chatId) return;
-            const meta = ensureChatMeta(chatId);
-            meta.systemInstructionOverride = null;
-            setActiveChatSystemInstructionOverride(null);
-            schedulePersistSoon();
-          }}
-          onUpdateModelUserSettings={(modelId, patch) => {
-            const model = allModels.find((m) => m.id === modelId);
-            if (!model) return;
+	          onResetChatSystemInstructionOverride={() => {
+	            const chatId = String(activeChatIdRef.current ?? '').trim();
+	            if (!chatId) return;
+	            const meta = ensureChatMeta(chatId);
+	            meta.systemInstructionOverride = null;
+	            setActiveChatSystemInstructionOverride(null);
+	            schedulePersistSoon();
+	          }}
+            runtimeApiKeys={runtimeApiKeys}
+            onSaveRuntimeApiKey={saveRuntimeProviderApiKey}
+            onClearRuntimeApiKey={clearRuntimeProviderApiKey}
+	          onUpdateModelUserSettings={(modelId, patch) => {
+	            const model = allModels.find((m) => m.id === modelId);
+	            if (!model) return;
             setModelUserSettings((prev) => {
               const current = prev[modelId] ?? normalizeModelUserSettings(model, null);
               const next = normalizeModelUserSettings(model, { ...(current as any), ...(patch as any) });

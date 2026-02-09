@@ -13,6 +13,7 @@ import {
   type ModelUserSettingsById,
   type ReasoningSummarySetting,
 } from '../llm/modelUserSettings';
+import type { RuntimeApiKeys, RuntimeApiProvider } from '../services/runtimeApiKeys';
 
 export type SettingsPanelId = 'appearance' | 'models' | 'debug' | 'data' | 'reset';
 
@@ -31,6 +32,9 @@ type Props = {
   chatSystemInstructionOverride: string | null;
   onChangeChatSystemInstructionOverride: (next: string | null) => void;
   onResetChatSystemInstructionOverride: () => void;
+  runtimeApiKeys: RuntimeApiKeys;
+  onSaveRuntimeApiKey: (provider: RuntimeApiProvider, value: string) => void;
+  onClearRuntimeApiKey: (provider: RuntimeApiProvider) => void;
   onUpdateModelUserSettings: (modelId: string, patch: Partial<ModelUserSettings>) => void;
 
   backgroundLibrary: BackgroundLibraryItem[];
@@ -127,9 +131,14 @@ export default function SettingsModal(props: Props) {
   const onClose = props.onClose;
   const [renamingBackgroundId, setRenamingBackgroundId] = useState<string | null>(null);
   const [renameBackgroundDraft, setRenameBackgroundDraft] = useState('');
+  const [apiKeyDrafts, setApiKeyDrafts] = useState<RuntimeApiKeys>(() => ({ ...props.runtimeApiKeys }));
   const backgroundThumbUrls = useAttachmentObjectUrls(
     open && props.activePanel === 'appearance' ? (props.backgroundLibrary ?? []).map((b) => b.storageKey) : [],
   );
+
+  useEffect(() => {
+    setApiKeyDrafts({ ...props.runtimeApiKeys });
+  }, [props.runtimeApiKeys]);
 
   const beginRenameBackground = (bg: BackgroundLibraryItem) => {
     setRenamingBackgroundId(bg.id);
@@ -207,6 +216,17 @@ export default function SettingsModal(props: Props) {
         description: 'Clear backgrounds and delete chats',
       },
     ],
+    [],
+  );
+
+  const apiKeyProviders = useMemo(
+    () =>
+      [
+        { id: 'openai' as const, label: 'OpenAI', placeholder: 'sk-...' },
+        { id: 'gemini' as const, label: 'Gemini', placeholder: 'AIza...' },
+        { id: 'anthropic' as const, label: 'Anthropic', placeholder: 'sk-ant-...' },
+        { id: 'xai' as const, label: 'xAI', placeholder: 'xai-...' },
+      ] satisfies Array<{ id: RuntimeApiProvider; label: string; placeholder: string }>,
     [],
   );
 
@@ -677,16 +697,81 @@ export default function SettingsModal(props: Props) {
                 </div>
             ) : null}
 
-            {props.activePanel === 'models' ? (
-              <div className="settingsPanel">
-                <div className="settingsPanel__header">
-                  <div className="settingsPanel__title">Models</div>
-                  <div className="settingsPanel__subtitle">Choose which models appear in the composer and set per-model defaults.</div>
+	            {props.activePanel === 'models' ? (
+	              <div className="settingsPanel">
+	                <div className="settingsPanel__header">
+	                  <div className="settingsPanel__title">Models</div>
+	                  <div className="settingsPanel__subtitle">Choose which models appear in the composer and set per-model defaults.</div>
+	                </div>
+
+                <div className="settingsCard">
+                  <div className="settingsRow settingsRow--stack">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">API keys</div>
+                      <div className="settingsRow__desc">
+                        Add provider keys in-app. If blank, GraphChat falls back to `.env.local`.
+                      </div>
+                    </div>
+                  </div>
+
+                  {apiKeyProviders.map((provider) => {
+                    const savedValue = String(props.runtimeApiKeys?.[provider.id] ?? '').trim();
+                    const draftValue = String(apiKeyDrafts?.[provider.id] ?? '');
+                    const hasSaved = savedValue.length > 0;
+                    return (
+                      <div key={provider.id} className="settingsRow settingsRow--stack">
+                        <div className="settingsRow__text">
+                          <div className="settingsRow__title">{provider.label}</div>
+                          <div className="settingsRow__desc">
+                            {hasSaved ? 'Stored in app settings.' : 'Not stored in app settings yet.'}
+                          </div>
+                        </div>
+                        <div className="settingsRow__actions settingsRow__actions--grow">
+                          <input
+                            className="settingsTextInput settingsTextInput--apiKey"
+                            type="password"
+                            autoComplete="off"
+                            spellCheck={false}
+                            value={draftValue}
+                            placeholder={provider.placeholder}
+                            aria-label={`${provider.label} API key`}
+                            onChange={(e) =>
+                              setApiKeyDrafts((prev) => ({
+                                ...(prev ?? props.runtimeApiKeys),
+                                [provider.id]: e.currentTarget.value,
+                              }))
+                            }
+                          />
+                          <button
+                            className="settingsBtn"
+                            type="button"
+                            onClick={() => props.onSaveRuntimeApiKey(provider.id, draftValue)}
+                          >
+                            Save
+                          </button>
+                          <button
+                            className="settingsBtn"
+                            type="button"
+                            disabled={!hasSaved}
+                            onClick={() => {
+                              setApiKeyDrafts((prev) => ({
+                                ...(prev ?? props.runtimeApiKeys),
+                                [provider.id]: '',
+                              }));
+                              props.onClearRuntimeApiKey(provider.id);
+                            }}
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
 
-                <details className="settingsCard settingsDetails">
-                  <summary className="settingsDetails__summary">
-                    <div className="settingsRow settingsRow--stack">
+	                <details className="settingsCard settingsDetails">
+	                  <summary className="settingsDetails__summary">
+	                    <div className="settingsRow settingsRow--stack">
                       <div className="settingsRow__text">
                         <div className="settingsRow__title">System instructions</div>
                         <div className="settingsRow__desc">Global default and per-chat override.</div>

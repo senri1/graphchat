@@ -1444,6 +1444,10 @@ body {
   outline: none;
 }
 
+.settingsTextInput--apiKey {
+  width: min(420px, 75vw);
+}
+
 .settingsTextArea {
   appearance: none;
   border: 1px solid rgba(255, 255, 255, 0.14);

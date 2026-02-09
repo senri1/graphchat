@@ -59,6 +59,7 @@ interface Window {
       error?: string;
       log?: string;
     }>;
+    latexToolchainStatus: () => Promise<{ ok: boolean; latexmk?: boolean; synctex?: boolean; error?: string }>;
     storageGetWorkspaceSnapshot: () => Promise<{ ok: boolean; snapshot?: unknown | null; error?: string }>;
     storagePutWorkspaceSnapshot: (req: { snapshot: unknown }) => Promise<{ ok: boolean; error?: string }>;
     storageDeleteWorkspaceSnapshot: () => Promise<{ ok: boolean; error?: string }>;

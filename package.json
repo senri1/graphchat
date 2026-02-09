@@ -11,9 +11,12 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "electron": "electron electron/main.cjs",
     "electron:dev": "ELECTRON_START_URL=http://localhost:3000 electron electron/main.cjs",
+    "clean:release": "node -e \"require('fs').rmSync('release', { recursive: true, force: true })\"",
     "dist": "npm run build && electron-builder",
     "dist:mac": "npm run build && electron-builder --mac dmg",
-    "dist:win": "npm run build && electron-builder --win nsis"
+    "dist:win": "npm run build && electron-builder --win nsis",
+    "dist:mac:fresh": "npm run clean:release && npm run dist:mac",
+    "dist:win:fresh": "npm run clean:release && npm run dist:win"
   },
   "build": {
     "appId": "com.graphchatv1.desktop",

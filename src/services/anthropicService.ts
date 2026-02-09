@@ -1,3 +1,5 @@
+import { getRuntimeApiKey } from './runtimeApiKeys';
+
 export type AnthropicStreamCallbacks = {
   onDelta?: (delta: string, fullText: string) => void;
   onEvent?: (evt: unknown) => void;
@@ -8,6 +10,8 @@ export type AnthropicStreamResult =
   | { ok: false; text: string; error: string; cancelled?: boolean; response?: unknown };
 
 export function getAnthropicApiKey(): string | null {
+  const runtime = getRuntimeApiKey('anthropic');
+  if (runtime) return runtime;
   const trimmed = String(import.meta.env.ANTHROPIC_API_KEY ?? import.meta.env.VITE_ANTHROPIC_API_KEY ?? '').trim();
   return trimmed ? trimmed : null;
 }

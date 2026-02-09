@@ -1,5 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 import type { CanonicalAssistantMessage } from '../model/chat';
+import { getRuntimeApiKey } from './runtimeApiKeys';
 
 export type GeminiReply = {
   text: string;
@@ -17,6 +18,8 @@ export type GeminiStreamCallbacks = {
 };
 
 export function getGeminiApiKey(): string | null {
+  const runtime = getRuntimeApiKey('gemini');
+  if (runtime) return runtime;
   const trimmed = String(import.meta.env.GEMINI_API_KEY ?? '').trim();
   return trimmed ? trimmed : null;
 }
@@ -152,7 +155,7 @@ export async function sendGeminiResponse(args: { request: any; signal?: AbortSig
   try {
     const apiKey = getGeminiApiKey();
     if (!apiKey) {
-      return { text: 'Gemini API key missing. Set GEMINI_API_KEY in graphchatv1/.env.local', raw: null };
+      return { text: 'Gemini API key missing. Add it in Settings -> Models -> API keys or set GEMINI_API_KEY in .env.local.', raw: null };
     }
 
     const ai = new GoogleGenAI({ apiKey });
@@ -212,7 +215,7 @@ export async function streamGeminiResponse(args: {
   try {
     const apiKey = getGeminiApiKey();
     if (!apiKey) {
-      return { text: 'Gemini API key missing. Set GEMINI_API_KEY in graphchatv1/.env.local', raw: null };
+      return { text: 'Gemini API key missing. Add it in Settings -> Models -> API keys or set GEMINI_API_KEY in .env.local.', raw: null };
     }
 
     const ai = new GoogleGenAI({ apiKey });

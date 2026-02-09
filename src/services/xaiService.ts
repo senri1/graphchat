@@ -1,3 +1,5 @@
+import { getRuntimeApiKey } from './runtimeApiKeys';
+
 export type XaiResult =
   | { ok: true; text: string; response: unknown }
   | { ok: false; text: string; error: string; cancelled?: boolean; response?: unknown };
@@ -12,6 +14,8 @@ export type XaiStreamCallbacks = {
 };
 
 export function getXaiApiKey(): string | null {
+  const runtime = getRuntimeApiKey('xai');
+  if (runtime) return runtime;
   const trimmed = String(import.meta.env.XAI_API_KEY ?? import.meta.env.VITE_XAI_API_KEY ?? '').trim();
   return trimmed ? trimmed : null;
 }

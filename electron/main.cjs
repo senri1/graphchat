@@ -11,6 +11,7 @@ const LATEX_MAX_LOG_CHARS = 600_000;
 const LATEX_PROJECT_MAX_FILES = 8_000;
 const LATEX_PROJECT_MAX_READ_BYTES = 2_000_000;
 const LATEX_SYNCTEX_TIMEOUT_MS = 12_000;
+const LATEX_TOOL_CHECK_TIMEOUT_MS = 4_000;
 const LATEX_PROJECT_EDITABLE_EXT = new Set(['.tex', '.bib', '.sty', '.cls', '.bst', '.txt', '.md']);
 const LATEX_PROJECT_SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', 'build', 'out', '.next']);
 const LATEX_PROJECT_ASSET_EXT = new Set([
@@ -28,6 +29,31 @@ function trimMessage(value, fallback) {
   const raw = typeof value === 'string' ? value.trim() : String(value ?? '').trim();
   if (!raw) return fallback;
   return raw.length > 500 ? `${raw.slice(0, 500)}...` : raw;
+}
+
+function latexCommandEnv() {
+  const env = { ...process.env };
+  const existing = String(env.PATH ?? '')
+    .split(path.delimiter)
+    .map((p) => String(p ?? '').trim())
+    .filter(Boolean);
+  const extras = process.platform === 'darwin'
+    ? ['/Library/TeX/texbin', '/opt/homebrew/bin', '/usr/local/bin']
+    : process.platform === 'win32'
+      ? [
+          'C:\\Program Files\\MiKTeX\\miktex\\bin\\x64',
+          'C:\\Program Files\\MiKTeX\\miktex\\bin',
+          'C:\\texlive\\2025\\bin\\win32',
+          'C:\\texlive\\2024\\bin\\win32',
+        ]
+      : [];
+  const merged = existing.slice();
+  for (const extra of extras) {
+    if (!extra) continue;
+    if (!merged.includes(extra)) merged.push(extra);
+  }
+  env.PATH = merged.join(path.delimiter);
+  return env;
 }
 
 function latexmkArgs(engine, targetFile) {
@@ -235,7 +261,7 @@ async function finalizeCompileResultWithPossiblePdf(result, pdfPath, logPath) {
 
 async function runLatexmk(cwd, args) {
   return await new Promise((resolve) => {
-    const child = spawn('latexmk', args, { cwd, windowsHide: true });
+    const child = spawn('latexmk', args, { cwd, windowsHide: true, env: latexCommandEnv() });
     let stdout = '';
     let stderr = '';
     let finished = false;
@@ -292,7 +318,7 @@ async function runToolCommand(command, args, opts) {
   const effectiveTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : LATEX_SYNCTEX_TIMEOUT_MS;
 
   return await new Promise((resolve) => {
-    const child = spawn(command, args, { cwd, windowsHide: true });
+    const child = spawn(command, args, { cwd, windowsHide: true, env: latexCommandEnv() });
     let stdout = '';
     let stderr = '';
     let finished = false;
@@ -341,6 +367,47 @@ async function runToolCommand(command, args, opts) {
         stdout: clampLog(stdout),
         stderr: clampLog(stderr),
       });
+    });
+  });
+}
+
+async function probeCommandAvailable(command, args = []) {
+  return await new Promise((resolve) => {
+    let settled = false;
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(Boolean(value));
+    };
+
+    let child;
+    try {
+      child = spawn(command, args, {
+        windowsHide: true,
+        env: latexCommandEnv(),
+        stdio: ['ignore', 'ignore', 'ignore'],
+      });
+    } catch {
+      done(false);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // ignore
+      }
+      done(true);
+    }, LATEX_TOOL_CHECK_TIMEOUT_MS);
+
+    child.on('error', () => {
+      clearTimeout(timer);
+      done(false);
+    });
+    child.on('close', () => {
+      clearTimeout(timer);
+      done(true);
     });
   });
 }
@@ -681,6 +748,18 @@ ipcMain.handle('latex:synctex-inverse', async (_event, req) => {
     return await runSynctexInverse(req ?? {});
   } catch (err) {
     return { ok: false, error: trimMessage(err?.message, 'SyncTeX inverse lookup failed.') };
+  }
+});
+
+ipcMain.handle('latex:toolchain-status', async () => {
+  try {
+    const [latexmk, synctex] = await Promise.all([
+      probeCommandAvailable('latexmk', ['-v']),
+      probeCommandAvailable('synctex', ['--version']),
+    ]);
+    return { ok: true, latexmk, synctex };
+  } catch (err) {
+    return { ok: false, error: trimMessage(err?.message, 'Failed to probe LaTeX toolchain.') };
   }
 });
 

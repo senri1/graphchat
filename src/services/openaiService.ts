@@ -1,3 +1,5 @@
+import { getRuntimeApiKey } from './runtimeApiKeys';
+
 export type OpenAIStreamCallbacks = {
   onDelta?: (delta: string, fullText: string) => void;
   onEvent?: (evt: unknown) => void;
@@ -16,6 +18,8 @@ export type OpenAIRetrieveResult =
   | { ok: false; error: string; cancelled?: boolean; response?: unknown };
 
 export function getOpenAIApiKey(): string | null {
+  const runtime = getRuntimeApiKey('openai');
+  if (runtime) return runtime;
   const trimmed = String(import.meta.env.OPENAI_API_KEY ?? import.meta.env.VITE_OPENAI_API_KEY ?? '').trim();
   return trimmed ? trimmed : null;
 }

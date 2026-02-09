@@ -34,6 +34,9 @@ cd graphchatv1
 npm install
 npm run dist:mac   # builds .dmg on macOS
 npm run dist:win   # builds NSIS .exe installer
+# optional: remove old artifacts first
+npm run dist:mac:fresh
+npm run dist:win:fresh
 ```
 
 Artifacts are written to `release/`.
@@ -49,6 +52,10 @@ In desktop mode, open `Settings -> Data -> Storage location` to:
 - Optionally move existing data when switching location.
 - Reset back to the default location.
 
+At startup in desktop mode, GraphChat checks for `latexmk` and `synctex`. If missing, it shows install guidance:
+- macOS: install MacTeX.
+- Windows: install MiKTeX or TeX Live.
+
 ## OpenAI (local dev)
 
 Create `graphchatv1/.env.local`:
@@ -59,6 +66,11 @@ GEMINI_API_KEY=...
 XAI_API_KEY=...
 ANTHROPIC_API_KEY=...
 ```
+
+In desktop mode you can also set provider keys in-app:
+
+- `Settings -> Models -> API keys`
+- Keys saved there override `.env.local` values.
 
 ### Provider API access (browser vs proxy)
 
@@ -79,21 +91,6 @@ GraphChat calls provider APIs from the browser (BYO API key).
 - Import PDF: click `Import PDF` (creates a new PDF node)
 - New LaTeX node: click `+LaTeX`, write `.tex` on the left, click `Compile`, and preview PDF on the right
 - Ink: draw on the canvas (world ink) or inside an ink node; `New Ink Node` creates another; `Clear Ink` clears world ink
-
-## One-time import from graphchatgem
-
-1) In `graphchatgem`, export/download your chat(s) to a `*.graphchat.json` file.
-
-2) Convert it to a graphchatv1 archive:
-
-```bash
-cd graphchatv1
-node scripts/convert-graphchatgem-archive.js /path/to/export.graphchat.json
-```
-
-This writes a sibling `*.graphchatv1.json` file (graphchatv1’s importer requires `format: "graphchatv1"`).
-
-3) In `graphchatv1`, use the app’s Import to load the generated `*.graphchatv1.json`.
 
 ## Verify Markdown/LaTeX (current text node)
 
