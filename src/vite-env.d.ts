@@ -93,6 +93,36 @@ interface Window {
     storageListAttachmentKeys: () => Promise<{ ok: boolean; keys?: string[]; error?: string }>;
     storageDeleteAttachments: (req: { keys: string[] }) => Promise<{ ok: boolean; error?: string }>;
     storageDeleteChatFolder: (req: { chatId: string }) => Promise<{ ok: boolean; error?: string }>;
+    storageGetDataDirInfo: () => Promise<{
+      ok: boolean;
+      path?: string;
+      defaultPath?: string;
+      baseDir?: string;
+      defaultBaseDir?: string;
+      isDefault?: boolean;
+      error?: string;
+    }>;
+    storageChooseDataDir: (req?: { moveExisting?: boolean }) => Promise<{
+      ok: boolean;
+      canceled?: boolean;
+      path?: string;
+      defaultPath?: string;
+      baseDir?: string;
+      defaultBaseDir?: string;
+      isDefault?: boolean;
+      moved?: boolean;
+      error?: string;
+    }>;
+    storageResetDataDir: (req?: { moveExisting?: boolean }) => Promise<{
+      ok: boolean;
+      path?: string;
+      defaultPath?: string;
+      baseDir?: string;
+      defaultBaseDir?: string;
+      isDefault?: boolean;
+      moved?: boolean;
+      error?: string;
+    }>;
     storageOpenDataDir: () => Promise<{ ok: boolean; path?: string; error?: string }>;
     storageClearAll: () => Promise<{ ok: boolean; error?: string }>;
   };

@@ -145,6 +145,12 @@ type ToastState = {
   message: string;
 };
 
+type StorageDataDirInfo = {
+  path: string;
+  defaultPath: string;
+  isDefault: boolean;
+};
+
 type MenuPos = { left: number; top?: number; bottom?: number; maxHeight: number };
 
 type PendingEditNodeSend = { nodeId: string; modelIdOverride?: string | null; assistantRect?: Rect | null };
@@ -1339,6 +1345,7 @@ export default function App() {
   const [replySelectedAttachmentKeys, setReplySelectedAttachmentKeys] = useState<string[]>(() => []);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsPanel, setSettingsPanel] = useState<'appearance' | 'models' | 'debug' | 'data' | 'reset'>('appearance');
+  const [storageDataDirInfo, setStorageDataDirInfo] = useState<StorageDataDirInfo | null>(null);
   const [debugHudVisible, setDebugHudVisible] = useState(DEFAULT_DEBUG_HUD_VISIBLE);
   const [sendAllEnabled, setSendAllEnabled] = useState(DEFAULT_SEND_ALL_ENABLED);
   const sendAllEnabledRef = useRef<boolean>(sendAllEnabled);
@@ -5481,6 +5488,41 @@ export default function App() {
     typeof window !== 'undefined' &&
       typeof (window as any)?.gcElectron?.storageOpenDataDir === 'function',
   );
+  const canManageStorageLocation = Boolean(
+    typeof window !== 'undefined' &&
+      typeof (window as any)?.gcElectron?.storageGetDataDirInfo === 'function' &&
+      typeof (window as any)?.gcElectron?.storageChooseDataDir === 'function' &&
+      typeof (window as any)?.gcElectron?.storageResetDataDir === 'function',
+  );
+
+  const refreshStorageDataDirInfo = () => {
+    const api = (window as any)?.gcElectron;
+    if (!api || typeof api.storageGetDataDirInfo !== 'function') {
+      setStorageDataDirInfo(null);
+      return;
+    }
+    void (async () => {
+      try {
+        const res = await api.storageGetDataDirInfo();
+        if (!res?.ok) return;
+        const pathValue = String(res?.path ?? '').trim();
+        const defaultPathValue = String(res?.defaultPath ?? '').trim();
+        if (!pathValue || !defaultPathValue) return;
+        setStorageDataDirInfo({
+          path: pathValue,
+          defaultPath: defaultPathValue,
+          isDefault: Boolean(res?.isDefault),
+        });
+      } catch {
+        // ignore
+      }
+    })();
+  };
+
+  useEffect(() => {
+    if (!settingsOpen || settingsPanel !== 'data') return;
+    refreshStorageDataDirInfo();
+  }, [settingsOpen, settingsPanel]);
 
   const openStorageFolder = () => {
     const api = (window as any)?.gcElectron;
@@ -5496,6 +5538,81 @@ export default function App() {
         }
       } catch (err: any) {
         showToast(`Failed to open storage folder: ${err?.message || String(err)}`, 'error');
+      }
+    })();
+  };
+
+  const chooseStorageLocation = () => {
+    const api = (window as any)?.gcElectron;
+    if (!api || typeof api.storageChooseDataDir !== 'function') {
+      showToast('Storage location changes are only available in Electron desktop mode.', 'info');
+      return;
+    }
+    const moveExisting = window.confirm(
+      'Move existing chat data to the new location?\n\nPress OK to move existing data.\nPress Cancel to switch location without moving existing files.',
+    );
+    void (async () => {
+      try {
+        const res = await api.storageChooseDataDir({ moveExisting });
+        if (!res?.ok) {
+          if (res?.canceled) return;
+          showToast(`Failed to change storage location: ${String(res?.error ?? 'unknown error')}`, 'error');
+          return;
+        }
+        const pathValue = String(res?.path ?? '').trim();
+        const defaultPathValue = String(res?.defaultPath ?? '').trim();
+        if (pathValue && defaultPathValue) {
+          setStorageDataDirInfo({
+            path: pathValue,
+            defaultPath: defaultPathValue,
+            isDefault: Boolean(res?.isDefault),
+          });
+        } else {
+          refreshStorageDataDirInfo();
+        }
+        showToast(
+          moveExisting ? 'Storage location updated and existing data was moved.' : 'Storage location updated.',
+          'success',
+        );
+      } catch (err: any) {
+        showToast(`Failed to change storage location: ${err?.message || String(err)}`, 'error');
+      }
+    })();
+  };
+
+  const resetStorageLocation = () => {
+    const api = (window as any)?.gcElectron;
+    if (!api || typeof api.storageResetDataDir !== 'function') {
+      showToast('Storage location changes are only available in Electron desktop mode.', 'info');
+      return;
+    }
+    const moveExisting = window.confirm(
+      'Move existing chat data back to the default location?\n\nPress OK to move existing data.\nPress Cancel to switch location without moving existing files.',
+    );
+    void (async () => {
+      try {
+        const res = await api.storageResetDataDir({ moveExisting });
+        if (!res?.ok) {
+          showToast(`Failed to reset storage location: ${String(res?.error ?? 'unknown error')}`, 'error');
+          return;
+        }
+        const pathValue = String(res?.path ?? '').trim();
+        const defaultPathValue = String(res?.defaultPath ?? '').trim();
+        if (pathValue && defaultPathValue) {
+          setStorageDataDirInfo({
+            path: pathValue,
+            defaultPath: defaultPathValue,
+            isDefault: Boolean(res?.isDefault),
+          });
+        } else {
+          refreshStorageDataDirInfo();
+        }
+        showToast(
+          moveExisting ? 'Storage location reset and existing data was moved.' : 'Storage location reset.',
+          'success',
+        );
+      } catch (err: any) {
+        showToast(`Failed to reset storage location: ${err?.message || String(err)}`, 'error');
       }
     })();
   };
@@ -8052,9 +8169,15 @@ export default function App() {
 		            setSettingsOpen(false);
 		            importInputRef.current?.click();
 		          }}
-		          onExportAllChats={() => {
+	          onExportAllChats={() => {
 	            requestExportAllChats({ closeSettingsOnConfirm: true });
 	          }}
+            storagePath={storageDataDirInfo?.path ?? null}
+            storageDefaultPath={storageDataDirInfo?.defaultPath ?? null}
+            storagePathIsDefault={storageDataDirInfo?.isDefault ?? true}
+            canManageStorageLocation={canManageStorageLocation}
+            onChooseStorageLocation={chooseStorageLocation}
+            onResetStorageLocation={resetStorageLocation}
             canOpenStorageFolder={canOpenStorageFolder}
             onOpenStorageFolder={openStorageFolder}
             cleanupChatFoldersOnDelete={cleanupChatFoldersOnDelete}

@@ -672,7 +672,7 @@ ipcMain.handle('latex:synctex-inverse', async (_event, req) => {
   }
 });
 
-registerStorageIpcHandlers({ ipcMain, app, shell });
+registerStorageIpcHandlers({ ipcMain, app, shell, dialog });
 
 app.whenReady().then(() => {
   createWindow();

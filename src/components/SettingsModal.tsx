@@ -108,6 +108,12 @@ type Props = {
 
   onRequestImportChat: () => void;
   onExportAllChats: () => void;
+  storagePath: string | null;
+  storageDefaultPath: string | null;
+  storagePathIsDefault: boolean;
+  canManageStorageLocation: boolean;
+  onChooseStorageLocation: () => void;
+  onResetStorageLocation: () => void;
   canOpenStorageFolder: boolean;
   onOpenStorageFolder: () => void;
   cleanupChatFoldersOnDelete: boolean;
@@ -1316,6 +1322,43 @@ export default function SettingsModal(props: Props) {
                     <div className="settingsRow__actions">
                       <button className="settingsBtn" type="button" onClick={props.onExportAllChats}>
                         Export all…
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="settingsCard">
+                  <div className="settingsRow settingsRow--stack">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Storage location</div>
+                      <div className="settingsRow__desc">
+                        Chats, workspace snapshots, attachments, and payload logs are saved here.
+                      </div>
+                      <div className="settingsPathValue" title={props.storagePath ?? ''}>
+                        {props.storagePath ?? 'Available in Electron desktop mode.'}
+                      </div>
+                      {!props.storagePathIsDefault && props.storageDefaultPath ? (
+                        <div className="settingsRow__desc">
+                          Default: <span className="settingsPathInline">{props.storageDefaultPath}</span>
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="settingsRow__actions">
+                      <button
+                        className="settingsBtn"
+                        type="button"
+                        disabled={!props.canManageStorageLocation}
+                        onClick={props.onChooseStorageLocation}
+                      >
+                        Choose location…
+                      </button>
+                      <button
+                        className="settingsBtn"
+                        type="button"
+                        disabled={!props.canManageStorageLocation || props.storagePathIsDefault}
+                        onClick={props.onResetStorageLocation}
+                      >
+                        Reset default
                       </button>
                     </div>
                   </div>

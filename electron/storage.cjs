@@ -1,9 +1,14 @@
 const fs = require('fs/promises');
+const fsSync = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto');
 
 const STORAGE_ROOT_DIRNAME = 'GraphChatV1Data';
 const STORAGE_SCHEMA_DIRNAME = 'v1';
+const STORAGE_LOCATION_CONFIG_FILE = 'storage-location.json';
+
+let storageBaseDirOverride = null;
+let storageLocationConfigLoaded = false;
 
 function shortError(value, fallback) {
   const raw = typeof value === 'string' ? value.trim() : String(value ?? '').trim();
@@ -29,8 +34,145 @@ function decodeFsSegment(value) {
   }
 }
 
+function storageLocationConfigPath(app) {
+  return path.join(app.getPath('userData'), STORAGE_LOCATION_CONFIG_FILE);
+}
+
+function normalizeAbsoluteDirOrNull(value) {
+  const raw = asTrimmedString(value);
+  if (!raw) return null;
+  try {
+    return path.resolve(raw);
+  } catch {
+    return null;
+  }
+}
+
+function defaultStorageBaseDir(app) {
+  return path.resolve(app.getPath('userData'));
+}
+
+function loadStorageLocationConfigOnce(app) {
+  if (storageLocationConfigLoaded) return;
+  storageLocationConfigLoaded = true;
+  storageBaseDirOverride = null;
+
+  try {
+    const cfgPath = storageLocationConfigPath(app);
+    if (!fsSync.existsSync(cfgPath)) return;
+    const text = fsSync.readFileSync(cfgPath, 'utf8');
+    const parsed = JSON.parse(text);
+    const candidate = normalizeAbsoluteDirOrNull(parsed?.storageBaseDir);
+    if (!candidate) return;
+    const defaultBase = defaultStorageBaseDir(app);
+    storageBaseDirOverride = candidate === defaultBase ? null : candidate;
+  } catch {
+    storageBaseDirOverride = null;
+  }
+}
+
+function storageRootDirForBaseDir(baseDir) {
+  return path.join(baseDir, STORAGE_ROOT_DIRNAME, STORAGE_SCHEMA_DIRNAME);
+}
+
+function isNestedPath(parentPath, candidatePath) {
+  const parent = path.resolve(parentPath);
+  const child = path.resolve(candidatePath);
+  if (parent === child) return false;
+  const rel = path.relative(parent, child);
+  return Boolean(rel && !rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+function currentStorageBaseDir(app) {
+  loadStorageLocationConfigOnce(app);
+  return storageBaseDirOverride || defaultStorageBaseDir(app);
+}
+
+function currentStorageRootDir(app) {
+  return storageRootDirForBaseDir(currentStorageBaseDir(app));
+}
+
 function storageRootDir(app) {
-  return path.join(app.getPath('userData'), STORAGE_ROOT_DIRNAME, STORAGE_SCHEMA_DIRNAME);
+  return currentStorageRootDir(app);
+}
+
+async function persistStorageLocationConfig(app) {
+  const cfgPath = storageLocationConfigPath(app);
+  if (!storageBaseDirOverride) {
+    await removeFileIfExists(cfgPath);
+    return;
+  }
+  await writeJsonAtomic(cfgPath, {
+    storageBaseDir: storageBaseDirOverride,
+    updatedAt: Date.now(),
+  });
+}
+
+async function dirExists(absPath) {
+  try {
+    const stat = await fs.stat(absPath);
+    return Boolean(stat?.isDirectory?.());
+  } catch (err) {
+    if (err && typeof err === 'object' && err.code === 'ENOENT') return false;
+    throw err;
+  }
+}
+
+async function isDirectoryEmpty(absPath) {
+  try {
+    const entries = await fs.readdir(absPath);
+    return entries.length === 0;
+  } catch (err) {
+    if (err && typeof err === 'object' && err.code === 'ENOENT') return true;
+    throw err;
+  }
+}
+
+function storageLocationInfo(app) {
+  const defaultBaseDir = defaultStorageBaseDir(app);
+  const currentBaseDir = currentStorageBaseDir(app);
+  return {
+    path: storageRootDirForBaseDir(currentBaseDir),
+    defaultPath: storageRootDirForBaseDir(defaultBaseDir),
+    baseDir: currentBaseDir,
+    defaultBaseDir,
+    isDefault: !storageBaseDirOverride,
+  };
+}
+
+async function setStorageBaseDir(app, nextBaseDir, opts = {}) {
+  loadStorageLocationConfigOnce(app);
+  const moveExisting = opts?.moveExisting !== false;
+  const defaultBaseDir = defaultStorageBaseDir(app);
+  const normalizedNextBase = normalizeAbsoluteDirOrNull(nextBaseDir) || defaultBaseDir;
+  const normalizedOverride = normalizedNextBase === defaultBaseDir ? null : normalizedNextBase;
+  const prevBaseDir = storageBaseDirOverride || defaultBaseDir;
+  const prevRoot = storageRootDirForBaseDir(prevBaseDir);
+  const nextRoot = storageRootDirForBaseDir(normalizedOverride || defaultBaseDir);
+
+  if (path.resolve(prevRoot) === path.resolve(nextRoot)) {
+    storageBaseDirOverride = normalizedOverride;
+    await persistStorageLocationConfig(app);
+    return { ...storageLocationInfo(app), moved: false };
+  }
+
+  let moved = false;
+  if (moveExisting && (await dirExists(prevRoot))) {
+    if (isNestedPath(prevRoot, nextRoot) || isNestedPath(nextRoot, prevRoot)) {
+      throw new Error('Choose a storage location that is not inside the current storage folder.');
+    }
+    if (!(await isDirectoryEmpty(nextRoot))) {
+      throw new Error('Target storage location is not empty. Choose an empty folder.');
+    }
+    await fs.mkdir(path.dirname(nextRoot), { recursive: true });
+    await fs.cp(prevRoot, nextRoot, { recursive: true, force: false, errorOnExist: true });
+    await fs.rm(prevRoot, { recursive: true, force: true });
+    moved = true;
+  }
+
+  storageBaseDirOverride = normalizedOverride;
+  await persistStorageLocationConfig(app);
+  return { ...storageLocationInfo(app), moved };
 }
 
 function workspaceSnapshotPath(app) {
@@ -179,6 +321,7 @@ function registerStorageIpcHandlers(args) {
   const ipcMain = args?.ipcMain;
   const app = args?.app;
   const shell = args?.shell;
+  const dialog = args?.dialog;
   if (!ipcMain || !app) throw new Error('registerStorageIpcHandlers requires { ipcMain, app }.');
 
   ipcMain.handle('storage:get-workspace-snapshot', async () => {
@@ -440,6 +583,48 @@ function registerStorageIpcHandlers(args) {
       return ok();
     } catch (err) {
       return fail(err, 'Failed to delete chat folder.');
+    }
+  });
+
+  ipcMain.handle('storage:get-data-dir-info', async () => {
+    try {
+      return ok(storageLocationInfo(app));
+    } catch (err) {
+      return fail(err, 'Failed to load storage location.');
+    }
+  });
+
+  ipcMain.handle('storage:choose-data-dir', async (event, req) => {
+    try {
+      if (!dialog || typeof dialog.showOpenDialog !== 'function') {
+        return fail('Dialog API unavailable.', 'Dialog API unavailable.');
+      }
+
+      const browserWindow = event?.sender ? event.sender.getOwnerBrowserWindow?.() : null;
+      const pickRes = await dialog.showOpenDialog(browserWindow ?? undefined, {
+        title: 'Choose storage location',
+        buttonLabel: 'Use Folder',
+        properties: ['openDirectory', 'createDirectory'],
+      });
+      if (pickRes.canceled || !Array.isArray(pickRes.filePaths) || pickRes.filePaths.length === 0) {
+        return { ok: false, canceled: true, error: 'Folder selection was canceled.' };
+      }
+
+      const picked = normalizeAbsoluteDirOrNull(pickRes.filePaths[0]);
+      if (!picked) return fail('Invalid folder path.', 'Invalid folder path.');
+      const info = await setStorageBaseDir(app, picked, { moveExisting: req?.moveExisting !== false });
+      return ok({ ...info, canceled: false });
+    } catch (err) {
+      return fail(err, 'Failed to change storage location.');
+    }
+  });
+
+  ipcMain.handle('storage:reset-data-dir', async (_event, req) => {
+    try {
+      const info = await setStorageBaseDir(app, null, { moveExisting: req?.moveExisting !== false });
+      return ok(info);
+    } catch (err) {
+      return fail(err, 'Failed to reset storage location.');
     }
   });
 

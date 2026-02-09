@@ -27,6 +27,28 @@ npm run electron:dev
 
 In desktop mode, LaTeX nodes use local compilation via Electron IPC + `latexmk` and render PDF in the node editor.
 
+## Build installers (Electron)
+
+```bash
+cd graphchatv1
+npm install
+npm run dist:mac   # builds .dmg on macOS
+npm run dist:win   # builds NSIS .exe installer
+```
+
+Artifacts are written to `release/`.
+
+Notes:
+- These builds are unsigned by default (good for local testing, not public distribution).
+- Packaging requires network access on first run so `electron-builder` can fetch Electron binaries.
+
+## Desktop data location
+
+In desktop mode, open `Settings -> Data -> Storage location` to:
+- Choose a custom location for GraphChat-managed data (workspace/chats/attachments/payloads).
+- Optionally move existing data when switching location.
+- Reset back to the default location.
+
 ## OpenAI (local dev)
 
 Create `graphchatv1/.env.local`:
