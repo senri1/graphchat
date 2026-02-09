@@ -152,11 +152,32 @@ async function blobToBase64(blob: Blob, mimeTypeHint?: string): Promise<{ base64
   }
 }
 
+function isTextLikeNodeKind(kind: unknown): boolean {
+  const normalized = safeString(kind).trim();
+  return normalized === 'text' || normalized === 'latex';
+}
+
+function normalizeTextLikeNodeInPlace(node: any): void {
+  if (!node || typeof node !== 'object') return;
+  const normalizedKind = safeString(node.kind).trim();
+  if (!isTextLikeNodeKind(normalizedKind)) return;
+
+  // Keep archive schema stable while accepting older/newer aliases.
+  if (normalizedKind !== 'text') node.kind = 'text';
+
+  if (normalizedKind === 'latex') {
+    node.textFormat = 'latex';
+    const author = safeString(node.author).trim();
+    if (author !== 'user' && author !== 'assistant') node.author = 'user';
+  }
+}
+
 function sanitizeNodeForExport(node: ChatNode): any {
   const out = safeClone(node) as any;
   if (!out || typeof out !== 'object') return out;
 
-  if (out.kind === 'text') {
+  if (isTextLikeNodeKind(out.kind)) {
+    normalizeTextLikeNodeInPlace(out);
     // Never export live generation state.
     try {
       delete out.isGenerating;
@@ -221,6 +242,9 @@ async function rehydratePayloadsInPlace(args: { chatId: string; nodes: any[]; wa
   for (const raw of args.nodes) {
     const node = raw as any;
     if (!node || typeof node !== 'object') continue;
+
+    if (isTextLikeNodeKind(node.kind)) normalizeTextLikeNodeInPlace(node);
+
     const nodeId = safeString(node.id).trim();
     if (!nodeId) continue;
 
@@ -322,7 +346,10 @@ async function buildChatExport(args: ExportChatArgs): Promise<{ chat: ArchiveV1[
   for (const raw of nodesCopy) {
     const node = raw as any;
     if (!node || typeof node !== 'object') continue;
+
+    if (isTextLikeNodeKind(node.kind)) normalizeTextLikeNodeInPlace(node);
     if (node.kind !== 'text' && node.kind !== 'ink') continue;
+
     await rehydrateAttachmentsInPlace(node.attachments, warnings, { kind: 'node', id: safeString(node.id) });
   }
 
@@ -541,6 +568,9 @@ export async function importArchive(
   for (const raw of nodes) {
     const node = raw as any;
     if (!node || typeof node !== 'object') continue;
+
+    if (isTextLikeNodeKind(node.kind)) normalizeTextLikeNodeInPlace(node);
+
     if (node.kind === 'text') {
       try {
         delete node.isGenerating;

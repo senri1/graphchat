@@ -1,3 +1,5 @@
+import { getElectronStorageApi } from './electron';
+
 const DB_NAME = 'graphchatv1';
 const DB_VERSION = 3;
 
@@ -60,6 +62,13 @@ export function txDone(tx: IDBTransaction): Promise<void> {
 }
 
 export async function clearAllStores(): Promise<void> {
+  const electron = getElectronStorageApi();
+  if (electron?.storageClearAll) {
+    const res = await electron.storageClearAll();
+    if (!res?.ok) throw new Error(res?.error || 'Failed to clear filesystem storage.');
+    return;
+  }
+
   const db = await openDb();
   const storeNames = Array.from(db.objectStoreNames);
   if (storeNames.length === 0) return;

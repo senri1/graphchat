@@ -3,6 +3,7 @@ const { spawn } = require('child_process');
 const fs = require('fs/promises');
 const path = require('path');
 const os = require('os');
+const { registerStorageIpcHandlers } = require('./storage.cjs');
 
 const APP_TITLE = 'GraphChatV1';
 const LATEX_TIMEOUT_MS = 60_000;
@@ -670,6 +671,8 @@ ipcMain.handle('latex:synctex-inverse', async (_event, req) => {
     return { ok: false, error: trimMessage(err?.message, 'SyncTeX inverse lookup failed.') };
   }
 });
+
+registerStorageIpcHandlers({ ipcMain, app });
 
 app.whenReady().then(() => {
   createWindow();

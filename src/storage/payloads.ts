@@ -1,4 +1,5 @@
 import { openDb, txDone } from './db';
+import { getElectronStorageApi } from './electron';
 
 type PersistedPayloadRecord = {
   key: string;
@@ -16,6 +17,16 @@ function requestToPromise<T>(req: IDBRequest<T>): Promise<T> {
 export async function getPayload(key: string): Promise<unknown | null> {
   const trimmed = String(key ?? '').trim();
   if (!trimmed) return null;
+
+  const electron = getElectronStorageApi();
+  if (electron?.storageGetPayload) {
+    try {
+      const res = await electron.storageGetPayload({ key: trimmed });
+      return res?.ok ? (res.payload ?? null) : null;
+    } catch {
+      return null;
+    }
+  }
 
   const db = await openDb();
   const tx = db.transaction('payloads', 'readonly');
@@ -38,6 +49,13 @@ export async function putPayload(args: { key: string; json: unknown }): Promise<
   const trimmed = String(args?.key ?? '').trim();
   if (!trimmed) return;
 
+  const electron = getElectronStorageApi();
+  if (electron?.storagePutPayload) {
+    const res = await electron.storagePutPayload({ key: trimmed, json: args.json });
+    if (!res?.ok) throw new Error(res?.error || 'Failed to persist payload.');
+    return;
+  }
+
   const db = await openDb();
   const tx = db.transaction('payloads', 'readwrite');
   tx.objectStore('payloads').put({ key: trimmed, json: args.json, createdAt: Date.now() });
@@ -47,6 +65,13 @@ export async function putPayload(args: { key: string; json: unknown }): Promise<
 export async function deletePayload(key: string): Promise<void> {
   const trimmed = String(key ?? '').trim();
   if (!trimmed) return;
+
+  const electron = getElectronStorageApi();
+  if (electron?.storageDeletePayload) {
+    const res = await electron.storageDeletePayload({ key: trimmed });
+    if (!res?.ok) throw new Error(res?.error || 'Failed to delete payload.');
+    return;
+  }
 
   const db = await openDb();
   const tx = db.transaction('payloads', 'readwrite');

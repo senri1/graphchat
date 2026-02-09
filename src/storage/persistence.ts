@@ -4,6 +4,7 @@ import type { BackgroundLibraryItem } from '../model/backgrounds';
 import type { FontFamilyKey } from '../ui/typography';
 import type { WorkspaceFolder } from '../workspace/tree';
 import { openDb, txDone } from './db';
+import { getElectronStorageApi } from './electron';
 
 export type PersistedWorkspaceSnapshot = {
   key: 'workspace';
@@ -78,6 +79,17 @@ function requestToPromise<T>(req: IDBRequest<T>): Promise<T> {
 }
 
 export async function getWorkspaceSnapshot(): Promise<PersistedWorkspaceSnapshot | null> {
+  const electron = getElectronStorageApi();
+  if (electron?.storageGetWorkspaceSnapshot) {
+    try {
+      const res = await electron.storageGetWorkspaceSnapshot();
+      const snapshot = (res?.snapshot ?? null) as any;
+      return snapshot && snapshot.key === 'workspace' ? (snapshot as PersistedWorkspaceSnapshot) : null;
+    } catch {
+      return null;
+    }
+  }
+
   const db = await openDb();
   const tx = db.transaction('workspace', 'readonly');
   const store = tx.objectStore('workspace');
@@ -96,6 +108,13 @@ export async function getWorkspaceSnapshot(): Promise<PersistedWorkspaceSnapshot
 }
 
 export async function putWorkspaceSnapshot(snapshot: Omit<PersistedWorkspaceSnapshot, 'updatedAt'>): Promise<void> {
+  const electron = getElectronStorageApi();
+  if (electron?.storagePutWorkspaceSnapshot) {
+    const res = await electron.storagePutWorkspaceSnapshot({ snapshot });
+    if (!res?.ok) throw new Error(res?.error || 'Failed to persist workspace snapshot.');
+    return;
+  }
+
   const db = await openDb();
   const tx = db.transaction('workspace', 'readwrite');
   const store = tx.objectStore('workspace');
@@ -104,6 +123,13 @@ export async function putWorkspaceSnapshot(snapshot: Omit<PersistedWorkspaceSnap
 }
 
 export async function deleteWorkspaceSnapshot(): Promise<void> {
+  const electron = getElectronStorageApi();
+  if (electron?.storageDeleteWorkspaceSnapshot) {
+    const res = await electron.storageDeleteWorkspaceSnapshot();
+    if (!res?.ok) throw new Error(res?.error || 'Failed to delete workspace snapshot.');
+    return;
+  }
+
   const db = await openDb();
   const tx = db.transaction('workspace', 'readwrite');
   tx.objectStore('workspace').delete('workspace');
@@ -112,6 +138,18 @@ export async function deleteWorkspaceSnapshot(): Promise<void> {
 
 export async function getChatStateRecord(chatId: string): Promise<PersistedChatStateRecord | null> {
   if (!chatId) return null;
+
+  const electron = getElectronStorageApi();
+  if (electron?.storageGetChatStateRecord) {
+    try {
+      const res = await electron.storageGetChatStateRecord({ chatId });
+      const rec = (res?.record ?? null) as any;
+      return rec && rec.chatId === chatId && rec.state ? (rec as PersistedChatStateRecord) : null;
+    } catch {
+      return null;
+    }
+  }
+
   const db = await openDb();
   const tx = db.transaction('chatStates', 'readonly');
   const store = tx.objectStore('chatStates');
@@ -131,6 +169,14 @@ export async function getChatStateRecord(chatId: string): Promise<PersistedChatS
 
 export async function putChatStateRecord(chatId: string, state: PersistedChatState): Promise<void> {
   if (!chatId) return;
+
+  const electron = getElectronStorageApi();
+  if (electron?.storagePutChatStateRecord) {
+    const res = await electron.storagePutChatStateRecord({ chatId, state });
+    if (!res?.ok) throw new Error(res?.error || 'Failed to persist chat state.');
+    return;
+  }
+
   const db = await openDb();
   const tx = db.transaction('chatStates', 'readwrite');
   tx.objectStore('chatStates').put({ chatId, state, updatedAt: Date.now() });
@@ -139,6 +185,14 @@ export async function putChatStateRecord(chatId: string, state: PersistedChatSta
 
 export async function deleteChatStateRecord(chatId: string): Promise<void> {
   if (!chatId) return;
+
+  const electron = getElectronStorageApi();
+  if (electron?.storageDeleteChatStateRecord) {
+    const res = await electron.storageDeleteChatStateRecord({ chatId });
+    if (!res?.ok) throw new Error(res?.error || 'Failed to delete chat state.');
+    return;
+  }
+
   const db = await openDb();
   const tx = db.transaction('chatStates', 'readwrite');
   tx.objectStore('chatStates').delete(chatId);
@@ -147,6 +201,18 @@ export async function deleteChatStateRecord(chatId: string): Promise<void> {
 
 export async function getChatMetaRecord(chatId: string): Promise<PersistedChatMetaRecord | null> {
   if (!chatId) return null;
+
+  const electron = getElectronStorageApi();
+  if (electron?.storageGetChatMetaRecord) {
+    try {
+      const res = await electron.storageGetChatMetaRecord({ chatId });
+      const rec = (res?.record ?? null) as any;
+      return rec && rec.chatId === chatId ? (rec as PersistedChatMetaRecord) : null;
+    } catch {
+      return null;
+    }
+  }
+
   const db = await openDb();
   const tx = db.transaction('chatMeta', 'readonly');
   const store = tx.objectStore('chatMeta');
@@ -166,6 +232,14 @@ export async function getChatMetaRecord(chatId: string): Promise<PersistedChatMe
 
 export async function putChatMetaRecord(chatId: string, meta: unknown): Promise<void> {
   if (!chatId) return;
+
+  const electron = getElectronStorageApi();
+  if (electron?.storagePutChatMetaRecord) {
+    const res = await electron.storagePutChatMetaRecord({ chatId, meta });
+    if (!res?.ok) throw new Error(res?.error || 'Failed to persist chat metadata.');
+    return;
+  }
+
   const db = await openDb();
   const tx = db.transaction('chatMeta', 'readwrite');
   tx.objectStore('chatMeta').put({ chatId, meta, updatedAt: Date.now() });
@@ -174,6 +248,14 @@ export async function putChatMetaRecord(chatId: string, meta: unknown): Promise<
 
 export async function deleteChatMetaRecord(chatId: string): Promise<void> {
   if (!chatId) return;
+
+  const electron = getElectronStorageApi();
+  if (electron?.storageDeleteChatMetaRecord) {
+    const res = await electron.storageDeleteChatMetaRecord({ chatId });
+    if (!res?.ok) throw new Error(res?.error || 'Failed to delete chat metadata.');
+    return;
+  }
+
   const db = await openDb();
   const tx = db.transaction('chatMeta', 'readwrite');
   tx.objectStore('chatMeta').delete(chatId);
