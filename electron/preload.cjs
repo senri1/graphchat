@@ -25,5 +25,7 @@ contextBridge.exposeInMainWorld('gcElectron', {
   storageDeleteAttachment: (req) => ipcRenderer.invoke('storage:delete-attachment', req ?? {}),
   storageListAttachmentKeys: () => ipcRenderer.invoke('storage:list-attachment-keys'),
   storageDeleteAttachments: (req) => ipcRenderer.invoke('storage:delete-attachments', req ?? {}),
+  storageDeleteChatFolder: (req) => ipcRenderer.invoke('storage:delete-chat-folder', req ?? {}),
+  storageOpenDataDir: () => ipcRenderer.invoke('storage:open-data-dir'),
   storageClearAll: () => ipcRenderer.invoke('storage:clear-all'),
 });

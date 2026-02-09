@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs/promises');
 const path = require('path');
@@ -672,7 +672,7 @@ ipcMain.handle('latex:synctex-inverse', async (_event, req) => {
   }
 });
 
-registerStorageIpcHandlers({ ipcMain, app });
+registerStorageIpcHandlers({ ipcMain, app, shell });
 
 app.whenReady().then(() => {
   createWindow();

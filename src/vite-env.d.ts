@@ -92,6 +92,8 @@ interface Window {
     storageDeleteAttachment: (req: { key: string }) => Promise<{ ok: boolean; error?: string }>;
     storageListAttachmentKeys: () => Promise<{ ok: boolean; keys?: string[]; error?: string }>;
     storageDeleteAttachments: (req: { keys: string[] }) => Promise<{ ok: boolean; error?: string }>;
+    storageDeleteChatFolder: (req: { chatId: string }) => Promise<{ ok: boolean; error?: string }>;
+    storageOpenDataDir: () => Promise<{ ok: boolean; path?: string; error?: string }>;
     storageClearAll: () => Promise<{ ok: boolean; error?: string }>;
   };
 }

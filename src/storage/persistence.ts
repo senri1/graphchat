@@ -49,6 +49,7 @@ export type PersistedWorkspaceSnapshot = {
     sendAllEnabled?: boolean;
     sendAllComposerEnabled?: boolean;
     sendAllModelIds?: string[];
+    cleanupChatFoldersOnDelete?: boolean;
   };
   updatedAt: number;
 };
@@ -260,4 +261,12 @@ export async function deleteChatMetaRecord(chatId: string): Promise<void> {
   const tx = db.transaction('chatMeta', 'readwrite');
   tx.objectStore('chatMeta').delete(chatId);
   await txDone(tx);
+}
+
+export async function deleteChatStorageFolder(chatId: string): Promise<void> {
+  if (!chatId) return;
+  const electron = getElectronStorageApi();
+  if (!electron?.storageDeleteChatFolder) return;
+  const res = await electron.storageDeleteChatFolder({ chatId });
+  if (!res?.ok) throw new Error(res?.error || 'Failed to delete chat folder.');
 }

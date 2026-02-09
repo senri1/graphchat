@@ -178,6 +178,7 @@ function validateRecordChatId(record, expectedChatId) {
 function registerStorageIpcHandlers(args) {
   const ipcMain = args?.ipcMain;
   const app = args?.app;
+  const shell = args?.shell;
   if (!ipcMain || !app) throw new Error('registerStorageIpcHandlers requires { ipcMain, app }.');
 
   ipcMain.handle('storage:get-workspace-snapshot', async () => {
@@ -428,6 +429,34 @@ function registerStorageIpcHandlers(args) {
       return ok();
     } catch (err) {
       return fail(err, 'Failed to delete attachments.');
+    }
+  });
+
+  ipcMain.handle('storage:delete-chat-folder', async (_event, req) => {
+    try {
+      const chatId = asTrimmedString(req?.chatId);
+      if (!chatId) return ok();
+      await fs.rm(chatDir(app, chatId), { recursive: true, force: true });
+      return ok();
+    } catch (err) {
+      return fail(err, 'Failed to delete chat folder.');
+    }
+  });
+
+  ipcMain.handle('storage:open-data-dir', async () => {
+    try {
+      if (!shell || typeof shell.openPath !== 'function') {
+        return fail('Shell API unavailable.', 'Shell API unavailable.');
+      }
+      const dir = storageRootDir(app);
+      await fs.mkdir(dir, { recursive: true });
+      const err = await shell.openPath(dir);
+      if (typeof err === 'string' && err.trim()) {
+        return fail(err, 'Failed to open storage folder.');
+      }
+      return ok({ path: dir });
+    } catch (err) {
+      return fail(err, 'Failed to open storage folder.');
     }
   });
 

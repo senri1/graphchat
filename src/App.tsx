@@ -72,6 +72,7 @@ import { deleteAttachment, deleteAttachments, getAttachment, listAttachmentKeys,
 import { clearAllStores } from './storage/db';
 import {
   deleteChatMetaRecord,
+  deleteChatStorageFolder,
   deleteChatStateRecord,
   getChatMetaRecord,
   getChatStateRecord,
@@ -207,6 +208,7 @@ const DEFAULT_INK_SEND_CROP_ENABLED = false;
 const DEFAULT_INK_SEND_DOWNSCALE_ENABLED = false;
 const DEFAULT_SEND_ALL_ENABLED = false;
 const DEFAULT_SEND_ALL_COMPOSER_ENABLED = false;
+const DEFAULT_CLEANUP_CHAT_FOLDERS_ON_DELETE = false;
 const MULTI_SEND_ASSISTANT_MAX_W_PX = 800;
 const MULTI_SEND_ASSISTANT_GAP_X_PX = 26;
 
@@ -1287,6 +1289,7 @@ export default function App() {
       sendAllEnabled: boolean;
       sendAllComposerEnabled: boolean;
       sendAllModelIds: string[];
+      cleanupChatFoldersOnDelete: boolean;
     };
     chatStates: Map<string, WorldEngineChatState>;
     chatMeta: Map<string, ChatRuntimeMeta>;
@@ -1344,6 +1347,8 @@ export default function App() {
   const [sendAllModelIds, setSendAllModelIds] = useState<string[]>(() => []);
   const sendAllModelIdsRef = useRef<string[]>(sendAllModelIds);
   const sendAllModelIdsInitializedRef = useRef(false);
+  const [cleanupChatFoldersOnDelete, setCleanupChatFoldersOnDelete] = useState(DEFAULT_CLEANUP_CHAT_FOLDERS_ON_DELETE);
+  const cleanupChatFoldersOnDeleteRef = useRef<boolean>(cleanupChatFoldersOnDelete);
   const [allowEditingAllTextNodes, setAllowEditingAllTextNodes] = useState(DEFAULT_ALLOW_EDITING_ALL_TEXT_NODES);
   const allowEditingAllTextNodesRef = useRef<boolean>(allowEditingAllTextNodes);
   const [spawnEditNodeByDraw, setSpawnEditNodeByDraw] = useState(DEFAULT_SPAWN_EDIT_NODE_BY_DRAW);
@@ -1563,6 +1568,10 @@ export default function App() {
   useEffect(() => {
     sendAllModelIdsRef.current = sendAllModelIds;
   }, [sendAllModelIds]);
+
+  useEffect(() => {
+    cleanupChatFoldersOnDeleteRef.current = cleanupChatFoldersOnDelete;
+  }, [cleanupChatFoldersOnDelete]);
 
   useEffect(() => {
     setSendAllModelIds((prev) => {
@@ -1910,6 +1919,7 @@ export default function App() {
               sendAllEnabled: Boolean(sendAllEnabledRef.current),
               sendAllComposerEnabled: Boolean(sendAllComposerEnabledRef.current),
               sendAllModelIds: normalizeSendAllModelIds(sendAllModelIdsRef.current, allModelIds),
+              cleanupChatFoldersOnDelete: Boolean(cleanupChatFoldersOnDeleteRef.current),
             },
           });
         } catch {
@@ -4542,6 +4552,7 @@ export default function App() {
     sendAllEnabledRef.current = Boolean(visual.sendAllEnabled);
     sendAllComposerEnabledRef.current = Boolean(visual.sendAllComposerEnabled);
     sendAllModelIdsRef.current = normalizeSendAllModelIds(visual.sendAllModelIds, allModelIds);
+    cleanupChatFoldersOnDeleteRef.current = Boolean(visual.cleanupChatFoldersOnDelete);
     sendAllModelIdsInitializedRef.current = true;
     setInkSendCropEnabled(inkSendCropEnabledRef.current);
     setInkSendCropPaddingPx(inkSendCropPaddingPxRef.current);
@@ -4551,6 +4562,7 @@ export default function App() {
     setSendAllEnabled(sendAllEnabledRef.current);
     setSendAllComposerEnabled(sendAllComposerEnabledRef.current);
     setSendAllModelIds(sendAllModelIdsRef.current);
+    setCleanupChatFoldersOnDelete(cleanupChatFoldersOnDeleteRef.current);
 
     bootedRef.current = true;
     setActiveChatId(resolvedActive);
@@ -4900,6 +4912,10 @@ export default function App() {
           (visualSrc as any)?.sendAllModelIds === undefined
             ? allModelIds.slice()
             : normalizeSendAllModelIds((visualSrc as any)?.sendAllModelIds, allModelIds),
+        cleanupChatFoldersOnDelete:
+          typeof (visualSrc as any)?.cleanupChatFoldersOnDelete === 'boolean'
+            ? Boolean((visualSrc as any).cleanupChatFoldersOnDelete)
+            : DEFAULT_CLEANUP_CHAT_FOLDERS_ON_DELETE,
       };
 
       const modelUserSettings = buildModelUserSettings(allModels, ws.llm?.modelUserSettings);
@@ -5325,6 +5341,21 @@ export default function App() {
       void deleteChatStateRecord(chatId);
       void deleteChatMetaRecord(chatId);
     }
+    if (cleanupChatFoldersOnDeleteRef.current && removedChatIds.length > 0) {
+      void (async () => {
+        let failed = 0;
+        for (const chatId of removedChatIds) {
+          try {
+            await deleteChatStorageFolder(chatId);
+          } catch {
+            failed += 1;
+          }
+        }
+        if (failed > 0) {
+          showToast(`Failed to delete ${failed} chat folder${failed === 1 ? '' : 's'}.`, 'error');
+        }
+      })();
+    }
     attachmentsGcDirtyRef.current = true;
 
     let nextActive = activeChatId;
@@ -5441,6 +5472,29 @@ export default function App() {
 
     if (payload.closeSettingsOnConfirm) setSettingsOpen(false);
     void exportAllChats();
+  };
+
+  const canOpenStorageFolder = Boolean(
+    typeof window !== 'undefined' &&
+      typeof (window as any)?.gcElectron?.storageOpenDataDir === 'function',
+  );
+
+  const openStorageFolder = () => {
+    const api = (window as any)?.gcElectron;
+    if (!api || typeof api.storageOpenDataDir !== 'function') {
+      showToast('Open storage folder is only available in Electron desktop mode.', 'info');
+      return;
+    }
+    void (async () => {
+      try {
+        const res = await api.storageOpenDataDir();
+        if (!res?.ok) {
+          showToast(`Failed to open storage folder: ${String(res?.error ?? 'unknown error')}`, 'error');
+        }
+      } catch (err: any) {
+        showToast(`Failed to open storage folder: ${err?.message || String(err)}`, 'error');
+      }
+    })();
   };
 
   const sendTurn = (args: SendTurnArgs): { chatId: string; userNodeId: string; assistantNodeId: string } | null => {
@@ -7998,6 +8052,15 @@ export default function App() {
 		          onExportAllChats={() => {
 	            requestExportAllChats({ closeSettingsOnConfirm: true });
 	          }}
+            canOpenStorageFolder={canOpenStorageFolder}
+            onOpenStorageFolder={openStorageFolder}
+            cleanupChatFoldersOnDelete={cleanupChatFoldersOnDelete}
+            onToggleCleanupChatFoldersOnDelete={() => {
+              const next = !cleanupChatFoldersOnDeleteRef.current;
+              cleanupChatFoldersOnDeleteRef.current = next;
+              setCleanupChatFoldersOnDelete(next);
+              schedulePersistSoon();
+            }}
 	          onResetToDefaults={() => {
 	            if (
 	              !window.confirm(
@@ -8075,6 +8138,8 @@ export default function App() {
             setSendAllEnabled(DEFAULT_SEND_ALL_ENABLED);
             setSendAllComposerEnabled(DEFAULT_SEND_ALL_COMPOSER_ENABLED);
             setSendAllModelIds(sendAllModelIdsRef.current);
+            cleanupChatFoldersOnDeleteRef.current = DEFAULT_CLEANUP_CHAT_FOLDERS_ON_DELETE;
+            setCleanupChatFoldersOnDelete(DEFAULT_CLEANUP_CHAT_FOLDERS_ON_DELETE);
             allowEditingAllTextNodesRef.current = DEFAULT_ALLOW_EDITING_ALL_TEXT_NODES;
             setAllowEditingAllTextNodes(DEFAULT_ALLOW_EDITING_ALL_TEXT_NODES);
             spawnEditNodeByDrawRef.current = DEFAULT_SPAWN_EDIT_NODE_BY_DRAW;

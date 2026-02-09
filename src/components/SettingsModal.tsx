@@ -108,6 +108,10 @@ type Props = {
 
   onRequestImportChat: () => void;
   onExportAllChats: () => void;
+  canOpenStorageFolder: boolean;
+  onOpenStorageFolder: () => void;
+  cleanupChatFoldersOnDelete: boolean;
+  onToggleCleanupChatFoldersOnDelete: () => void;
 
   onResetToDefaults: () => void;
 };
@@ -1316,6 +1320,29 @@ export default function SettingsModal(props: Props) {
                     </div>
                   </div>
                 </div>
+
+                <div className="settingsCard">
+                  <div className="settingsRow">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Open storage folder</div>
+                      <div className="settingsRow__desc">
+                        {props.canOpenStorageFolder
+                          ? 'Open the desktop storage location on disk.'
+                          : 'Available in Electron desktop mode.'}
+                      </div>
+                    </div>
+                    <div className="settingsRow__actions">
+                      <button
+                        className="settingsBtn"
+                        type="button"
+                        disabled={!props.canOpenStorageFolder}
+                        onClick={props.onOpenStorageFolder}
+                      >
+                        Open folder
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
             ) : null}
 
@@ -1324,6 +1351,27 @@ export default function SettingsModal(props: Props) {
                 <div className="settingsPanel__header">
                   <div className="settingsPanel__title">Reset or Clear Data</div>
                   <div className="settingsPanel__subtitle">Delete chats and clear the background library.</div>
+                </div>
+
+                <div className="settingsCard">
+                  <div className="settingsRow">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Delete chat folders on chat delete</div>
+                      <div className="settingsRow__desc">
+                        When enabled, removing chats also deletes their on-disk chat folders.
+                      </div>
+                    </div>
+                    <div className="settingsRow__actions">
+                      <button
+                        className={`settingsToggle ${props.cleanupChatFoldersOnDelete ? 'settingsToggle--on' : ''}`}
+                        type="button"
+                        aria-pressed={props.cleanupChatFoldersOnDelete}
+                        onClick={props.onToggleCleanupChatFoldersOnDelete}
+                      >
+                        {props.cleanupChatFoldersOnDelete ? 'On' : 'Off'}
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="settingsCard">
