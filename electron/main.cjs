@@ -37,10 +37,18 @@ function pushPathIfPresent(paths, value) {
   paths.push(raw);
 }
 
+function resolvePathEnv(env) {
+  const key = Object.keys(env).find((name) => String(name).toLowerCase() === 'path') || 'PATH';
+  const value = String(env[key] ?? env.PATH ?? env.Path ?? '').trim();
+  return { key, value };
+}
+
 function windowsLatexPathExtras(env) {
   const out = [
     'C:\\Program Files\\MiKTeX\\miktex\\bin\\x64',
     'C:\\Program Files\\MiKTeX\\miktex\\bin',
+    'C:\\Strawberry\\perl\\bin',
+    'C:\\Strawberry\\c\\bin',
     'C:\\texlive\\2026\\bin\\win32',
     'C:\\texlive\\2025\\bin\\win32',
     'C:\\texlive\\2024\\bin\\win32',
@@ -56,6 +64,8 @@ function windowsLatexPathExtras(env) {
     pushPathIfPresent(out, path.join(localAppData, 'Programs', 'MiKTeX', 'miktex', 'bin'));
     pushPathIfPresent(out, path.join(localAppData, 'MiKTeX', 'miktex', 'bin', 'x64'));
     pushPathIfPresent(out, path.join(localAppData, 'MiKTeX', 'miktex', 'bin'));
+    pushPathIfPresent(out, path.join(localAppData, 'Programs', 'Strawberry', 'perl', 'bin'));
+    pushPathIfPresent(out, path.join(localAppData, 'Programs', 'Strawberry', 'c', 'bin'));
   }
   if (appData) {
     pushPathIfPresent(out, path.join(appData, 'MiKTeX', 'miktex', 'bin', 'x64'));
@@ -73,7 +83,8 @@ function windowsLatexPathExtras(env) {
 
 function latexCommandEnv() {
   const env = { ...process.env };
-  const existing = String(env.PATH ?? '')
+  const pathEnv = resolvePathEnv(env);
+  const existing = String(pathEnv.value ?? '')
     .split(path.delimiter)
     .map((p) => String(p ?? '').trim())
     .filter(Boolean);
@@ -87,7 +98,14 @@ function latexCommandEnv() {
     if (!extra) continue;
     if (!merged.includes(extra)) merged.push(extra);
   }
-  env.PATH = merged.join(path.delimiter);
+  const mergedPath = merged.join(path.delimiter);
+  env[pathEnv.key] = mergedPath;
+  if (process.platform === 'win32') {
+    env.Path = mergedPath;
+    env.PATH = mergedPath;
+  } else {
+    env.PATH = mergedPath;
+  }
   return env;
 }
 
