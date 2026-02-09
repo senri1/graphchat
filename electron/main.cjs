@@ -31,6 +31,46 @@ function trimMessage(value, fallback) {
   return raw.length > 500 ? `${raw.slice(0, 500)}...` : raw;
 }
 
+function pushPathIfPresent(paths, value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return;
+  paths.push(raw);
+}
+
+function windowsLatexPathExtras(env) {
+  const out = [
+    'C:\\Program Files\\MiKTeX\\miktex\\bin\\x64',
+    'C:\\Program Files\\MiKTeX\\miktex\\bin',
+    'C:\\texlive\\2026\\bin\\win32',
+    'C:\\texlive\\2025\\bin\\win32',
+    'C:\\texlive\\2024\\bin\\win32',
+    'C:\\texlive\\2023\\bin\\win32',
+  ];
+
+  const localAppData = asTrimmedString(env.LOCALAPPDATA);
+  const appData = asTrimmedString(env.APPDATA);
+  const userProfile = asTrimmedString(env.USERPROFILE);
+
+  if (localAppData) {
+    pushPathIfPresent(out, path.join(localAppData, 'Programs', 'MiKTeX', 'miktex', 'bin', 'x64'));
+    pushPathIfPresent(out, path.join(localAppData, 'Programs', 'MiKTeX', 'miktex', 'bin'));
+    pushPathIfPresent(out, path.join(localAppData, 'MiKTeX', 'miktex', 'bin', 'x64'));
+    pushPathIfPresent(out, path.join(localAppData, 'MiKTeX', 'miktex', 'bin'));
+  }
+  if (appData) {
+    pushPathIfPresent(out, path.join(appData, 'MiKTeX', 'miktex', 'bin', 'x64'));
+    pushPathIfPresent(out, path.join(appData, 'MiKTeX', 'miktex', 'bin'));
+  }
+  if (userProfile) {
+    pushPathIfPresent(out, path.join(userProfile, 'AppData', 'Local', 'Programs', 'MiKTeX', 'miktex', 'bin', 'x64'));
+    pushPathIfPresent(out, path.join(userProfile, 'AppData', 'Local', 'Programs', 'MiKTeX', 'miktex', 'bin'));
+    pushPathIfPresent(out, path.join(userProfile, 'AppData', 'Local', 'MiKTeX', 'miktex', 'bin', 'x64'));
+    pushPathIfPresent(out, path.join(userProfile, 'AppData', 'Local', 'MiKTeX', 'miktex', 'bin'));
+  }
+
+  return out;
+}
+
 function latexCommandEnv() {
   const env = { ...process.env };
   const existing = String(env.PATH ?? '')
@@ -40,12 +80,7 @@ function latexCommandEnv() {
   const extras = process.platform === 'darwin'
     ? ['/Library/TeX/texbin', '/opt/homebrew/bin', '/usr/local/bin']
     : process.platform === 'win32'
-      ? [
-          'C:\\Program Files\\MiKTeX\\miktex\\bin\\x64',
-          'C:\\Program Files\\MiKTeX\\miktex\\bin',
-          'C:\\texlive\\2025\\bin\\win32',
-          'C:\\texlive\\2024\\bin\\win32',
-        ]
+      ? windowsLatexPathExtras(env)
       : [];
   const merged = existing.slice();
   for (const extra of extras) {
