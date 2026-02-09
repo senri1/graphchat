@@ -576,6 +576,10 @@ function createWindow() {
     },
   });
 
+  win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    console.error('[electron] did-fail-load', { errorCode, errorDescription, validatedURL });
+  });
+
   const devUrl = process.env.ELECTRON_START_URL;
   if (devUrl) {
     win.loadURL(devUrl);
@@ -584,7 +588,15 @@ function createWindow() {
   }
 
   const indexPath = path.join(__dirname, '..', 'dist', 'index.html');
-  win.loadFile(indexPath);
+  win.loadFile(indexPath).catch((err) => {
+    const message = trimMessage(err?.message, 'Failed to load application UI.');
+    console.error('[electron] loadFile failed', { indexPath, message });
+    try {
+      dialog.showErrorBox('GraphChatV1 failed to start', `${message}\n\nPath: ${indexPath}`);
+    } catch {
+      // ignore
+    }
+  });
 }
 
 ipcMain.handle('latex:compile', async (_event, req) => {

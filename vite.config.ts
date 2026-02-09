@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig({
+  base: './',
   plugins: [react()],
   envPrefix: ['VITE_', 'OPENAI_', 'GEMINI_', 'ANTHROPIC_', 'XAI_'],
   server: {
