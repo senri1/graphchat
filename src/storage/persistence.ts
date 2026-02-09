@@ -265,8 +265,14 @@ export async function deleteChatMetaRecord(chatId: string): Promise<void> {
 
 export async function deleteChatStorageFolder(chatId: string): Promise<void> {
   if (!chatId) return;
-  const electron = getElectronStorageApi();
-  if (!electron?.storageDeleteChatFolder) return;
-  const res = await electron.storageDeleteChatFolder({ chatId });
+  if (typeof window === 'undefined') return;
+  const rawApi = (window as any)?.gcElectron;
+  if (!rawApi) return;
+  if (typeof rawApi.storageDeleteChatFolder !== 'function') {
+    throw new Error(
+      'Chat-folder cleanup API is unavailable in this Electron session. Fully restart Electron and try again.',
+    );
+  }
+  const res = await rawApi.storageDeleteChatFolder({ chatId });
   if (!res?.ok) throw new Error(res?.error || 'Failed to delete chat folder.');
 }

@@ -5344,15 +5344,18 @@ export default function App() {
     if (cleanupChatFoldersOnDeleteRef.current && removedChatIds.length > 0) {
       void (async () => {
         let failed = 0;
+        let firstError = '';
         for (const chatId of removedChatIds) {
           try {
             await deleteChatStorageFolder(chatId);
-          } catch {
+          } catch (err: any) {
             failed += 1;
+            if (!firstError) firstError = String(err?.message || err || '');
           }
         }
         if (failed > 0) {
-          showToast(`Failed to delete ${failed} chat folder${failed === 1 ? '' : 's'}.`, 'error');
+          const suffix = firstError ? ` ${firstError}` : '';
+          showToast(`Failed to delete ${failed} chat folder${failed === 1 ? '' : 's'}.${suffix}`, 'error');
         }
       })();
     }
