@@ -237,7 +237,7 @@ export default function LatexNodeEditor(props: Props) {
   const [treeQuery, setTreeQuery] = useState('');
   const [expandedDirs, setExpandedDirs] = useState<Record<string, boolean>>({});
   const [selectedTreePath, setSelectedTreePath] = useState<string | null>(null);
-  const [treeVisible, setTreeVisible] = useState(true);
+  const [treeVisible, setTreeVisible] = useState(false);
   const [isSyncingPdf, setIsSyncingPdf] = useState(false);
   const [pdfSyncTarget, setPdfSyncTarget] = useState<{ token: number; page: number; x?: number | null; y?: number | null } | null>(null);
   const [pdfZoomMode, setPdfZoomMode] = useState<PdfZoomMode>('fit-width');
@@ -259,6 +259,7 @@ export default function LatexNodeEditor(props: Props) {
   const mainFileRef = useRef<string | null>(null);
   const activeFileRef = useRef<string | null>(null);
   const lastCompileLogRef = useRef<string | null>(null);
+  const lastCompileLogNodeIdRef = useRef<string>('');
   const syncTokenRef = useRef(0);
   const onProjectStateChangeRef = useRef<Props['onProjectStateChange']>(onProjectStateChange);
   const loadTicketRef = useRef(0);
@@ -376,6 +377,13 @@ export default function LatexNodeEditor(props: Props) {
 
   useEffect(() => {
     const nextLog = typeof compileLog === 'string' && compileLog.trim() ? compileLog : null;
+    if (lastCompileLogNodeIdRef.current !== nodeId) {
+      lastCompileLogNodeIdRef.current = nodeId;
+      lastCompileLogRef.current = nextLog;
+      setLogVisible(false);
+      setLogCollapsed(false);
+      return;
+    }
     if (!nextLog) {
       lastCompileLogRef.current = null;
       setLogVisible(false);
@@ -387,7 +395,7 @@ export default function LatexNodeEditor(props: Props) {
       setLogVisible(true);
       setLogCollapsed(false);
     }
-  }, [compileLog]);
+  }, [compileLog, nodeId]);
 
   const closeSourceSelectionMenu = useCallback(() => {
     setSourceSelectionMenu(null);
@@ -561,7 +569,6 @@ export default function LatexNodeEditor(props: Props) {
         setTreeQuery('');
         setExpandedDirs({});
         setSelectedTreePath(null);
-        setTreeVisible(true);
         setIsSyncingPdf(false);
         setPdfSyncTarget(null);
         return { ok: false, error: 'Project root is missing.' };
@@ -613,7 +620,6 @@ export default function LatexNodeEditor(props: Props) {
         setExpandedDirs(buildExpandedDirs(files));
         setTreeQuery('');
         setSelectedTreePath(nextActive ?? (files[0]?.path ?? null));
-        setTreeVisible(true);
         setIsSyncingPdf(false);
         setProjectError(null);
         setIsDirty(false);
@@ -646,6 +652,13 @@ export default function LatexNodeEditor(props: Props) {
   );
 
   useEffect(() => {
+    setTreeVisible(false);
+    setPdfZoomMode('fit-width');
+    setPdfZoom(1);
+    setPdfFitRequestToken((prev) => prev + 1);
+  }, [nodeId]);
+
+  useEffect(() => {
     setRuntimeCompileError(null);
     setIsCompiling(false);
     setIsSavingFile(false);
@@ -671,7 +684,6 @@ export default function LatexNodeEditor(props: Props) {
       setTreeQuery('');
       setExpandedDirs({});
       setSelectedTreePath(null);
-      setTreeVisible(true);
       setIsSyncingPdf(false);
       setPdfSyncTarget(null);
       applyDraft(initialValue ?? '');
