@@ -37,6 +37,8 @@ npm run dist:win   # builds NSIS .exe installer
 # optional: remove old artifacts first
 npm run dist:mac:fresh
 npm run dist:win:fresh
+# verify packaged artifacts before sharing
+npm run release:verify
 ```
 
 Artifacts are written to `release/`.
@@ -44,6 +46,7 @@ Artifacts are written to `release/`.
 Notes:
 - These builds are unsigned by default (good for local testing, not public distribution).
 - Packaging requires network access on first run so `electron-builder` can fetch Electron binaries.
+- `release:verify` scans `dist/` + `release/` for secret-like tokens and local absolute paths.
 
 ## Desktop data location
 
