@@ -767,7 +767,7 @@ export class WorldEngine {
   private hoverPdfPage: { nodeId: string; token: number; pageNumber: number } | null = null;
   private hoverNodeHeaderButton: {
     nodeId: string;
-    kind: 'menu' | 'reply' | 'reply_menu' | 'stop' | 'send' | 'send_menu';
+    kind: 'menu' | 'reply' | 'reply_menu' | 'stop' | 'send' | 'send_menu' | 'edit';
   } | null = null;
 
   private pdfTextLod2: PdfTextLod2Overlay | null = null;
@@ -3919,7 +3919,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.updateHoverCursor(world, hit);
     let nextTextHover: string | null = null;
     let nextPdfHover: { nodeId: string; token: number; pageNumber: number } | null = null;
-    let nextHeaderHover: { nodeId: string; kind: 'menu' | 'reply' | 'reply_menu' | 'stop' | 'send' | 'send_menu' } | null = null;
+    let nextHeaderHover: {
+      nodeId: string;
+      kind: 'menu' | 'reply' | 'reply_menu' | 'stop' | 'send' | 'send_menu' | 'edit';
+    } | null = null;
 
     if (hit) {
       const menuBtn = this.menuButtonRect(hit.rect);
@@ -3945,30 +3948,42 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           world.y <= replyArrow.y + replyArrow.h;
         if (inReplyMain || inReplyArrow) {
           nextHeaderHover = { nodeId: hit.id, kind: inReplyArrow ? 'reply_menu' : 'reply' };
-        } else if ((hit.kind === 'text' || hit.kind === 'ink') && this.isHeaderSendEnabled(hit)) {
-          const mainBtn = this.sendButtonMainRect(hit.rect);
-          const arrowBtn = this.sendButtonArrowRect(hit.rect);
-          const inMain =
-            world.x >= mainBtn.x &&
-            world.x <= mainBtn.x + mainBtn.w &&
-            world.y >= mainBtn.y &&
-            world.y <= mainBtn.y + mainBtn.h;
-          const inArrow =
-            world.x >= arrowBtn.x &&
-            world.x <= arrowBtn.x + arrowBtn.w &&
-            world.y >= arrowBtn.y &&
-            world.y <= arrowBtn.y + arrowBtn.h;
-          if (inMain || inArrow) {
-            nextHeaderHover = { nodeId: hit.id, kind: inArrow ? 'send_menu' : 'send' };
+        } else {
+          if ((hit.kind === 'text' || hit.kind === 'ink') && this.isHeaderSendEnabled(hit)) {
+            const mainBtn = this.sendButtonMainRect(hit.rect);
+            const arrowBtn = this.sendButtonArrowRect(hit.rect);
+            const inMain =
+              world.x >= mainBtn.x &&
+              world.x <= mainBtn.x + mainBtn.w &&
+              world.y >= mainBtn.y &&
+              world.y <= mainBtn.y + mainBtn.h;
+            const inArrow =
+              world.x >= arrowBtn.x &&
+              world.x <= arrowBtn.x + arrowBtn.w &&
+              world.y >= arrowBtn.y &&
+              world.y <= arrowBtn.y + arrowBtn.h;
+            if (inMain || inArrow) nextHeaderHover = { nodeId: hit.id, kind: inArrow ? 'send_menu' : 'send' };
           }
-        } else if (hit.kind === 'text' && this.canCancelNode(hit)) {
-          const stopBtn = this.stopButtonRect(hit);
-          const inStop =
-            world.x >= stopBtn.x &&
-            world.x <= stopBtn.x + stopBtn.w &&
-            world.y >= stopBtn.y &&
-            world.y <= stopBtn.y + stopBtn.h;
-          if (inStop) nextHeaderHover = { nodeId: hit.id, kind: 'stop' };
+
+          if (!nextHeaderHover && hit.kind === 'text' && this.isHeaderEditEnabled(hit)) {
+            const editBtn = this.editButtonRect(hit);
+            const inEdit =
+              world.x >= editBtn.x &&
+              world.x <= editBtn.x + editBtn.w &&
+              world.y >= editBtn.y &&
+              world.y <= editBtn.y + editBtn.h;
+            if (inEdit) nextHeaderHover = { nodeId: hit.id, kind: 'edit' };
+          }
+
+          if (!nextHeaderHover && hit.kind === 'text' && this.canCancelNode(hit)) {
+            const stopBtn = this.stopButtonRect(hit);
+            const inStop =
+              world.x >= stopBtn.x &&
+              world.x <= stopBtn.x + stopBtn.w &&
+              world.y >= stopBtn.y &&
+              world.y <= stopBtn.y + stopBtn.h;
+            if (inStop) nextHeaderHover = { nodeId: hit.id, kind: 'stop' };
+          }
         }
       }
     }
@@ -4054,6 +4069,19 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           world.y >= sendBtn.y &&
           world.y <= sendBtn.y + sendBtn.h;
         if (inSend) {
+          this.setCanvasCursor('pointer');
+          return;
+        }
+      }
+
+      if (hit.kind === 'text' && this.isHeaderEditEnabled(hit)) {
+        const editBtn = this.editButtonRect(hit);
+        const inEdit =
+          world.x >= editBtn.x &&
+          world.x <= editBtn.x + editBtn.w &&
+          world.y >= editBtn.y &&
+          world.y <= editBtn.y + editBtn.h;
+        if (inEdit) {
           this.setCanvasCursor('pointer');
           return;
         }
@@ -4639,6 +4667,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   private isHeaderSendEnabled(node: TextNode | InkNode): boolean {
     if (node.kind === 'ink') return true;
     return Boolean(node.isEditNode) && !this.isLatexTextNode(node);
+  }
+
+  private isHeaderEditEnabled(node: TextNode): boolean {
+    return this.canEditTextNode(node);
   }
 
   private canEditTextNode(node: TextNode): boolean {
@@ -5307,6 +5339,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     };
 
     const controls: string[] = [];
+    if (this.isHeaderEditEnabled(node)) controls.push(buttonBox('Edit', { width: 62 }));
     if (this.isHeaderSendEnabled(node)) controls.push(splitButton('Send', 68, { accent: 'blue' }));
     controls.push(splitButton('Reply', 74));
     controls.push(buttonBox('⋮', { width: 28 }));
@@ -8792,6 +8825,20 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       }
     }
 
+    if (hit.kind === 'text' && this.isHeaderEditEnabled(hit)) {
+      const editBtn = this.editButtonRect(hit);
+      const inEdit =
+        world.x >= editBtn.x &&
+        world.x <= editBtn.x + editBtn.w &&
+        world.y >= editBtn.y &&
+        world.y <= editBtn.y + editBtn.h;
+      if (inEdit) {
+        this.requestRender();
+        if (selectionChanged) this.emitUiState();
+        return 'node';
+      }
+    }
+
 	    if (hit.kind === 'text' && this.canCancelNode(hit)) {
 	      const stopBtn = this.stopButtonRect(hit);
 	      const inStop =
@@ -9912,6 +9959,24 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           return;
         }
       }
+
+      if (hit.kind === 'text' && this.isHeaderEditEnabled(hit)) {
+        const editBtn = this.editButtonRect(hit);
+        const inEdit =
+          world.x >= editBtn.x &&
+          world.x <= editBtn.x + editBtn.w &&
+          world.y >= editBtn.y &&
+          world.y <= editBtn.y + editBtn.h;
+        if (inEdit) {
+          const changed = this.selectedNodeId !== hit.id;
+          this.selectedNodeId = hit.id;
+          this.bringNodeToFront(hit.id);
+          this.requestRender();
+          if (changed) this.emitUiState();
+          this.tryBeginEditingNode(hit.id);
+          return;
+        }
+      }
     }
 
     const now = performance.now();
@@ -10251,6 +10316,23 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return { x: rect.x, y: rect.y, w: Math.max(1, arrow.x - TEXT_NODE_SEND_BUTTON_SPLIT_GAP_PX - rect.x), h: rect.h };
   }
 
+  private editButtonRect(node: TextNode): Rect {
+    const pad = TEXT_NODE_PAD_PX;
+    const w = 62;
+    const h = 22;
+    const gap = 8;
+
+    const anchor = this.canCancelNode(node)
+      ? this.stopButtonRect(node)
+      : this.isHeaderSendEnabled(node)
+        ? this.sendButtonRect(node.rect)
+        : this.replyButtonRect(node.rect);
+    const x = anchor.x - gap - w;
+    const y = anchor.y;
+    const minX = node.rect.x + pad;
+    return { x: Math.max(minX, x), y, w, h };
+  }
+
   private menuButtonRect(nodeRect: Rect): Rect {
     const pad = TEXT_NODE_PAD_PX;
     const w = 28;
@@ -10468,6 +10550,62 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const ma = ctx.measureText(arrowLabel);
     const arrowX = arrowRect.x + (arrowRect.w - (ma.width || 0)) * 0.5;
     ctx.fillText(arrowLabel, arrowX, arrowRect.y + arrowRect.h * 0.5);
+
+    ctx.restore();
+  }
+
+  private drawEditButton(node: TextNode, opts?: { active?: boolean; hovered?: boolean }): void {
+    const ctx = this.ctx;
+    const r = 9;
+    const rect = this.editButtonRect(node);
+    const active = Boolean(opts?.active);
+    const hovered = Boolean(opts?.hovered);
+
+    ctx.save();
+    if (hovered) {
+      ctx.shadowColor = active ? 'rgba(147,197,253,0.5)' : 'rgba(255,255,255,0.28)';
+      ctx.shadowBlur = 14;
+    }
+
+    ctx.fillStyle = active
+      ? hovered
+        ? 'rgba(147,197,253,0.26)'
+        : 'rgba(147,197,253,0.18)'
+      : hovered
+        ? 'rgba(255,255,255,0.08)'
+        : 'rgba(0,0,0,0.22)';
+    ctx.strokeStyle = active
+      ? hovered
+        ? 'rgba(147,197,253,0.75)'
+        : 'rgba(147,197,253,0.42)'
+      : hovered
+        ? 'rgba(255,255,255,0.28)'
+        : 'rgba(255,255,255,0.14)';
+    ctx.lineWidth = 1;
+
+    ctx.beginPath();
+    ctx.moveTo(rect.x + r, rect.y);
+    ctx.lineTo(rect.x + rect.w - r, rect.y);
+    ctx.arcTo(rect.x + rect.w, rect.y, rect.x + rect.w, rect.y + r, r);
+    ctx.lineTo(rect.x + rect.w, rect.y + rect.h - r);
+    ctx.arcTo(rect.x + rect.w, rect.y + rect.h, rect.x + rect.w - r, rect.y + rect.h, r);
+    ctx.lineTo(rect.x + r, rect.y + rect.h);
+    ctx.arcTo(rect.x, rect.y + rect.h, rect.x, rect.y + rect.h - r, r);
+    ctx.lineTo(rect.x, rect.y + r);
+    ctx.arcTo(rect.x, rect.y, rect.x + r, rect.y, r);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.shadowBlur = 0;
+    ctx.shadowColor = 'transparent';
+    ctx.fillStyle = hovered || active ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.86)';
+    ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
+    ctx.textBaseline = 'middle';
+    const label = 'Edit';
+    const m = ctx.measureText(label);
+    const textX = rect.x + (rect.w - (m.width || 0)) * 0.5;
+    ctx.fillText(label, textX, rect.y + rect.h * 0.5);
 
     ctx.restore();
   }
@@ -10705,8 +10843,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       const hoverStop = headerHover?.nodeId === node.id && headerHover.kind === 'stop';
       const hoverSend = headerHover?.nodeId === node.id && headerHover.kind === 'send';
       const hoverSendMenu = headerHover?.nodeId === node.id && headerHover.kind === 'send_menu';
+      const hoverEdit = headerHover?.nodeId === node.id && headerHover.kind === 'edit';
 
       if (node.kind === 'text' && this.canCancelNode(node)) this.drawStopButton(node, { hovered: hoverStop });
+      if (node.kind === 'text' && this.isHeaderEditEnabled(node)) this.drawEditButton(node, { active: isSelected, hovered: hoverEdit });
       this.drawMenuButton(node.rect, { active: isSelected, hovered: hoverMenu });
       this.drawReplyButton(node.rect, {
         active: isSelected,
