@@ -51,7 +51,7 @@ function getTouchPointerIds(pointers: Map<number, PointerInfo>): number[] {
 }
 
 const WHEEL_ZOOM_BASE = 1.0016;
-const TRACKPAD_PINCH_ZOOM_SENSITIVITY = 9;
+const TRACKPAD_PINCH_ZOOM_SENSITIVITY = 3;
 
 export class InputController {
   private readonly el: HTMLElement;
