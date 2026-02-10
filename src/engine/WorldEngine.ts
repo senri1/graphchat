@@ -729,6 +729,7 @@ export class WorldEngine {
   private readonly touchUi: boolean;
   private spawnEditNodeByDrawEnabled = false;
   private spawnInkNodeByDrawEnabled = false;
+  private mouseClickRecenterEnabled = true;
   private replySpawnKind: 'text' | 'ink' = 'text';
   private pdfAnnotationPlacement: PdfAnnotationPlacement | null = null;
   private textAnnotationPlacement: TextAnnotationPlacement | null = null;
@@ -2035,6 +2036,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
   setWheelInputPreference(preference: WheelInputPreference): void {
     this.input.setWheelInputPreference(preference);
+  }
+
+  setMouseClickRecenterEnabled(enabled: boolean): void {
+    this.mouseClickRecenterEnabled = Boolean(enabled);
   }
 
   setAllowEditingAllTextNodes(enabled: boolean): void {
@@ -9929,7 +9934,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const changed = nextSelected !== this.selectedNodeId;
     this.selectedNodeId = nextSelected;
     if (hit) this.bringNodeToFront(hit.id);
-    const shouldMouseClickRecenter = !hit && info.pointerType === 'mouse' && info.wheelInput === 'mouse';
+    const shouldMouseClickRecenter =
+      this.mouseClickRecenterEnabled && !hit && info.pointerType === 'mouse' && info.wheelInput === 'mouse';
     if (shouldMouseClickRecenter) this.recenterCameraOnWorldPoint(world);
     if (changed || shouldMouseClickRecenter) {
       this.requestRender();

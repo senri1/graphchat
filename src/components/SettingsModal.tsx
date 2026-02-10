@@ -84,6 +84,8 @@ type Props = {
   onToggleDebugHudVisible: () => void;
   wheelInputPreference: WheelInputPreference;
   onChangeWheelInputPreference: (next: WheelInputPreference) => void;
+  mouseClickRecenterEnabled: boolean;
+  onToggleMouseClickRecenterEnabled: () => void;
   sendAllEnabled: boolean;
   onToggleSendAllEnabled: () => void;
   sendAllModelIds: string[];
@@ -1145,6 +1147,25 @@ export default function SettingsModal(props: Props) {
                         onClick={() => props.onChangeWheelInputPreference('trackpad')}
                       >
                         Trackpad
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="settingsRow">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Mouse click-to-recenter</div>
+                      <div className="settingsRow__desc">
+                        When on, clicking empty canvas jumps camera to that spot (only when mouse input is active).
+                      </div>
+                    </div>
+                    <div className="settingsRow__actions">
+                      <button
+                        className={`settingsToggle ${props.mouseClickRecenterEnabled ? 'settingsToggle--on' : ''}`}
+                        type="button"
+                        aria-pressed={props.mouseClickRecenterEnabled}
+                        onClick={props.onToggleMouseClickRecenterEnabled}
+                      >
+                        {props.mouseClickRecenterEnabled ? 'On' : 'Off'}
                       </button>
                     </div>
                   </div>

@@ -42,6 +42,7 @@ export type PersistedWorkspaceSnapshot = {
     spawnEditNodeByDraw?: boolean;
     spawnInkNodeByDraw?: boolean;
     wheelInputPreference?: 'auto' | 'mouse' | 'trackpad';
+    mouseClickRecenterEnabled?: boolean;
     inkSendCropEnabled?: boolean;
     inkSendCropPaddingPx?: number;
     inkSendDownscaleEnabled?: boolean;
