@@ -205,6 +205,43 @@ function toRelativeProjectPath(root, maybeAbsoluteOrRelative) {
   return rel;
 }
 
+function normalizePathForMatch(value) {
+  const raw = asTrimmedString(value);
+  if (!raw) return '';
+  const normalized = toPosixPath(path.normalize(raw)).replace(/\/+/g, '/').replace(/\/+$/, '');
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+function basenameForMatch(value) {
+  const normalized = normalizePathForMatch(value);
+  if (!normalized) return '';
+  return path.posix.basename(normalized);
+}
+
+function remapSynctexInputToProjectPath(inputPath, editableProjectPaths) {
+  const hint = normalizePathForMatch(inputPath);
+  if (!hint || !Array.isArray(editableProjectPaths) || editableProjectPaths.length === 0) return null;
+
+  const suffixMatches = [];
+  for (const relPath of editableProjectPaths) {
+    const relNorm = normalizePathForMatch(relPath);
+    if (!relNorm) continue;
+    if (hint === relNorm || hint.endsWith(`/${relNorm}`)) suffixMatches.push(relPath);
+  }
+  if (suffixMatches.length === 1) return suffixMatches[0];
+  if (suffixMatches.length > 1) {
+    suffixMatches.sort((a, b) => b.length - a.length || String(a).localeCompare(String(b)));
+    const top = suffixMatches[0] ?? null;
+    const next = suffixMatches[1] ?? null;
+    if (top && (!next || top.length > next.length)) return top;
+  }
+
+  const hintBase = basenameForMatch(hint);
+  if (!hintBase) return null;
+  const baseMatches = editableProjectPaths.filter((relPath) => basenameForMatch(relPath) === hintBase);
+  return baseMatches.length === 1 ? baseMatches[0] : null;
+}
+
 function latexProjectFileKind(filePath) {
   const ext = path.extname(filePath).toLowerCase();
   if (ext === '.tex') return 'tex';
@@ -609,8 +646,20 @@ async function runSynctexInverse(req) {
   const hits = parseSynctexInverseOutput(combined);
   if (!hits.length) return { ok: false, error: 'SyncTeX inverse lookup returned no source location.', log: combined };
 
+  let editableProjectPaths = null;
+  const ensureEditableProjectPaths = async () => {
+    if (editableProjectPaths) return editableProjectPaths;
+    const project = await collectProjectFiles(mainResolved.root);
+    editableProjectPaths = project.files.filter((f) => f.editable).map((f) => f.path);
+    return editableProjectPaths;
+  };
+
   for (const hit of hits) {
-    const rel = toRelativeProjectPath(mainResolved.root, hit.input);
+    let rel = toRelativeProjectPath(mainResolved.root, hit.input);
+    if (!rel) {
+      const projectPaths = await ensureEditableProjectPaths();
+      rel = remapSynctexInputToProjectPath(hit.input, projectPaths);
+    }
     if (!rel) continue;
     return {
       ok: true,
