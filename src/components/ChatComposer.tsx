@@ -64,6 +64,8 @@ type MenuPos = { left: number; top?: number; bottom?: number; maxHeight: number 
 
 type XY = { x: number; y: number };
 
+const COMPOSER_MODEL_MENU_WIDTH = 160;
+
 const clamp01 = (v: number): number => Math.max(0, Math.min(1, v));
 const clamp = (v: number, min: number, max: number): number => Math.max(min, Math.min(max, v));
 
@@ -372,7 +374,7 @@ export default function ChatComposer(props: Props) {
 
     const gap = 8;
     const viewportPadding = 8;
-    const estimatedWidth = 115;
+    const estimatedWidth = COMPOSER_MODEL_MENU_WIDTH;
     const maxMenuH = 256;
     const itemH = 34;
     const paddingY = 14;
@@ -1422,7 +1424,7 @@ export default function ChatComposer(props: Props) {
                   top: modelMenuPos.top,
                   bottom: modelMenuPos.bottom,
                   left: modelMenuPos.left,
-                  width: 115,
+                  width: COMPOSER_MODEL_MENU_WIDTH,
                   maxHeight: modelMenuPos.maxHeight,
                 }}
                 role="menu"

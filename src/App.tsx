@@ -218,6 +218,7 @@ const DEFAULT_SPAWN_EDIT_NODE_BY_DRAW = false;
 const DEFAULT_SPAWN_INK_NODE_BY_DRAW = false;
 const DEFAULT_WHEEL_INPUT_PREFERENCE: WheelInputPreference = 'auto';
 const DEFAULT_MOUSE_CLICK_RECENTER_ENABLED = true;
+const EDIT_NODE_SEND_MODEL_MENU_WIDTH = 160;
 const DEFAULT_GLASS_NODES_ENABLED = true;
 const DEFAULT_GLASS_BLUR_BACKEND: GlassBlurBackend = 'webgl';
 const DEFAULT_GLASS_BLUR_CSS_PX_WEBGL = 23;
@@ -6883,7 +6884,7 @@ export default function App() {
 
     const gap = 8;
     const viewportPadding = 8;
-    const estimatedWidth = 115;
+    const estimatedWidth = EDIT_NODE_SEND_MODEL_MENU_WIDTH;
     const maxMenuH = 256;
     const itemH = 34;
     const paddingY = 14;
@@ -7221,7 +7222,7 @@ export default function App() {
                         top: editNodeSendMenuPos.top,
                         bottom: editNodeSendMenuPos.bottom,
                         left: editNodeSendMenuPos.left,
-                        width: 115,
+                        width: EDIT_NODE_SEND_MODEL_MENU_WIDTH,
                         maxHeight: editNodeSendMenuPos.maxHeight,
                         overflowY: editNodeSendMenuPointerLock ? 'hidden' : undefined,
                         touchAction: editNodeSendMenuPointerLock ? 'none' : undefined,
