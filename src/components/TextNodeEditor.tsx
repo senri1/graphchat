@@ -29,6 +29,7 @@ type Props = {
   onCommit: (next: string) => void;
   onCancel: () => void;
   onSend: (text: string, opts?: SendOptions) => void;
+  onReply?: (text: string) => void;
   onSelectModel?: (modelId: string) => void;
   onSendPreview?: (opts?: { placementClient?: SendPlacementClientPoint | null }) => void;
 };
@@ -38,7 +39,7 @@ type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
 type MenuPos = { left: number; top?: number; bottom?: number; maxHeight: number };
 
 export default function TextNodeEditor(props: Props) {
-  const { nodeId, title, initialValue, userPreface, modelId, modelOptions, anchorRect, getScreenRect, getZoom, viewport, zoom, baseFontSizePx, onDraftChange, onResize, onResizeEnd, onTogglePrefaceContext, onCommit, onCancel, onSend, onSelectModel, onSendPreview } = props;
+  const { nodeId, title, initialValue, userPreface, modelId, modelOptions, anchorRect, getScreenRect, getZoom, viewport, zoom, baseFontSizePx, onDraftChange, onResize, onResizeEnd, onTogglePrefaceContext, onCommit, onCancel, onSend, onReply, onSelectModel, onSendPreview } = props;
   const [draft, setDraft] = useState(() => initialValue ?? '');
   const [previewEnabled, setPreviewEnabled] = useState(false);
   const [collapsedPrefaceContexts, setCollapsedPrefaceContexts] = useState<Record<number, boolean>>(() => userPreface?.collapsedPrefaceContexts ?? {});
@@ -52,6 +53,7 @@ export default function TextNodeEditor(props: Props) {
   const onResizeRef = useRef(onResize);
   const onResizeEndRef = useRef(onResizeEnd);
   const onSendRef = useRef(onSend);
+  const onReplyRef = useRef<Props['onReply']>(onReply);
   const onSelectModelRef = useRef<Props['onSelectModel']>(onSelectModel);
   const onSendPreviewRef = useRef<Props['onSendPreview']>(onSendPreview);
   const onDraftChangeRef = useRef<Props['onDraftChange']>(onDraftChange);
@@ -89,10 +91,11 @@ export default function TextNodeEditor(props: Props) {
     onResizeRef.current = onResize;
     onResizeEndRef.current = onResizeEnd;
     onSendRef.current = onSend;
+    onReplyRef.current = onReply;
     onSelectModelRef.current = onSelectModel;
     onSendPreviewRef.current = onSendPreview;
     onDraftChangeRef.current = onDraftChange;
-  }, [onCancel, onCommit, onDraftChange, onResize, onResizeEnd, onSend, onSelectModel, onSendPreview]);
+  }, [onCancel, onCommit, onDraftChange, onReply, onResize, onResizeEnd, onSend, onSelectModel, onSendPreview]);
 
   useEffect(() => {
     committedRef.current = false;
@@ -431,6 +434,10 @@ export default function TextNodeEditor(props: Props) {
 
   const send = (modelIdOverride?: string | null) => {
     onSendRef.current(draftRef.current, { modelIdOverride: modelIdOverride ?? null });
+  };
+
+  const reply = () => {
+    onReplyRef.current?.(draftRef.current);
   };
 
   const setSendPreviewClient = (placementClient: SendPlacementClientPoint | null) => {
@@ -807,6 +814,9 @@ export default function TextNodeEditor(props: Props) {
             onClick={() => setPreviewEnabled((v) => !v)}
           >
             Preview
+          </button>
+          <button className="editor__btn" type="button" onClick={reply}>
+            Reply
           </button>
           <div className="editor__btnGroup" role="group" aria-label="Send">
             <button

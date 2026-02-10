@@ -41,6 +41,7 @@ type Props = {
   onCommit: (next: string) => void;
   onCancel: () => void;
   onCompile: (req: { source: string; projectRoot?: string | null; mainFile?: string | null }) => Promise<void>;
+  onReply?: (text: string) => void;
   onReplyToSelection?: (selectionText: string) => void;
   onAddToContextSelection?: (selectionText: string) => void;
   onAnnotateTextSelection?: (payload: {
@@ -217,6 +218,7 @@ export default function LatexNodeEditor(props: Props) {
     onCommit,
     onCancel,
     onCompile,
+    onReply,
     onReplyToSelection,
     onAddToContextSelection,
     onAnnotateTextSelection,
@@ -269,6 +271,7 @@ export default function LatexNodeEditor(props: Props) {
   const onResizeRef = useRef(onResize);
   const onResizeEndRef = useRef(onResizeEnd);
   const onCompileRef = useRef(onCompile);
+  const onReplyRef = useRef<Props['onReply']>(onReply);
   const onDraftChangeRef = useRef<Props['onDraftChange']>(onDraftChange);
   const onReplyToSelectionRef = useRef<Props['onReplyToSelection']>(onReplyToSelection);
   const onAddToContextSelectionRef = useRef<Props['onAddToContextSelection']>(onAddToContextSelection);
@@ -333,6 +336,7 @@ export default function LatexNodeEditor(props: Props) {
     onResizeRef.current = onResize;
     onResizeEndRef.current = onResizeEnd;
     onCompileRef.current = onCompile;
+    onReplyRef.current = onReply;
     onDraftChangeRef.current = onDraftChange;
     onProjectStateChangeRef.current = onProjectStateChange;
     onReplyToSelectionRef.current = onReplyToSelection;
@@ -346,6 +350,7 @@ export default function LatexNodeEditor(props: Props) {
     onCancel,
     onCommit,
     onCompile,
+    onReply,
     onDraftChange,
     onProjectStateChange,
     onReplyToSelection,
@@ -1041,6 +1046,12 @@ export default function LatexNodeEditor(props: Props) {
     onCommitRef.current(draftRef.current);
   }, [saveActiveFile]);
 
+  const reply = useCallback(async () => {
+    const saved = await saveActiveFile();
+    if (!saved) return;
+    onReplyRef.current?.(draftRef.current);
+  }, [saveActiveFile]);
+
   const cancel = useCallback(() => {
     onCancelRef.current();
   }, []);
@@ -1532,6 +1543,9 @@ export default function LatexNodeEditor(props: Props) {
           ) : null}
           <button className="editor__btn editor__btn--primary" type="button" onClick={() => void compile()} disabled={compileDisabled}>
             {isCompiling ? 'Compiling...' : 'Compile'}
+          </button>
+          <button className="editor__btn" type="button" onClick={() => void reply()} disabled={isSavingFile}>
+            Reply
           </button>
           <button className="editor__btn" type="button" onClick={cancel}>
             Cancel

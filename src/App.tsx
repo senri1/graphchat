@@ -7340,6 +7340,14 @@ export default function App() {
                 if (!engine) return;
                 engine.onRequestReplyToSelection?.(id, selectionText);
               }}
+              onReply={(text) => {
+                const id = String(ui.editingNodeId ?? '').trim();
+                if (!id) return;
+                const engine = engineRef.current;
+                if (!engine) return;
+                engine.setEditingText(text);
+                engine.onRequestReply?.(id);
+              }}
               onAddToContextSelection={(selectionText) => {
                 const id = String(ui.editingNodeId ?? '').trim();
                 if (!id) return;
@@ -7417,6 +7425,14 @@ export default function App() {
                   assistantRect,
                   clearComposerText: false,
                 });
+              }}
+              onReply={(text) => {
+                const id = String(ui.editingNodeId ?? '').trim();
+                if (!id) return;
+                const engine = engineRef.current;
+                if (!engine) return;
+                engine.setEditingText(text);
+                engine.onRequestReply?.(id);
               }}
               onSelectModel={(nextModelId) => {
                 applyComposerModelSelection(nextModelId);
