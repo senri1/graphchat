@@ -73,7 +73,8 @@ function LatexPdfPreviewImpl(props: Props) {
   const viewportRefByPage = useRef<Map<number, PageViewport>>(new Map());
   const docRef = useRef<PDFDocumentProxy | null>(null);
   const loadedPdfUrlRef = useRef<string | null>(null);
-  const renderTokenRef = useRef(0);
+  const loadTokenRef = useRef(0);
+  const pageRenderTokenRef = useRef(0);
   const lastAppliedSyncTokenRef = useRef<number | null>(null);
   const pdfTextOverlayRef = useRef<PdfTextLod2Overlay | null>(null);
 
@@ -311,7 +312,9 @@ function LatexPdfPreviewImpl(props: Props) {
   }, [metas.length, pdfUrl, loading, error]);
 
   useEffect(() => {
-    const token = ++renderTokenRef.current;
+    const token = ++loadTokenRef.current;
+    // Invalidate in-flight canvas page renders whenever we start a new load pass.
+    pageRenderTokenRef.current += 1;
     setError(null);
 
     if (!pdfUrl) {
@@ -344,9 +347,9 @@ function LatexPdfPreviewImpl(props: Props) {
           const res = await fetch(pdfUrl);
           if (!res.ok) throw new Error(`Failed to load PDF (${res.status}).`);
           const buf = await res.arrayBuffer();
-          if (cancelled || token !== renderTokenRef.current) return;
+          if (cancelled || token !== loadTokenRef.current) return;
           const loadedDoc = await loadPdfDocument(buf);
-          if (cancelled || token !== renderTokenRef.current) {
+          if (cancelled || token !== loadTokenRef.current) {
             try {
               await loadedDoc.destroy();
             } catch {
@@ -404,11 +407,15 @@ function LatexPdfPreviewImpl(props: Props) {
             scale,
           });
         }
-        if (cancelled || token !== renderTokenRef.current) return;
+        if (cancelled || token !== loadTokenRef.current) return;
         setMetas(nextMetas);
-        if (shouldLoadDoc) setLoading(false);
+        // Always clear loading after a successful render pass. A prior in-flight pass
+        // can be cancelled after setting loading=true, and the next pass may reuse the
+        // already-loaded document (shouldLoadDoc=false), so conditionally clearing here
+        // can leave the UI stuck on "Loading PDF preview...".
+        setLoading(false);
       } catch (err: any) {
-        if (cancelled || token !== renderTokenRef.current) return;
+        if (cancelled || token !== loadTokenRef.current) return;
         const msg = err ? String(err?.message ?? err) : 'Failed to render PDF preview.';
         setError(msg);
         setLoading(false);
@@ -458,11 +465,12 @@ function LatexPdfPreviewImpl(props: Props) {
   }, [activeTextLayerPage, metas, pdfUrl, visiblePageKey, visiblePageSet]);
 
   useEffect(() => {
-    const token = ++renderTokenRef.current;
+    const token = ++pageRenderTokenRef.current;
     const doc = docRef.current;
     if (!doc || metas.length === 0 || visiblePageSet.size === 0) return;
 
     let cancelled = false;
+    const tasks = new Set<{ cancel?: () => void }>();
     const run = async () => {
       for (const meta of metas) {
         if (!visiblePageSet.has(meta.pageNumber)) continue;
@@ -472,9 +480,8 @@ function LatexPdfPreviewImpl(props: Props) {
         if (canvas.dataset.renderSig === renderSig && viewportRefByPage.current.has(meta.pageNumber)) continue;
 
         const page = await doc.getPage(meta.pageNumber);
-        if (cancelled || token !== renderTokenRef.current) return;
+        if (cancelled || token !== pageRenderTokenRef.current) return;
         const viewport = page.getViewport({ scale: meta.scale });
-        viewportRefByPage.current.set(meta.pageNumber, viewport);
 
         const width = Math.max(1, Math.floor(viewport.width));
         const height = Math.max(1, Math.floor(viewport.height));
@@ -485,13 +492,27 @@ function LatexPdfPreviewImpl(props: Props) {
 
         const ctx = canvas.getContext('2d', { alpha: false });
         if (!ctx) continue;
-        ctx.save();
+        try {
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+        } catch {
+          // ignore
+        }
+        ctx.clearRect(0, 0, width, height);
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, width, height);
-        ctx.restore();
 
-        await page.render({ canvasContext: ctx, viewport }).promise;
-        if (cancelled || token !== renderTokenRef.current) return;
+        const task = page.render({ canvasContext: ctx, viewport });
+        tasks.add(task as any);
+        try {
+          await task.promise;
+        } catch {
+          // Render tasks can be cancelled during effect churn.
+          continue;
+        } finally {
+          tasks.delete(task as any);
+        }
+        if (cancelled || token !== pageRenderTokenRef.current) return;
+        viewportRefByPage.current.set(meta.pageNumber, viewport);
         canvas.dataset.renderSig = renderSig;
       }
     };
@@ -499,6 +520,14 @@ function LatexPdfPreviewImpl(props: Props) {
 
     return () => {
       cancelled = true;
+      for (const task of tasks) {
+        try {
+          task.cancel?.();
+        } catch {
+          // ignore
+        }
+      }
+      tasks.clear();
     };
   }, [metas, visiblePageKey, visiblePageSet]);
 
@@ -522,7 +551,10 @@ function LatexPdfPreviewImpl(props: Props) {
 
     const meta = metas.find((m) => m.pageNumber === pageNumber) ?? null;
     const wrapper = wrapperRefByPage.current.get(pageNumber) ?? null;
-    if (!meta || !wrapper) {
+    const viewportReady = viewportRefByPage.current.has(pageNumber);
+    // Wait until the page has rendered at least once to avoid transient text-layer
+    // misalignment during mount/remount.
+    if (!meta || !wrapper || !viewportReady) {
       overlay.hide();
       return;
     }
