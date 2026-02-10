@@ -39,6 +39,8 @@ npm run dist:mac:fresh
 npm run dist:win:fresh
 # verify packaged artifacts before sharing
 npm run release:verify
+# copy only publishable installers to release/public
+npm run release:collect
 ```
 
 Artifacts are written to `release/`.
@@ -47,6 +49,7 @@ Notes:
 - These builds are unsigned by default (good for local testing, not public distribution).
 - Packaging requires network access on first run so `electron-builder` can fetch Electron binaries.
 - `release:verify` scans `dist/` + `release/` for secret-like tokens and local absolute paths.
+- `release:collect` stages only `.dmg` / `.exe` installers into `release/public`.
 
 ## Desktop data location
 

@@ -17,7 +17,8 @@
     "dist:win": "npm run build && electron-builder --win nsis",
     "dist:mac:fresh": "npm run clean:release && npm run dist:mac",
     "dist:win:fresh": "npm run clean:release && npm run dist:win",
-    "release:verify": "node scripts/release-verify.cjs"
+    "release:verify": "node scripts/release-verify.cjs",
+    "release:collect": "node scripts/release-collect.cjs"
   },
   "build": {
     "appId": "com.graphchatv1.desktop",
