@@ -41,6 +41,7 @@ export type PersistedWorkspaceSnapshot = {
     sidebarFontSizePx?: number;
     spawnEditNodeByDraw?: boolean;
     spawnInkNodeByDraw?: boolean;
+    wheelInputPreference?: 'auto' | 'mouse' | 'trackpad';
     inkSendCropEnabled?: boolean;
     inkSendCropPaddingPx?: number;
     inkSendDownscaleEnabled?: boolean;

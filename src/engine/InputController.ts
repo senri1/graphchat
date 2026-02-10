@@ -20,7 +20,7 @@ type PinchState = {
 export type InputControllerEvents = {
   onChange?: () => void;
   onInteractingChange?: (isInteracting: boolean) => void;
-  onTap?: (p: Vec2, info: { pointerType: string; pointerId: number }) => void;
+  onTap?: (p: Vec2, info: { pointerType: string; pointerId: number; wheelInput: WheelInputResolved }) => void;
   onPointerDown?: (p: Vec2, info: { pointerType: string; pointerId: number }) => PointerCaptureMode | null;
   onPointerMove?: (p: Vec2, info: { pointerType: string; pointerId: number }) => void;
   onPointerUp?: (p: Vec2, info: { pointerType: string; pointerId: number; wasDrag: boolean }) => void;
@@ -28,6 +28,14 @@ export type InputControllerEvents = {
 };
 
 export type PointerCaptureMode = 'node' | 'draw' | 'text';
+export type WheelInputPreference = 'auto' | 'mouse' | 'trackpad';
+export type WheelInputResolved = 'mouse' | 'trackpad' | 'unknown';
+
+function normalizeWheelInputPreference(value: unknown): WheelInputPreference {
+  if (value === 'mouse') return 'mouse';
+  if (value === 'trackpad') return 'trackpad';
+  return 'auto';
+}
 
 function isPrimaryButton(ev: PointerEvent): boolean {
   if (ev.pointerType === 'mouse') return ev.button === 0;
@@ -55,17 +63,24 @@ export class InputController {
   private capturedPointers = new Map<number, PointerCaptureMode>();
   private isInteracting = false;
   private wheelIdleTimeout: number | null = null;
+  private wheelInputPreference: WheelInputPreference = 'auto';
+  private lastAutoWheelInput: WheelInputResolved = 'unknown';
 
   constructor(
     el: HTMLElement,
     camera: Camera,
     events?: InputControllerEvents,
-    opts?: { enablePointerCapture?: boolean },
+    opts?: { enablePointerCapture?: boolean; wheelInputPreference?: WheelInputPreference },
   ) {
     this.el = el;
     this.camera = camera;
     this.events = events ?? {};
     this.enablePointerCapture = opts?.enablePointerCapture !== false;
+    this.wheelInputPreference = normalizeWheelInputPreference(opts?.wheelInputPreference);
+  }
+
+  setWheelInputPreference(next: WheelInputPreference): void {
+    this.wheelInputPreference = normalizeWheelInputPreference(next);
   }
 
   adoptPointer(opts: {
@@ -166,6 +181,53 @@ export class InputController {
   private getLocalPos(ev: PointerEvent | WheelEvent): Vec2 {
     const rect = this.el.getBoundingClientRect();
     return { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+  }
+
+  private classifyWheelInput(ev: WheelEvent): WheelInputResolved {
+    const absX = Math.abs(ev.deltaX);
+    const absY = Math.abs(ev.deltaY);
+    const dominant = Math.max(absX, absY);
+
+    if (ev.ctrlKey) return 'trackpad';
+    if (ev.deltaMode === WheelEvent.DOM_DELTA_LINE || ev.deltaMode === WheelEvent.DOM_DELTA_PAGE) return 'mouse';
+
+    const fractional = !Number.isInteger(ev.deltaX) || !Number.isInteger(ev.deltaY);
+    const hasHorizontal = absX > 0.01;
+    const verySmall = dominant > 0 && dominant < 14;
+    const stepped =
+      dominant > 0 &&
+      (Math.abs(dominant % 120) < 0.01 || Math.abs(dominant % 100) < 0.01 || Math.abs(dominant % 53) < 0.01);
+
+    if (fractional || hasHorizontal || verySmall) return 'trackpad';
+    if (stepped || dominant >= 60) return 'mouse';
+    return 'unknown';
+  }
+
+  private resolveWheelInput(ev: WheelEvent): WheelInputResolved {
+    if (this.wheelInputPreference === 'mouse') return 'mouse';
+    if (this.wheelInputPreference === 'trackpad') return 'trackpad';
+
+    const inferred = this.classifyWheelInput(ev);
+    if (inferred !== 'unknown') {
+      this.lastAutoWheelInput = inferred;
+      return inferred;
+    }
+    return this.lastAutoWheelInput === 'unknown' ? 'trackpad' : this.lastAutoWheelInput;
+  }
+
+  private resolveTapWheelInput(pointerType: string): WheelInputResolved {
+    const type = pointerType || 'mouse';
+    if (type !== 'mouse') return 'unknown';
+    if (this.wheelInputPreference === 'mouse') return 'mouse';
+    if (this.wheelInputPreference === 'trackpad') return 'trackpad';
+    return this.lastAutoWheelInput;
+  }
+
+  private normalizeWheelDeltaForZoom(delta: number, deltaMode: number): number {
+    if (!Number.isFinite(delta)) return 0;
+    if (deltaMode === WheelEvent.DOM_DELTA_LINE) return delta * 16;
+    if (deltaMode === WheelEvent.DOM_DELTA_PAGE) return delta * 160;
+    return delta;
   }
 
   private onContextMenu = (e: Event) => {
@@ -277,7 +339,11 @@ export class InputController {
 
     if (!wasPinching && !this.pinch && !didDrag && info) {
       const pos = this.getLocalPos(ev);
-      this.events.onTap?.(pos, { pointerType: info.type, pointerId: ev.pointerId });
+      this.events.onTap?.(pos, {
+        pointerType: info.type,
+        pointerId: ev.pointerId,
+        wheelInput: this.resolveTapWheelInput(info.type),
+      });
     }
 
     if (this.pointers.size === 0) {
@@ -346,9 +412,21 @@ export class InputController {
     this.markWheelActivity();
 
     const pos = this.getLocalPos(ev);
-    const isZoom = ev.ctrlKey;
+    const wheelInput = this.resolveWheelInput(ev);
 
-    if (isZoom) {
+    if (wheelInput === 'mouse') {
+      const primaryDelta = Math.abs(ev.deltaY) >= Math.abs(ev.deltaX) ? ev.deltaY : ev.deltaX;
+      const delta = this.normalizeWheelDeltaForZoom(primaryDelta, ev.deltaMode);
+      const base = 1.0016;
+      const factor = base ** (-delta);
+      const nextZoom = this.camera.zoom * (Number.isFinite(factor) ? factor : 1);
+      this.camera.setZoomAtScreen(nextZoom, pos);
+      this.events.onChange?.();
+      ev.preventDefault();
+      return;
+    }
+
+    if (ev.ctrlKey) {
       const base = 1.0016;
       const factor = base ** (-ev.deltaY);
       const nextZoom = this.camera.zoom * (Number.isFinite(factor) ? factor : 1);
@@ -358,10 +436,10 @@ export class InputController {
       return;
     }
 
-    const dx = ev.deltaX;
-    const dy = ev.deltaY;
-    if (dx || dy) {
-      this.camera.panByScreen(dx, dy);
+    const panX = ev.deltaX;
+    const panY = ev.deltaY;
+    if (panX || panY) {
+      this.camera.panByScreen(panX, panY);
       this.events.onChange?.();
     }
     ev.preventDefault();

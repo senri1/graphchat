@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import type { WheelInputPreference } from '../engine/InputController';
 import type { CanonicalizeLayoutAlgorithm } from '../engine/WorldEngine';
 import type { BackgroundLibraryItem } from '../model/backgrounds';
 import { FONT_FAMILY_OPTIONS, type FontFamilyKey } from '../ui/typography';
@@ -81,6 +82,8 @@ type Props = {
 
   debugHudVisible: boolean;
   onToggleDebugHudVisible: () => void;
+  wheelInputPreference: WheelInputPreference;
+  onChangeWheelInputPreference: (next: WheelInputPreference) => void;
   sendAllEnabled: boolean;
   onToggleSendAllEnabled: () => void;
   sendAllModelIds: string[];
@@ -1105,6 +1108,43 @@ export default function SettingsModal(props: Props) {
                         onClick={props.onToggleDebugHudVisible}
                       >
                         {props.debugHudVisible ? 'On' : 'Off'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="settingsCard">
+                  <div className="settingsRow settingsRow--stack">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Wheel + click behavior</div>
+                      <div className="settingsRow__desc">
+                        Auto keeps trackpad gestures and switches to mouse-style wheel zoom when detected. Mouse mode also enables empty-canvas click-to-recenter.
+                      </div>
+                    </div>
+                    <div className="settingsRow__actions">
+                      <button
+                        className={`settingsBtn ${props.wheelInputPreference === 'auto' ? 'settingsBtn--primary' : ''}`}
+                        type="button"
+                        aria-pressed={props.wheelInputPreference === 'auto'}
+                        onClick={() => props.onChangeWheelInputPreference('auto')}
+                      >
+                        Auto
+                      </button>
+                      <button
+                        className={`settingsBtn ${props.wheelInputPreference === 'mouse' ? 'settingsBtn--primary' : ''}`}
+                        type="button"
+                        aria-pressed={props.wheelInputPreference === 'mouse'}
+                        onClick={() => props.onChangeWheelInputPreference('mouse')}
+                      >
+                        Mouse
+                      </button>
+                      <button
+                        className={`settingsBtn ${props.wheelInputPreference === 'trackpad' ? 'settingsBtn--primary' : ''}`}
+                        type="button"
+                        aria-pressed={props.wheelInputPreference === 'trackpad'}
+                        onClick={() => props.onChangeWheelInputPreference('trackpad')}
+                      >
+                        Trackpad
                       </button>
                     </div>
                   </div>

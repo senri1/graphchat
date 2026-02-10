@@ -1,6 +1,6 @@
 import { chooseNiceStep, clamp } from './math';
 import { Camera } from './Camera';
-import { InputController, type PointerCaptureMode } from './InputController';
+import { InputController, type PointerCaptureMode, type WheelInputPreference, type WheelInputResolved } from './InputController';
 import { rectsIntersect, type Rect, type Vec2 } from './types';
 import { rasterizeHtmlToImage, type TextHitZone } from './raster/textRaster';
 import { renderMarkdownMath, renderMarkdownMathInline } from '../markdown/renderMarkdownMath';
@@ -2031,6 +2031,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.tool = next;
     this.requestRender();
     this.emitUiState();
+  }
+
+  setWheelInputPreference(preference: WheelInputPreference): void {
+    this.input.setWheelInputPreference(preference);
   }
 
   setAllowEditingAllTextNodes(enabled: boolean): void {
@@ -9682,7 +9686,13 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.requestRender();
   }
 
-  private handleTap(p: Vec2, info: { pointerType: string; pointerId: number }): void {
+  private recenterCameraOnWorldPoint(world: Vec2): void {
+    const z = Math.max(0.001, this.camera.zoom || 1);
+    this.camera.x = world.x - (this.cssW * 0.5) / z;
+    this.camera.y = world.y - (this.cssH * 0.5) / z;
+  }
+
+  private handleTap(p: Vec2, info: { pointerType: string; pointerId: number; wheelInput: WheelInputResolved }): void {
     if (this.suppressTapPointerIds.has(info.pointerId)) {
       this.suppressTapPointerIds.delete(info.pointerId);
       return;
@@ -9919,9 +9929,11 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const changed = nextSelected !== this.selectedNodeId;
     this.selectedNodeId = nextSelected;
     if (hit) this.bringNodeToFront(hit.id);
-    if (changed) {
+    const shouldMouseClickRecenter = !hit && info.pointerType === 'mouse' && info.wheelInput === 'mouse';
+    if (shouldMouseClickRecenter) this.recenterCameraOnWorldPoint(world);
+    if (changed || shouldMouseClickRecenter) {
       this.requestRender();
-      this.emitUiState();
+      if (changed) this.emitUiState();
     }
   }
 

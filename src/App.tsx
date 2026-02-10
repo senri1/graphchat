@@ -9,6 +9,7 @@ import {
   type WorldEngineDebug,
   type WorldEngineUiState,
 } from './engine/WorldEngine';
+import type { WheelInputPreference } from './engine/InputController';
 import type { Rect } from './engine/types';
 import ChatComposer from './components/ChatComposer';
 import NodeHeaderMenu from './components/NodeHeaderMenu';
@@ -215,6 +216,7 @@ const DEFAULT_DEBUG_HUD_VISIBLE = false;
 const DEFAULT_ALLOW_EDITING_ALL_TEXT_NODES = false;
 const DEFAULT_SPAWN_EDIT_NODE_BY_DRAW = false;
 const DEFAULT_SPAWN_INK_NODE_BY_DRAW = false;
+const DEFAULT_WHEEL_INPUT_PREFERENCE: WheelInputPreference = 'auto';
 const DEFAULT_GLASS_NODES_ENABLED = true;
 const DEFAULT_GLASS_BLUR_BACKEND: GlassBlurBackend = 'webgl';
 const DEFAULT_GLASS_BLUR_CSS_PX_WEBGL = 23;
@@ -275,6 +277,12 @@ function normalizeSendAllModelIds(value: unknown, allModelIds: string[]): string
   }
 
   return out;
+}
+
+function normalizeWheelInputPreference(value: unknown, fallback: WheelInputPreference): WheelInputPreference {
+  if (value === 'mouse') return 'mouse';
+  if (value === 'trackpad') return 'trackpad';
+  return fallback;
 }
 
 function fileSignature(file: File): string {
@@ -1310,6 +1318,7 @@ export default function App() {
       sendAllComposerEnabled: boolean;
       sendAllModelIds: string[];
       cleanupChatFoldersOnDelete: boolean;
+      wheelInputPreference: WheelInputPreference;
     };
     chatStates: Map<string, WorldEngineChatState>;
     chatMeta: Map<string, ChatRuntimeMeta>;
@@ -1377,6 +1386,8 @@ export default function App() {
   const spawnEditNodeByDrawRef = useRef<boolean>(spawnEditNodeByDraw);
   const [spawnInkNodeByDraw, setSpawnInkNodeByDraw] = useState(DEFAULT_SPAWN_INK_NODE_BY_DRAW);
   const spawnInkNodeByDrawRef = useRef<boolean>(spawnInkNodeByDraw);
+  const [wheelInputPreference, setWheelInputPreference] = useState<WheelInputPreference>(DEFAULT_WHEEL_INPUT_PREFERENCE);
+  const wheelInputPreferenceRef = useRef<WheelInputPreference>(wheelInputPreference);
   const [inkSendCropEnabled, setInkSendCropEnabled] = useState(DEFAULT_INK_SEND_CROP_ENABLED);
   const inkSendCropEnabledRef = useRef<boolean>(inkSendCropEnabled);
   const [inkSendCropPaddingPx, setInkSendCropPaddingPx] = useState<number>(24);
@@ -1622,6 +1633,11 @@ export default function App() {
   useEffect(() => {
     spawnInkNodeByDrawRef.current = spawnInkNodeByDraw;
   }, [spawnInkNodeByDraw]);
+
+  useEffect(() => {
+    wheelInputPreferenceRef.current = wheelInputPreference;
+    engineRef.current?.setWheelInputPreference(wheelInputPreference);
+  }, [wheelInputPreference]);
 
   useEffect(() => {
     inkSendCropEnabledRef.current = inkSendCropEnabled;
@@ -1933,6 +1949,7 @@ export default function App() {
               sidebarFontSizePx: Math.round(clampNumber(sidebarFontSizePxRef.current, 8, 24, DEFAULT_SIDEBAR_FONT_SIZE_PX)),
               spawnEditNodeByDraw: Boolean(spawnEditNodeByDrawRef.current),
               spawnInkNodeByDraw: Boolean(spawnInkNodeByDrawRef.current),
+              wheelInputPreference: wheelInputPreferenceRef.current,
               inkSendCropEnabled: Boolean(inkSendCropEnabledRef.current),
               inkSendCropPaddingPx: Math.round(clampNumber(inkSendCropPaddingPxRef.current, 0, 200, 24)),
               inkSendDownscaleEnabled: Boolean(inkSendDownscaleEnabledRef.current),
@@ -4016,6 +4033,7 @@ export default function App() {
     engine.setAllowEditingAllTextNodes(allowEditingAllTextNodesRef.current);
     engine.setSpawnEditNodeByDrawEnabled(spawnEditNodeByDrawRef.current);
     engine.setSpawnInkNodeByDrawEnabled(spawnInkNodeByDrawRef.current);
+    engine.setWheelInputPreference(wheelInputPreferenceRef.current);
     engine.setReplySpawnKind(replySpawnKindRef.current);
     lastEngineInteractingRef.current = null;
     engine.onDebug = (next) => {
@@ -4564,8 +4582,13 @@ export default function App() {
     setSidebarFontSizePx(sidebarFontSizePxRef.current);
     spawnEditNodeByDrawRef.current = Boolean(visual.spawnEditNodeByDraw);
     spawnInkNodeByDrawRef.current = Boolean(visual.spawnInkNodeByDraw);
+    wheelInputPreferenceRef.current = normalizeWheelInputPreference(
+      visual.wheelInputPreference,
+      DEFAULT_WHEEL_INPUT_PREFERENCE,
+    );
     setSpawnEditNodeByDraw(spawnEditNodeByDrawRef.current);
     setSpawnInkNodeByDraw(spawnInkNodeByDrawRef.current);
+    setWheelInputPreference(wheelInputPreferenceRef.current);
     inkSendCropEnabledRef.current = Boolean(visual.inkSendCropEnabled);
     inkSendCropPaddingPxRef.current = clampNumber(visual.inkSendCropPaddingPx, 0, 200, 24);
     inkSendDownscaleEnabledRef.current = Boolean(visual.inkSendDownscaleEnabled);
@@ -4620,6 +4643,7 @@ export default function App() {
       engine.setNodeTextFontSizePx(nodeFontSizePxRef.current);
       engine.setSpawnEditNodeByDrawEnabled(spawnEditNodeByDrawRef.current);
       engine.setSpawnInkNodeByDrawEnabled(spawnInkNodeByDrawRef.current);
+      engine.setWheelInputPreference(wheelInputPreferenceRef.current);
       engine.setReplySpawnKind(replySpawnKindRef.current);
       engine.cancelEditing();
       const nextState = chatStatesRef.current.get(resolvedActive) ?? createEmptyChatState();
@@ -4911,6 +4935,10 @@ export default function App() {
           typeof (visualSrc as any)?.spawnInkNodeByDraw === 'boolean'
             ? Boolean((visualSrc as any).spawnInkNodeByDraw)
             : DEFAULT_SPAWN_INK_NODE_BY_DRAW,
+        wheelInputPreference: normalizeWheelInputPreference(
+          (visualSrc as any)?.wheelInputPreference,
+          DEFAULT_WHEEL_INPUT_PREFERENCE,
+        ),
         inkSendCropEnabled:
           typeof (visualSrc as any)?.inkSendCropEnabled === 'boolean'
             ? Boolean((visualSrc as any).inkSendCropEnabled)
@@ -8152,6 +8180,14 @@ export default function App() {
           }}
           debugHudVisible={debugHudVisible}
           onToggleDebugHudVisible={() => setDebugHudVisible((prev) => !prev)}
+          wheelInputPreference={wheelInputPreference}
+          onChangeWheelInputPreference={(raw) => {
+            const next = normalizeWheelInputPreference(raw, DEFAULT_WHEEL_INPUT_PREFERENCE);
+            wheelInputPreferenceRef.current = next;
+            setWheelInputPreference(next);
+            engineRef.current?.setWheelInputPreference(next);
+            schedulePersistSoon();
+          }}
           sendAllEnabled={sendAllEnabled}
           onToggleSendAllEnabled={() => {
             const next = !sendAllEnabledRef.current;
@@ -8353,6 +8389,8 @@ export default function App() {
             setSpawnEditNodeByDraw(DEFAULT_SPAWN_EDIT_NODE_BY_DRAW);
             spawnInkNodeByDrawRef.current = DEFAULT_SPAWN_INK_NODE_BY_DRAW;
             setSpawnInkNodeByDraw(DEFAULT_SPAWN_INK_NODE_BY_DRAW);
+            wheelInputPreferenceRef.current = DEFAULT_WHEEL_INPUT_PREFERENCE;
+            setWheelInputPreference(DEFAULT_WHEEL_INPUT_PREFERENCE);
             inkSendCropEnabledRef.current = DEFAULT_INK_SEND_CROP_ENABLED;
             setInkSendCropEnabled(DEFAULT_INK_SEND_CROP_ENABLED);
             inkSendCropPaddingPxRef.current = 24;
@@ -8437,6 +8475,7 @@ export default function App() {
               engine.setAllowEditingAllTextNodes(DEFAULT_ALLOW_EDITING_ALL_TEXT_NODES);
               engine.setSpawnEditNodeByDrawEnabled(DEFAULT_SPAWN_EDIT_NODE_BY_DRAW);
               engine.setSpawnInkNodeByDrawEnabled(DEFAULT_SPAWN_INK_NODE_BY_DRAW);
+              engine.setWheelInputPreference(DEFAULT_WHEEL_INPUT_PREFERENCE);
               engine.setNodeTextFontFamily(fontFamilyCss(DEFAULT_NODE_FONT_FAMILY));
               engine.setNodeTextFontSizePx(DEFAULT_NODE_FONT_SIZE_PX);
               setUi(engine.getUiState());
