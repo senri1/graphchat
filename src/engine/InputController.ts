@@ -50,6 +50,9 @@ function getTouchPointerIds(pointers: Map<number, PointerInfo>): number[] {
   return ids;
 }
 
+const WHEEL_ZOOM_BASE = 1.0016;
+const TRACKPAD_PINCH_ZOOM_SENSITIVITY = 9;
+
 export class InputController {
   private readonly el: HTMLElement;
   private readonly camera: Camera;
@@ -417,8 +420,7 @@ export class InputController {
     if (wheelInput === 'mouse') {
       const primaryDelta = Math.abs(ev.deltaY) >= Math.abs(ev.deltaX) ? ev.deltaY : ev.deltaX;
       const delta = this.normalizeWheelDeltaForZoom(primaryDelta, ev.deltaMode);
-      const base = 1.0016;
-      const factor = base ** (-delta);
+      const factor = WHEEL_ZOOM_BASE ** (-delta);
       const nextZoom = this.camera.zoom * (Number.isFinite(factor) ? factor : 1);
       this.camera.setZoomAtScreen(nextZoom, pos);
       this.events.onChange?.();
@@ -427,8 +429,7 @@ export class InputController {
     }
 
     if (ev.ctrlKey) {
-      const base = 1.0016;
-      const factor = base ** (-ev.deltaY);
+      const factor = WHEEL_ZOOM_BASE ** (-(ev.deltaY * TRACKPAD_PINCH_ZOOM_SENSITIVITY));
       const nextZoom = this.camera.zoom * (Number.isFinite(factor) ? factor : 1);
       this.camera.setZoomAtScreen(nextZoom, pos);
       this.events.onChange?.();
