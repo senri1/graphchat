@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { WheelInputPreference } from '../engine/InputController';
 import type { CanonicalizeLayoutAlgorithm } from '../engine/WorldEngine';
 import type { BackgroundLibraryItem } from '../model/backgrounds';
@@ -136,13 +136,21 @@ export default function SettingsModal(props: Props) {
   const onClose = props.onClose;
   const [renamingBackgroundId, setRenamingBackgroundId] = useState<string | null>(null);
   const [renameBackgroundDraft, setRenameBackgroundDraft] = useState('');
-  const [apiKeyDrafts, setApiKeyDrafts] = useState<RuntimeApiKeys>(() => ({ ...props.runtimeApiKeys }));
+  const apiKeyDraftsRef = useRef<RuntimeApiKeys>({ ...props.runtimeApiKeys });
+  const apiKeyInputRefs = useRef<Partial<Record<RuntimeApiProvider, HTMLInputElement | null>>>({});
   const backgroundThumbUrls = useAttachmentObjectUrls(
     open && props.activePanel === 'appearance' ? (props.backgroundLibrary ?? []).map((b) => b.storageKey) : [],
   );
 
   useEffect(() => {
-    setApiKeyDrafts({ ...props.runtimeApiKeys });
+    const next = { ...props.runtimeApiKeys };
+    apiKeyDraftsRef.current = next;
+    (Object.keys(next) as RuntimeApiProvider[]).forEach((provider) => {
+      const input = apiKeyInputRefs.current[provider];
+      if (input && input.value !== next[provider]) {
+        input.value = next[provider];
+      }
+    });
   }, [props.runtimeApiKeys]);
 
   const beginRenameBackground = (bg: BackgroundLibraryItem) => {
@@ -721,7 +729,7 @@ export default function SettingsModal(props: Props) {
 
                   {apiKeyProviders.map((provider) => {
                     const savedValue = String(props.runtimeApiKeys?.[provider.id] ?? '').trim();
-                    const draftValue = String(apiKeyDrafts?.[provider.id] ?? '');
+                    const draftValue = String(apiKeyDraftsRef.current?.[provider.id] ?? '');
                     const hasSaved = savedValue.length > 0;
                     return (
                       <div key={provider.id} className="settingsRow settingsRow--stack">
@@ -733,24 +741,31 @@ export default function SettingsModal(props: Props) {
                         </div>
                         <div className="settingsRow__actions settingsRow__actions--grow">
                           <input
+                            ref={(node) => {
+                              apiKeyInputRefs.current[provider.id] = node;
+                            }}
                             className="settingsTextInput settingsTextInput--apiKey"
                             type="password"
                             autoComplete="off"
                             spellCheck={false}
-                            value={draftValue}
+                            defaultValue={draftValue}
                             placeholder={provider.placeholder}
                             aria-label={`${provider.label} API key`}
-                            onChange={(e) =>
-                              setApiKeyDrafts((prev) => ({
-                                ...(prev ?? props.runtimeApiKeys),
-                                [provider.id]: e.currentTarget.value,
-                              }))
-                            }
+                            onChange={(e) => {
+                              const nextValue = e.currentTarget.value;
+                              apiKeyDraftsRef.current = {
+                                ...apiKeyDraftsRef.current,
+                                [provider.id]: nextValue,
+                              };
+                            }}
                           />
                           <button
                             className="settingsBtn"
                             type="button"
-                            onClick={() => props.onSaveRuntimeApiKey(provider.id, draftValue)}
+                            onClick={() => {
+                              const currentDraft = String(apiKeyDraftsRef.current?.[provider.id] ?? '');
+                              props.onSaveRuntimeApiKey(provider.id, currentDraft);
+                            }}
                           >
                             Save
                           </button>
@@ -759,10 +774,12 @@ export default function SettingsModal(props: Props) {
                             type="button"
                             disabled={!hasSaved}
                             onClick={() => {
-                              setApiKeyDrafts((prev) => ({
-                                ...(prev ?? props.runtimeApiKeys),
+                              apiKeyDraftsRef.current = {
+                                ...apiKeyDraftsRef.current,
                                 [provider.id]: '',
-                              }));
+                              };
+                              const input = apiKeyInputRefs.current[provider.id];
+                              if (input) input.value = '';
                               props.onClearRuntimeApiKey(provider.id);
                             }}
                           >
