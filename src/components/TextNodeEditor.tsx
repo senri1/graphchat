@@ -84,6 +84,7 @@ export default function TextNodeEditor(props: Props) {
   const [previewEnabled, setPreviewEnabled] = useState(false);
   const [collapsedPrefaceContexts, setCollapsedPrefaceContexts] = useState<Record<number, boolean>>(() => userPreface?.collapsedPrefaceContexts ?? {});
   const taRef = useRef<HTMLTextAreaElement | null>(null);
+  const previewRef = useRef<HTMLDivElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const anchorRectRef = useRef<Rect | null>(anchorRect ?? null);
   const committedRef = useRef(false);
@@ -232,6 +233,64 @@ export default function TextNodeEditor(props: Props) {
       return { x: cx, y: cy };
     })();
     const base = client ?? fallbackClient;
+
+    const menuW = 220;
+    const menuH = 260;
+    const pad = 8;
+    const left = Math.round(Math.min(Math.max(pad, base.x + 10), Math.max(pad, window.innerWidth - menuW - pad)));
+    const top = Math.round(Math.min(Math.max(pad, base.y + 10), Math.max(pad, window.innerHeight - menuH - pad)));
+    setSourceSelectionMenu({
+      text: rawText,
+      x: left,
+      y: top,
+      client: { x: Number(base.x), y: Number(base.y) },
+    });
+  }, []);
+
+  const openSourceSelectionMenuFromPreviewSelection = useCallback((client?: { x: number; y: number } | null) => {
+    const root = previewRef.current;
+    if (!root || typeof window === 'undefined') {
+      setSourceSelectionMenu(null);
+      return;
+    }
+
+    const selection = window.getSelection?.() ?? null;
+    if (!selection || selection.rangeCount === 0) {
+      setSourceSelectionMenu(null);
+      return;
+    }
+
+    const rawText = String(selection.toString() ?? '');
+    if (!rawText.trim()) {
+      setSourceSelectionMenu(null);
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+    const container = range.commonAncestorContainer;
+    const host = container.nodeType === Node.TEXT_NODE ? container.parentNode : container;
+    if (!host || !root.contains(host)) {
+      setSourceSelectionMenu(null);
+      return;
+    }
+
+    const fallbackClient = (() => {
+      const r = root.getBoundingClientRect();
+      const cx = r.left + Math.min(Math.max(18, r.width * 0.5), Math.max(18, r.width - 18));
+      const cy = r.top + Math.min(Math.max(18, r.height * 0.28), Math.max(18, r.height - 18));
+      return { x: cx, y: cy };
+    })();
+    const rangeClient = (() => {
+      try {
+        const rects = Array.from(range.getClientRects());
+        const rect = (rects[rects.length - 1] ?? range.getBoundingClientRect()) || null;
+        if (!rect) return null;
+        return { x: Number(rect.right), y: Number(rect.bottom) };
+      } catch {
+        return null;
+      }
+    })();
+    const base = client ?? rangeClient ?? fallbackClient;
 
     const menuW = 220;
     const menuH = 260;
@@ -1115,7 +1174,13 @@ export default function TextNodeEditor(props: Props) {
 
         {previewEnabled ? (
           <div className="editor__pane editor__pane--preview">
-            <div className="editor__preview">
+            <div
+              ref={previewRef}
+              className="editor__preview"
+              onPointerUp={(e) => {
+                openSourceSelectionMenuFromPreviewSelection({ x: Number(e.clientX), y: Number(e.clientY) });
+              }}
+            >
               {prefaceEl}
               <div className="editor__previewScaled">
                 {(deferredDraft ?? '').trim().length > 0 ? (

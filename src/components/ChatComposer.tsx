@@ -224,6 +224,13 @@ export default function ChatComposer(props: Props) {
   const onChangeInkStrokesRef = useRef(onChangeInkStrokes);
   const inkStrokesRef = useRef<InkStroke[]>(Array.isArray(inkStrokes) ? inkStrokes : []);
   const [previewEnabled, setPreviewEnabled] = useState(false);
+  const previewRef = useRef<HTMLDivElement | null>(null);
+  const previewSelectionMenuRef = useRef<HTMLDivElement | null>(null);
+  const [previewSelectionMenu, setPreviewSelectionMenu] = useState<{
+    text: string;
+    x: number;
+    y: number;
+  } | null>(null);
   const deferredValue = useDeferredValue(value);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const dockRef = useRef<HTMLDivElement | null>(null);
@@ -365,6 +372,94 @@ export default function ChatComposer(props: Props) {
 
   const closeMenus = useCallback(() => {
     setModelMenuOpen(false);
+    setPreviewSelectionMenu(null);
+  }, []);
+
+  const closePreviewSelectionMenu = useCallback(() => {
+    setPreviewSelectionMenu(null);
+  }, []);
+
+  const copySelectionText = useCallback(async (text: string): Promise<void> => {
+    const t = String(text ?? '');
+    if (!t.trim()) return;
+    try {
+      await navigator.clipboard.writeText(t);
+      return;
+    } catch {
+      // ignore
+    }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = t;
+      ta.style.position = 'fixed';
+      ta.style.left = '-99999px';
+      ta.style.top = '0';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const openPreviewSelectionMenuFromSelection = useCallback((client?: { x: number; y: number } | null) => {
+    const root = previewRef.current;
+    if (!root || typeof window === 'undefined') {
+      setPreviewSelectionMenu(null);
+      return;
+    }
+
+    const selection = window.getSelection?.() ?? null;
+    if (!selection || selection.rangeCount === 0) {
+      setPreviewSelectionMenu(null);
+      return;
+    }
+
+    const rawText = String(selection.toString() ?? '');
+    if (!rawText.trim()) {
+      setPreviewSelectionMenu(null);
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+    const container = range.commonAncestorContainer;
+    const host = container.nodeType === Node.TEXT_NODE ? container.parentNode : container;
+    if (!host || !root.contains(host)) {
+      setPreviewSelectionMenu(null);
+      return;
+    }
+
+    const fallbackClient = (() => {
+      const r = root.getBoundingClientRect();
+      const cx = r.left + Math.min(Math.max(18, r.width * 0.5), Math.max(18, r.width - 18));
+      const cy = r.top + Math.min(Math.max(18, r.height * 0.28), Math.max(18, r.height - 18));
+      return { x: cx, y: cy };
+    })();
+    const rangeClient = (() => {
+      try {
+        const rects = Array.from(range.getClientRects());
+        const rect = (rects[rects.length - 1] ?? range.getBoundingClientRect()) || null;
+        if (!rect) return null;
+        return { x: Number(rect.right), y: Number(rect.bottom) };
+      } catch {
+        return null;
+      }
+    })();
+    const base = client ?? rangeClient ?? fallbackClient;
+
+    const menuW = 220;
+    const menuH = 108;
+    const pad = 8;
+    const left = Math.round(Math.min(Math.max(pad, base.x + 10), Math.max(pad, window.innerWidth - menuW - pad)));
+    const top = Math.round(Math.min(Math.max(pad, base.y + 10), Math.max(pad, window.innerHeight - menuH - pad)));
+    setPreviewSelectionMenu({
+      text: rawText,
+      x: left,
+      y: top,
+    });
   }, []);
 
   const updateModelMenuPosition = useCallback(() => {
@@ -449,6 +544,31 @@ export default function ChatComposer(props: Props) {
     modelMenuOpen,
     updateModelMenuPosition,
   ]);
+
+  useEffect(() => {
+    if (!previewSelectionMenu) return;
+    const onPointerDownCapture = (e: Event) => {
+      const target = e.target as Node | null;
+      if (target && previewSelectionMenuRef.current?.contains(target)) return;
+      setPreviewSelectionMenu(null);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      setPreviewSelectionMenu(null);
+    };
+    document.addEventListener('pointerdown', onPointerDownCapture, true);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDownCapture, true);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [previewSelectionMenu]);
+
+  useEffect(() => {
+    if (mode === 'text' && previewEnabled) return;
+    setPreviewSelectionMenu(null);
+  }, [mode, previewEnabled]);
 
   useEffect(() => {
     if (!replyPreview) return;
@@ -1301,7 +1421,13 @@ export default function ChatComposer(props: Props) {
             )}
           </div>
           {mode === 'text' && previewEnabled ? (
-            <div className="composer__preview">
+            <div
+              ref={previewRef}
+              className="composer__preview"
+              onPointerUp={(e) => {
+                openPreviewSelectionMenuFromSelection({ x: Number(e.clientX), y: Number(e.clientY) });
+              }}
+            >
               {(deferredValue ?? '').trim().length > 0 ? (
                 <MarkdownMath source={deferredValue} className="mdx" />
               ) : (
@@ -1412,7 +1538,35 @@ export default function ChatComposer(props: Props) {
             Send
           </button>
         </div>
-      </div>
+        </div>
+
+      {typeof document !== 'undefined' && previewSelectionMenu
+        ? createPortal(
+            <div
+              ref={previewSelectionMenuRef}
+              className="gc-selectionMenu"
+              style={{
+                position: 'fixed',
+                left: `${previewSelectionMenu.x}px`,
+                top: `${previewSelectionMenu.y}px`,
+                zIndex: 1000,
+                pointerEvents: 'auto',
+              }}
+            >
+              <button
+                className="gc-selectionMenu__btn"
+                type="button"
+                onClick={() => {
+                  void copySelectionText(previewSelectionMenu.text);
+                  closePreviewSelectionMenu();
+                }}
+              >
+                Copy
+              </button>
+            </div>,
+            document.body,
+          )
+        : null}
 
       {typeof document !== 'undefined' && modelMenuOpen && modelMenuPos
         ? createPortal(
