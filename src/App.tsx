@@ -5690,6 +5690,30 @@ export default function App() {
     setRuntimeApiKeys(getRuntimeApiKeys());
   }, [settingsOpen, settingsPanel]);
 
+  const syncActiveEditingDraftToEngine = (
+    engine: WorldEngine,
+    opts?: { nodeId?: string | null; draft?: string | null },
+  ): void => {
+    const uiState = engine.getUiState();
+    const editingNodeId = typeof uiState.editingNodeId === 'string' ? uiState.editingNodeId.trim() : '';
+    if (!editingNodeId) return;
+
+    const overrideNodeId = typeof opts?.nodeId === 'string' ? opts.nodeId.trim() : '';
+    let nextDraft: string | null = null;
+
+    if (overrideNodeId && overrideNodeId === editingNodeId && typeof opts?.draft === 'string') {
+      nextDraft = opts.draft;
+    } else {
+      const liveDraft = editingDraftByNodeIdRef.current.get(editingNodeId);
+      if (typeof liveDraft === 'string') nextDraft = liveDraft;
+      else if (typeof uiState.editingText === 'string') nextDraft = uiState.editingText;
+    }
+
+    if (typeof nextDraft === 'string') {
+      engine.setEditingText(nextDraft);
+    }
+  };
+
   const saveRuntimeProviderApiKey = (provider: RuntimeApiProvider, value: string) => {
     const next = setRuntimeApiKey(provider, value);
     setRuntimeApiKeys(next);
@@ -5735,6 +5759,7 @@ export default function App() {
   const sendTurn = (args: SendTurnArgs): { chatId: string; userNodeId: string; assistantNodeId: string } | null => {
     const engine = engineRef.current;
     if (!engine) return null;
+    syncActiveEditingDraftToEngine(engine);
 
     const raw = String(args.userText ?? '');
 
@@ -5985,6 +6010,7 @@ export default function App() {
   }): { chatId: string; userNodeId: string; assistantNodeId: string } | null => {
     const engine = engineRef.current;
     if (!engine) return null;
+    syncActiveEditingDraftToEngine(engine);
 
     const rawStrokes = Array.isArray(args.strokes) ? args.strokes : [];
     if (rawStrokes.length === 0) {
@@ -6256,6 +6282,10 @@ export default function App() {
   }): { chatId: string; assistantNodeId: string } | null => {
     const engine = engineRef.current;
     if (!engine) return null;
+    syncActiveEditingDraftToEngine(engine, {
+      nodeId: args.userNodeId,
+      draft: args.liveDraftOverride ?? null,
+    });
 
     const userNodeId = String(args.userNodeId ?? '').trim();
     if (!userNodeId) return null;
@@ -6275,17 +6305,6 @@ export default function App() {
       const label = typeof info?.label === 'string' ? info.label.trim() : '';
       return label || 'Assistant';
     })();
-
-    const activeEditingNodeId = engine.getUiState().editingNodeId;
-    if (activeEditingNodeId === userNodeId) {
-      const liveDraft =
-        typeof args.liveDraftOverride === 'string'
-          ? args.liveDraftOverride
-          : editingDraftByNodeIdRef.current.get(userNodeId);
-      if (typeof liveDraft === 'string') {
-        engine.setEditingText(liveDraft);
-      }
-    }
 
     const preSnapshot = engine.exportChatState();
     const leafNode = preSnapshot.nodes.find((n) => n.id === userNodeId) ?? null;
