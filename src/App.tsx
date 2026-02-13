@@ -4406,6 +4406,10 @@ export default function App() {
       }
 
       if (e.key === 'Backspace' || e.key === 'Delete') {
+        if (e.key === 'Backspace' && !engineRef.current.shouldDeleteSelectedNodeOnBackspace()) {
+          e.preventDefault();
+          return;
+        }
         engineRef.current.deleteSelectedNode();
         attachmentsGcDirtyRef.current = true;
         schedulePersistSoon();

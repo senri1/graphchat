@@ -4673,11 +4673,23 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return this.canEditTextNode(node);
   }
 
-  private canEditTextNode(node: TextNode): boolean {
-    if (this.allowEditingAllTextNodes) return true;
+  private isIntrinsicEditTextNode(node: TextNode): boolean {
     if (node.isEditNode) return true;
     // Back-compat: notes created before we tagged them use an `n...` id prefix.
     return typeof node.id === 'string' && node.id.startsWith('n');
+  }
+
+  private canEditTextNode(node: TextNode): boolean {
+    if (this.allowEditingAllTextNodes) return true;
+    return this.isIntrinsicEditTextNode(node);
+  }
+
+  shouldDeleteSelectedNodeOnBackspace(): boolean {
+    const nodeId = this.selectedNodeId;
+    if (!nodeId) return false;
+    const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === nodeId) ?? null;
+    if (!node) return true;
+    return !this.isIntrinsicEditTextNode(node);
   }
 
   private tryBeginEditingNode(nodeId: string): boolean {
