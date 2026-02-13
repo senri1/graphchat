@@ -6251,6 +6251,7 @@ export default function App() {
     userNodeId: string;
     modelIdOverride?: string | null;
     assistantRect?: Rect | null;
+    liveDraftOverride?: string | null;
     clearComposerText?: boolean;
   }): { chatId: string; assistantNodeId: string } | null => {
     const engine = engineRef.current;
@@ -6277,7 +6278,10 @@ export default function App() {
 
     const activeEditingNodeId = engine.getUiState().editingNodeId;
     if (activeEditingNodeId === userNodeId) {
-      const liveDraft = editingDraftByNodeIdRef.current.get(userNodeId);
+      const liveDraft =
+        typeof args.liveDraftOverride === 'string'
+          ? args.liveDraftOverride
+          : editingDraftByNodeIdRef.current.get(userNodeId);
       if (typeof liveDraft === 'string') {
         engine.setEditingText(liveDraft);
       }
@@ -7470,6 +7474,7 @@ export default function App() {
                 const id = String(ui.editingNodeId ?? '').trim();
                 if (!id) return;
                 const engine = engineRef.current;
+                editingDraftByNodeIdRef.current.set(id, text);
                 engine?.setEditingText(text);
                 let assistantRect: Rect | null = null;
                 const placementClient = opts?.placementClient;
@@ -7484,7 +7489,46 @@ export default function App() {
                   userNodeId: id,
                   modelIdOverride: opts?.modelIdOverride ?? null,
                   assistantRect,
+                  liveDraftOverride: text,
                   clearComposerText: false,
+                });
+              }}
+              onReplyToSelection={(selectionText) => {
+                const id = String(ui.editingNodeId ?? '').trim();
+                if (!id) return;
+                const engine = engineRef.current;
+                if (!engine) return;
+                engine.onRequestReplyToSelection?.(id, selectionText);
+              }}
+              onAddToContextSelection={(selectionText) => {
+                const id = String(ui.editingNodeId ?? '').trim();
+                if (!id) return;
+                const engine = engineRef.current;
+                if (!engine) return;
+                engine.onRequestAddToContextSelection?.(id, selectionText);
+              }}
+              onAnnotateTextSelection={(payload) => {
+                const id = String(ui.editingNodeId ?? '').trim();
+                if (!id) return;
+                const engine = engineRef.current;
+                if (!engine) return;
+                engine.requestAnnotateTextNodeSelection({
+                  textNodeId: id,
+                  selectionText: payload.selectionText,
+                  kind: 'text',
+                  client: payload.client ?? null,
+                });
+              }}
+              onAnnotateInkSelection={(payload) => {
+                const id = String(ui.editingNodeId ?? '').trim();
+                if (!id) return;
+                const engine = engineRef.current;
+                if (!engine) return;
+                engine.requestAnnotateTextNodeSelection({
+                  textNodeId: id,
+                  selectionText: payload.selectionText,
+                  kind: 'ink',
+                  client: payload.client ?? null,
                 });
               }}
               onReply={(text) => {

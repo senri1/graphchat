@@ -8,6 +8,7 @@ import type { ModelInfo } from '../llm/registry';
 type TextNodeUserPreface = { replyTo: string; contexts: string[]; collapsedPrefaceContexts: Record<number, boolean> };
 type SendPlacementClientPoint = { clientX: number; clientY: number };
 type SendOptions = { modelIdOverride?: string | null; placementClient?: SendPlacementClientPoint | null };
+type SelectionSourceKind = 'source';
 
 type Props = {
   nodeId: string;
@@ -30,6 +31,18 @@ type Props = {
   onCancel: () => void;
   onSend: (text: string, opts?: SendOptions) => void;
   onReply?: (text: string) => void;
+  onReplyToSelection?: (selectionText: string) => void;
+  onAddToContextSelection?: (selectionText: string) => void;
+  onAnnotateTextSelection?: (payload: {
+    selectionText: string;
+    source: SelectionSourceKind;
+    client?: { x: number; y: number } | null;
+  }) => void;
+  onAnnotateInkSelection?: (payload: {
+    selectionText: string;
+    source: SelectionSourceKind;
+    client?: { x: number; y: number } | null;
+  }) => void;
   onSelectModel?: (modelId: string) => void;
   onSendPreview?: (opts?: { placementClient?: SendPlacementClientPoint | null }) => void;
 };
@@ -39,7 +52,34 @@ type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
 type MenuPos = { left: number; top?: number; bottom?: number; maxHeight: number };
 
 export default function TextNodeEditor(props: Props) {
-  const { nodeId, title, initialValue, userPreface, modelId, modelOptions, anchorRect, getScreenRect, getZoom, viewport, zoom, baseFontSizePx, onDraftChange, onResize, onResizeEnd, onTogglePrefaceContext, onCommit, onCancel, onSend, onReply, onSelectModel, onSendPreview } = props;
+  const {
+    nodeId,
+    title,
+    initialValue,
+    userPreface,
+    modelId,
+    modelOptions,
+    anchorRect,
+    getScreenRect,
+    getZoom,
+    viewport,
+    zoom,
+    baseFontSizePx,
+    onDraftChange,
+    onResize,
+    onResizeEnd,
+    onTogglePrefaceContext,
+    onCommit,
+    onCancel,
+    onSend,
+    onReply,
+    onReplyToSelection,
+    onAddToContextSelection,
+    onAnnotateTextSelection,
+    onAnnotateInkSelection,
+    onSelectModel,
+    onSendPreview,
+  } = props;
   const [draft, setDraft] = useState(() => initialValue ?? '');
   const [previewEnabled, setPreviewEnabled] = useState(false);
   const [collapsedPrefaceContexts, setCollapsedPrefaceContexts] = useState<Record<number, boolean>>(() => userPreface?.collapsedPrefaceContexts ?? {});
@@ -54,6 +94,10 @@ export default function TextNodeEditor(props: Props) {
   const onResizeEndRef = useRef(onResizeEnd);
   const onSendRef = useRef(onSend);
   const onReplyRef = useRef<Props['onReply']>(onReply);
+  const onReplyToSelectionRef = useRef<Props['onReplyToSelection']>(onReplyToSelection);
+  const onAddToContextSelectionRef = useRef<Props['onAddToContextSelection']>(onAddToContextSelection);
+  const onAnnotateTextSelectionRef = useRef<Props['onAnnotateTextSelection']>(onAnnotateTextSelection);
+  const onAnnotateInkSelectionRef = useRef<Props['onAnnotateInkSelection']>(onAnnotateInkSelection);
   const onSelectModelRef = useRef<Props['onSelectModel']>(onSelectModel);
   const onSendPreviewRef = useRef<Props['onSendPreview']>(onSendPreview);
   const onDraftChangeRef = useRef<Props['onDraftChange']>(onDraftChange);
@@ -83,6 +127,13 @@ export default function TextNodeEditor(props: Props) {
     source: 'main' | 'model_menu';
   } | null>(null);
   const suppressSendClickRef = useRef(false);
+  const [sourceSelectionMenu, setSourceSelectionMenu] = useState<{
+    text: string;
+    x: number;
+    y: number;
+    client: { x: number; y: number } | null;
+  } | null>(null);
+  const sourceSelectionMenuRef = useRef<HTMLDivElement | null>(null);
   const deferredDraft = useDeferredValue(draft);
 
   useEffect(() => {
@@ -92,10 +143,28 @@ export default function TextNodeEditor(props: Props) {
     onResizeEndRef.current = onResizeEnd;
     onSendRef.current = onSend;
     onReplyRef.current = onReply;
+    onReplyToSelectionRef.current = onReplyToSelection;
+    onAddToContextSelectionRef.current = onAddToContextSelection;
+    onAnnotateTextSelectionRef.current = onAnnotateTextSelection;
+    onAnnotateInkSelectionRef.current = onAnnotateInkSelection;
     onSelectModelRef.current = onSelectModel;
     onSendPreviewRef.current = onSendPreview;
     onDraftChangeRef.current = onDraftChange;
-  }, [onCancel, onCommit, onDraftChange, onReply, onResize, onResizeEnd, onSend, onSelectModel, onSendPreview]);
+  }, [
+    onAddToContextSelection,
+    onAnnotateInkSelection,
+    onAnnotateTextSelection,
+    onCancel,
+    onCommit,
+    onDraftChange,
+    onReply,
+    onReplyToSelection,
+    onResize,
+    onResizeEnd,
+    onSend,
+    onSelectModel,
+    onSendPreview,
+  ]);
 
   useEffect(() => {
     committedRef.current = false;
@@ -130,6 +199,118 @@ export default function TextNodeEditor(props: Props) {
     setModelMenuOpen(false);
   }, []);
 
+  const closeSourceSelectionMenu = useCallback(() => {
+    setSourceSelectionMenu(null);
+  }, []);
+
+  const openSourceSelectionMenuFromSelection = useCallback((client?: { x: number; y: number } | null) => {
+    const ta = taRef.current;
+    if (!ta) {
+      setSourceSelectionMenu(null);
+      return;
+    }
+
+    const rawStart = Number(ta.selectionStart);
+    const rawEnd = Number(ta.selectionEnd);
+    const start = Math.max(0, Math.floor(Number.isFinite(rawStart) ? rawStart : 0));
+    const end = Math.max(0, Math.floor(Number.isFinite(rawEnd) ? rawEnd : 0));
+    if (end <= start) {
+      setSourceSelectionMenu(null);
+      return;
+    }
+
+    const rawText = draftRef.current.slice(start, end);
+    if (!rawText.trim()) {
+      setSourceSelectionMenu(null);
+      return;
+    }
+
+    const fallbackClient = (() => {
+      const r = ta.getBoundingClientRect();
+      const cx = r.left + Math.min(Math.max(18, r.width * 0.5), Math.max(18, r.width - 18));
+      const cy = r.top + Math.min(Math.max(18, r.height * 0.28), Math.max(18, r.height - 18));
+      return { x: cx, y: cy };
+    })();
+    const base = client ?? fallbackClient;
+
+    const menuW = 220;
+    const menuH = 260;
+    const pad = 8;
+    const left = Math.round(Math.min(Math.max(pad, base.x + 10), Math.max(pad, window.innerWidth - menuW - pad)));
+    const top = Math.round(Math.min(Math.max(pad, base.y + 10), Math.max(pad, window.innerHeight - menuH - pad)));
+    setSourceSelectionMenu({
+      text: rawText,
+      x: left,
+      y: top,
+      client: { x: Number(base.x), y: Number(base.y) },
+    });
+  }, []);
+
+  const copySelectionText = useCallback(async (text: string): Promise<void> => {
+    const t = String(text ?? '');
+    if (!t.trim()) return;
+    try {
+      await navigator.clipboard.writeText(t);
+      return;
+    } catch {
+      // ignore
+    }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = t;
+      ta.style.position = 'fixed';
+      ta.style.left = '-99999px';
+      ta.style.top = '0';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const submitSourceReplySelection = useCallback(() => {
+    const text = sourceSelectionMenu?.text ?? '';
+    if (!text.trim()) {
+      closeSourceSelectionMenu();
+      return;
+    }
+    onReplyToSelectionRef.current?.(text);
+    closeSourceSelectionMenu();
+  }, [closeSourceSelectionMenu, sourceSelectionMenu?.text]);
+
+  const submitSourceAddContextSelection = useCallback(() => {
+    const text = sourceSelectionMenu?.text ?? '';
+    if (!text.trim()) {
+      closeSourceSelectionMenu();
+      return;
+    }
+    onAddToContextSelectionRef.current?.(text);
+    closeSourceSelectionMenu();
+  }, [closeSourceSelectionMenu, sourceSelectionMenu?.text]);
+
+  const submitSourceAnnotateSelection = useCallback(
+    (kind: 'text' | 'ink') => {
+      const text = sourceSelectionMenu?.text ?? '';
+      if (!text.trim()) {
+        closeSourceSelectionMenu();
+        return;
+      }
+      const payload = {
+        selectionText: text,
+        source: 'source' as const,
+        client: sourceSelectionMenu?.client ?? null,
+      };
+      if (kind === 'text') onAnnotateTextSelectionRef.current?.(payload);
+      else onAnnotateInkSelectionRef.current?.(payload);
+      closeSourceSelectionMenu();
+    },
+    [closeSourceSelectionMenu, sourceSelectionMenu],
+  );
+
   const updateModelMenuPosition = useCallback(() => {
     const btn = modelMenuButtonRef.current;
     if (!btn) return;
@@ -163,6 +344,26 @@ export default function TextNodeEditor(props: Props) {
   useEffect(() => {
     if (!modelMenuOpen) setModelMenuPointerLock(false);
   }, [modelMenuOpen]);
+
+  useEffect(() => {
+    if (!sourceSelectionMenu) return;
+    const onPointerDownCapture = (e: Event) => {
+      const target = e.target as Node | null;
+      if (target && sourceSelectionMenuRef.current?.contains(target)) return;
+      setSourceSelectionMenu(null);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      setSourceSelectionMenu(null);
+    };
+    document.addEventListener('pointerdown', onPointerDownCapture, true);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDownCapture, true);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [sourceSelectionMenu]);
 
   useEffect(() => {
     if (!modelMenuOpen) return;
@@ -219,6 +420,10 @@ export default function TextNodeEditor(props: Props) {
     suppressSendClickRef.current = false;
     setModelMenuPointerLock(false);
     onSendPreviewRef.current?.({ placementClient: null });
+  }, [nodeId]);
+
+  useEffect(() => {
+    setSourceSelectionMenu(null);
   }, [nodeId]);
 
   useEffect(
@@ -871,8 +1076,29 @@ export default function TextNodeEditor(props: Props) {
               onDraftChangeRef.current?.(next);
             }}
             spellCheck={false}
+            onPointerUp={(e) => {
+              openSourceSelectionMenuFromSelection({ x: Number(e.clientX), y: Number(e.clientY) });
+            }}
+            onKeyUp={(e) => {
+              if (e.key === 'Escape') {
+                closeSourceSelectionMenu();
+                return;
+              }
+              const key = e.key;
+              const lower = key.toLowerCase();
+              const mayChangeSelection =
+                e.shiftKey || key.startsWith('Arrow') || key === 'Home' || key === 'End' || ((e.metaKey || e.ctrlKey) && lower === 'a');
+              if (!mayChangeSelection) return;
+              openSourceSelectionMenuFromSelection(null);
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Escape') {
+                if (sourceSelectionMenu) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  closeSourceSelectionMenu();
+                  return;
+                }
                 e.preventDefault();
                 e.stopPropagation();
                 cancel();
@@ -902,6 +1128,46 @@ export default function TextNodeEditor(props: Props) {
           </div>
         ) : null}
       </div>
+
+      {typeof document !== 'undefined' && sourceSelectionMenu
+        ? createPortal(
+            <div
+              ref={sourceSelectionMenuRef}
+              className="gc-selectionMenu"
+              style={{
+                position: 'fixed',
+                left: `${sourceSelectionMenu.x}px`,
+                top: `${sourceSelectionMenu.y}px`,
+                zIndex: 1000,
+                pointerEvents: 'auto',
+              }}
+            >
+              <button
+                className="gc-selectionMenu__btn"
+                type="button"
+                onClick={() => {
+                  void copySelectionText(sourceSelectionMenu.text);
+                  closeSourceSelectionMenu();
+                }}
+              >
+                Copy
+              </button>
+              <button className="gc-selectionMenu__btn" type="button" onClick={submitSourceReplySelection}>
+                Reply to selection
+              </button>
+              <button className="gc-selectionMenu__btn" type="button" onClick={submitSourceAddContextSelection}>
+                Add to context
+              </button>
+              <button className="gc-selectionMenu__btn" type="button" onClick={() => submitSourceAnnotateSelection('text')}>
+                Annotate with text
+              </button>
+              <button className="gc-selectionMenu__btn" type="button" onClick={() => submitSourceAnnotateSelection('ink')}>
+                Annotate with ink
+              </button>
+            </div>,
+            document.body,
+          )
+        : null}
 
       {typeof document !== 'undefined' && modelMenuOpen && modelMenuPos
         ? createPortal(
