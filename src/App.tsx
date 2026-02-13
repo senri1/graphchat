@@ -6275,6 +6275,14 @@ export default function App() {
       return label || 'Assistant';
     })();
 
+    const activeEditingNodeId = engine.getUiState().editingNodeId;
+    if (activeEditingNodeId === userNodeId) {
+      const liveDraft = editingDraftByNodeIdRef.current.get(userNodeId);
+      if (typeof liveDraft === 'string') {
+        engine.setEditingText(liveDraft);
+      }
+    }
+
     const preSnapshot = engine.exportChatState();
     const leafNode = preSnapshot.nodes.find((n) => n.id === userNodeId) ?? null;
     if (!leafNode) return null;
