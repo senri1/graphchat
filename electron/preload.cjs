@@ -31,5 +31,11 @@ contextBridge.exposeInMainWorld('gcElectron', {
   storageChooseDataDir: (req) => ipcRenderer.invoke('storage:choose-data-dir', req ?? {}),
   storageResetDataDir: (req) => ipcRenderer.invoke('storage:reset-data-dir', req ?? {}),
   storageOpenDataDir: () => ipcRenderer.invoke('storage:open-data-dir'),
+  storageGetCloudSyncInfo: () => ipcRenderer.invoke('storage:get-cloud-sync-info'),
+  storageChooseCloudSyncDir: () => ipcRenderer.invoke('storage:choose-cloud-sync-dir'),
+  storageUnlinkCloudSyncDir: () => ipcRenderer.invoke('storage:unlink-cloud-sync-dir'),
+  storageOpenCloudSyncDir: () => ipcRenderer.invoke('storage:open-cloud-sync-dir'),
+  storageCloudSyncPush: (req) => ipcRenderer.invoke('storage:cloud-sync-push', req ?? {}),
+  storageCloudSyncPull: () => ipcRenderer.invoke('storage:cloud-sync-pull'),
   storageClearAll: () => ipcRenderer.invoke('storage:clear-all'),
 });

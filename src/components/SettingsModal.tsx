@@ -125,6 +125,17 @@ type Props = {
   onResetStorageLocation: () => void;
   canOpenStorageFolder: boolean;
   onOpenStorageFolder: () => void;
+  cloudSyncPath: string | null;
+  cloudSyncLastPulledRevision: string | null;
+  cloudSyncRemoteHeadRevision: string | null;
+  cloudSyncRemoteHeadUpdatedAt: number | null;
+  canManageCloudSync: boolean;
+  canOpenCloudSyncFolder: boolean;
+  onChooseCloudSyncFolder: () => void;
+  onUnlinkCloudSyncFolder: () => void;
+  onOpenCloudSyncFolder: () => void;
+  onPushCloudSync: () => void;
+  onPullCloudSync: () => void;
   cleanupChatFoldersOnDelete: boolean;
   onToggleCleanupChatFoldersOnDelete: () => void;
 
@@ -1545,6 +1556,92 @@ export default function SettingsModal(props: Props) {
                         onClick={props.onOpenStorageFolder}
                       >
                         Open folder
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="settingsCard">
+                  <div className="settingsRow settingsRow--stack">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Cloud sync folder (manual push/pull)</div>
+                      <div className="settingsRow__desc">
+                        Choose a folder synced by Google Drive (or Dropbox/iCloud). Use Push on the source device, then Pull on the other device.
+                      </div>
+                      <div className="settingsPathValue" title={props.cloudSyncPath ?? ''}>
+                        {props.cloudSyncPath ?? 'No cloud sync folder selected.'}
+                      </div>
+                      {props.cloudSyncRemoteHeadRevision ? (
+                        <div className="settingsRow__desc">
+                          Remote head: <span className="settingsPathInline">{props.cloudSyncRemoteHeadRevision}</span>
+                        </div>
+                      ) : (
+                        <div className="settingsRow__desc">Remote head: none yet</div>
+                      )}
+                      {props.cloudSyncLastPulledRevision ? (
+                        <div className="settingsRow__desc">
+                          Last pulled on this device: <span className="settingsPathInline">{props.cloudSyncLastPulledRevision}</span>
+                        </div>
+                      ) : (
+                        <div className="settingsRow__desc">Last pulled on this device: never</div>
+                      )}
+                      {typeof props.cloudSyncRemoteHeadUpdatedAt === 'number' && props.cloudSyncRemoteHeadUpdatedAt > 0 ? (
+                        <div className="settingsRow__desc">
+                          Remote updated: {new Date(props.cloudSyncRemoteHeadUpdatedAt).toLocaleString()}
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="settingsRow__actions">
+                      <button
+                        className="settingsBtn"
+                        type="button"
+                        disabled={!props.canManageCloudSync}
+                        onClick={props.onChooseCloudSyncFolder}
+                      >
+                        Choose folder…
+                      </button>
+                      <button
+                        className="settingsBtn"
+                        type="button"
+                        disabled={!props.canManageCloudSync || !props.cloudSyncPath}
+                        onClick={props.onUnlinkCloudSyncFolder}
+                      >
+                        Unlink
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="settingsCard">
+                  <div className="settingsRow">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Cloud sync actions</div>
+                      <div className="settingsRow__desc">Push uploads a new snapshot. Pull replaces local data with the cloud snapshot (with local backup).</div>
+                    </div>
+                    <div className="settingsRow__actions">
+                      <button
+                        className="settingsBtn"
+                        type="button"
+                        disabled={!props.canManageCloudSync || !props.cloudSyncPath}
+                        onClick={props.onPushCloudSync}
+                      >
+                        Push to cloud
+                      </button>
+                      <button
+                        className="settingsBtn"
+                        type="button"
+                        disabled={!props.canManageCloudSync || !props.cloudSyncPath}
+                        onClick={props.onPullCloudSync}
+                      >
+                        Pull from cloud
+                      </button>
+                      <button
+                        className="settingsBtn"
+                        type="button"
+                        disabled={!props.canOpenCloudSyncFolder || !props.cloudSyncPath}
+                        onClick={props.onOpenCloudSyncFolder}
+                      >
+                        Open cloud folder
                       </button>
                     </div>
                   </div>

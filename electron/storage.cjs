@@ -6,6 +6,10 @@ const { randomUUID } = require('crypto');
 const STORAGE_ROOT_DIRNAME = 'GraphChatV1Data';
 const STORAGE_SCHEMA_DIRNAME = 'v1';
 const STORAGE_LOCATION_CONFIG_FILE = 'storage-location.json';
+const CLOUD_SYNC_CONFIG_FILE = 'cloud-sync.json';
+const CLOUD_SYNC_SNAPSHOTS_DIRNAME = 'snapshots';
+const CLOUD_SYNC_HEAD_FILE = 'HEAD.json';
+const CLOUD_SYNC_SCHEMA_VERSION = 1;
 
 let storageBaseDirOverride = null;
 let storageLocationConfigLoaded = false;
@@ -36,6 +40,10 @@ function decodeFsSegment(value) {
 
 function storageLocationConfigPath(app) {
   return path.join(app.getPath('userData'), STORAGE_LOCATION_CONFIG_FILE);
+}
+
+function cloudSyncConfigPath(app) {
+  return path.join(app.getPath('userData'), CLOUD_SYNC_CONFIG_FILE);
 }
 
 function normalizeAbsoluteDirOrNull(value) {
@@ -94,6 +102,211 @@ function currentStorageRootDir(app) {
 
 function storageRootDir(app) {
   return currentStorageRootDir(app);
+}
+
+function cloudSnapshotDir(cloudDir, revision) {
+  return path.join(cloudDir, CLOUD_SYNC_SNAPSHOTS_DIRNAME, encodeFsSegment(revision, 'Revision id'));
+}
+
+function cloudHeadPath(cloudDir) {
+  return path.join(cloudDir, CLOUD_SYNC_HEAD_FILE);
+}
+
+function normalizeCloudSyncConfig(raw) {
+  const cloudDir = normalizeAbsoluteDirOrNull(raw?.cloudDir);
+  const lastPulledRevision = asTrimmedString(raw?.lastPulledRevision) || null;
+  return { cloudDir, lastPulledRevision };
+}
+
+async function readCloudSyncConfig(app) {
+  const cfg = await readJsonOrNull(cloudSyncConfigPath(app));
+  if (!cfg || typeof cfg !== 'object') return { cloudDir: null, lastPulledRevision: null };
+  return normalizeCloudSyncConfig(cfg);
+}
+
+async function writeCloudSyncConfig(app, cfg) {
+  const next = normalizeCloudSyncConfig(cfg);
+  if (!next.cloudDir) {
+    await removeFileIfExists(cloudSyncConfigPath(app));
+    return { cloudDir: null, lastPulledRevision: null };
+  }
+  await writeJsonAtomic(cloudSyncConfigPath(app), {
+    cloudDir: next.cloudDir,
+    lastPulledRevision: next.lastPulledRevision,
+    updatedAt: Date.now(),
+  });
+  return next;
+}
+
+function makeCloudRevisionId() {
+  return `rev_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+async function readCloudHead(cloudDir) {
+  const rec = await readJsonOrNull(cloudHeadPath(cloudDir));
+  if (!rec || typeof rec !== 'object') return null;
+  const revision = asTrimmedString(rec.revision);
+  if (!revision) return null;
+  const updatedAtRaw = Number(rec.updatedAt);
+  return {
+    revision,
+    updatedAt: Number.isFinite(updatedAtRaw) ? updatedAtRaw : 0,
+  };
+}
+
+function isSameOrNestedPath(a, b) {
+  const left = path.resolve(a);
+  const right = path.resolve(b);
+  if (left === right) return true;
+  return isNestedPath(left, right) || isNestedPath(right, left);
+}
+
+async function getCloudSyncInfo(app) {
+  const cfg = await readCloudSyncConfig(app);
+  const cloudDir = cfg.cloudDir;
+  let remoteHead = null;
+  if (cloudDir) {
+    try {
+      remoteHead = await readCloudHead(cloudDir);
+    } catch {
+      remoteHead = null;
+    }
+  }
+  return {
+    connected: Boolean(cloudDir),
+    cloudDir: cloudDir || undefined,
+    lastPulledRevision: cfg.lastPulledRevision || undefined,
+    remoteHeadRevision: remoteHead?.revision || undefined,
+    remoteHeadUpdatedAt: remoteHead ? remoteHead.updatedAt : undefined,
+  };
+}
+
+async function ensureCloudSyncLayout(cloudDir) {
+  await fs.mkdir(path.join(cloudDir, CLOUD_SYNC_SNAPSHOTS_DIRNAME), { recursive: true });
+}
+
+function localCloudPullBackupsDir(app) {
+  return path.join(path.dirname(storageRootDir(app)), 'sync-backups');
+}
+
+async function pushStorageToCloud(app, opts = {}) {
+  const cfg = await readCloudSyncConfig(app);
+  const cloudDir = cfg.cloudDir;
+  if (!cloudDir) throw new Error('Cloud sync folder is not configured.');
+
+  const localRoot = storageRootDir(app);
+  if (isSameOrNestedPath(localRoot, cloudDir)) {
+    throw new Error('Cloud sync folder must not be the same as, or inside, the local storage folder.');
+  }
+
+  await ensureCloudSyncLayout(cloudDir);
+  const remoteHead = await readCloudHead(cloudDir);
+  const remoteRevision = remoteHead?.revision ?? null;
+  const lastPulled = cfg.lastPulledRevision ?? null;
+  const force = opts?.force === true;
+
+  if (!force && remoteRevision && remoteRevision !== lastPulled) {
+    if (lastPulled) {
+      throw new Error(`Cloud has newer revision ${remoteRevision}. Pull first (local last pulled ${lastPulled}).`);
+    }
+    throw new Error(`Cloud has existing revision ${remoteRevision}. Pull first on this device before pushing.`);
+  }
+
+  const revision = makeCloudRevisionId();
+  const snapshotDir = cloudSnapshotDir(cloudDir, revision);
+  const tmpSnapshotDir = `${snapshotDir}.tmp-${process.pid}-${Date.now()}`;
+  await fs.rm(tmpSnapshotDir, { recursive: true, force: true });
+
+  try {
+    if (await dirExists(localRoot)) {
+      await fs.cp(localRoot, tmpSnapshotDir, {
+        recursive: true,
+        force: false,
+        errorOnExist: true,
+      });
+    } else {
+      await fs.mkdir(tmpSnapshotDir, { recursive: true });
+    }
+    await writeJsonAtomic(path.join(tmpSnapshotDir, 'manifest.json'), {
+      schemaVersion: CLOUD_SYNC_SCHEMA_VERSION,
+      revision,
+      createdAt: Date.now(),
+      createdAtIso: new Date().toISOString(),
+      app: 'graphchatv1',
+      storageSchema: STORAGE_SCHEMA_DIRNAME,
+    });
+    await fs.mkdir(path.dirname(snapshotDir), { recursive: true });
+    await fs.rename(tmpSnapshotDir, snapshotDir);
+  } catch (err) {
+    await fs.rm(tmpSnapshotDir, { recursive: true, force: true });
+    throw err;
+  }
+
+  await writeJsonAtomic(cloudHeadPath(cloudDir), {
+    schemaVersion: CLOUD_SYNC_SCHEMA_VERSION,
+    revision,
+    updatedAt: Date.now(),
+    updatedAtIso: new Date().toISOString(),
+  });
+  await writeCloudSyncConfig(app, { cloudDir, lastPulledRevision: revision });
+  return { revision };
+}
+
+async function pullStorageFromCloud(app) {
+  const cfg = await readCloudSyncConfig(app);
+  const cloudDir = cfg.cloudDir;
+  if (!cloudDir) throw new Error('Cloud sync folder is not configured.');
+
+  const localRoot = storageRootDir(app);
+  if (isSameOrNestedPath(localRoot, cloudDir)) {
+    throw new Error('Cloud sync folder must not be the same as, or inside, the local storage folder.');
+  }
+
+  const remoteHead = await readCloudHead(cloudDir);
+  const revision = remoteHead?.revision ?? '';
+  if (!revision) throw new Error('Cloud folder has no pushed snapshot yet.');
+
+  const snapshotDir = cloudSnapshotDir(cloudDir, revision);
+  if (!(await dirExists(snapshotDir))) {
+    throw new Error(`Cloud snapshot ${revision} is missing.`);
+  }
+
+  const localTmpDir = `${localRoot}.pull-tmp-${process.pid}-${Date.now()}`;
+  await fs.rm(localTmpDir, { recursive: true, force: true });
+  await fs.cp(snapshotDir, localTmpDir, {
+    recursive: true,
+    force: true,
+    errorOnExist: false,
+  });
+
+  let backupPath = null;
+  const localExists = await dirExists(localRoot);
+  if (localExists) {
+    const stamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
+    const suffix = Math.random().toString(36).slice(2, 7);
+    backupPath = path.join(
+      localCloudPullBackupsDir(app),
+      `${stamp}-${encodeFsSegment(revision.slice(0, 20) || 'backup', 'Backup revision')}-${suffix}`,
+    );
+    await fs.mkdir(path.dirname(backupPath), { recursive: true });
+    await fs.cp(localRoot, backupPath, {
+      recursive: true,
+      force: false,
+      errorOnExist: true,
+    });
+  }
+
+  try {
+    await fs.rm(localRoot, { recursive: true, force: true });
+    await fs.mkdir(path.dirname(localRoot), { recursive: true });
+    await fs.rename(localTmpDir, localRoot);
+  } catch (err) {
+    await fs.rm(localTmpDir, { recursive: true, force: true });
+    throw err;
+  }
+
+  await writeCloudSyncConfig(app, { cloudDir, lastPulledRevision: revision });
+  return { revision, backupPath };
 }
 
 async function persistStorageLocationConfig(app) {
@@ -642,6 +855,114 @@ function registerStorageIpcHandlers(args) {
       return ok({ path: dir });
     } catch (err) {
       return fail(err, 'Failed to open storage folder.');
+    }
+  });
+
+  ipcMain.handle('storage:get-cloud-sync-info', async () => {
+    try {
+      const info = await getCloudSyncInfo(app);
+      return ok(info);
+    } catch (err) {
+      return fail(err, 'Failed to load cloud sync settings.');
+    }
+  });
+
+  ipcMain.handle('storage:choose-cloud-sync-dir', async (event) => {
+    try {
+      if (!dialog || typeof dialog.showOpenDialog !== 'function') {
+        return fail('Dialog API unavailable.', 'Dialog API unavailable.');
+      }
+
+      const browserWindow = event?.sender ? event.sender.getOwnerBrowserWindow?.() : null;
+      const pickRes = await dialog.showOpenDialog(browserWindow ?? undefined, {
+        title: 'Choose cloud sync folder',
+        buttonLabel: 'Use Folder',
+        properties: ['openDirectory', 'createDirectory'],
+      });
+      if (pickRes.canceled || !Array.isArray(pickRes.filePaths) || pickRes.filePaths.length === 0) {
+        return { ok: false, canceled: true, error: 'Folder selection was canceled.' };
+      }
+
+      const picked = normalizeAbsoluteDirOrNull(pickRes.filePaths[0]);
+      if (!picked) return fail('Invalid folder path.', 'Invalid folder path.');
+
+      const localRoot = storageRootDir(app);
+      if (isSameOrNestedPath(localRoot, picked)) {
+        return fail(
+          'Cloud sync folder cannot be the same as, inside, or around the local storage folder.',
+          'Invalid cloud sync folder location.',
+        );
+      }
+
+      await fs.mkdir(picked, { recursive: true });
+      const prev = await readCloudSyncConfig(app);
+      const prevPath = prev.cloudDir ? path.resolve(prev.cloudDir) : '';
+      const nextPath = path.resolve(picked);
+      const keepLastPulled = Boolean(prevPath && prevPath === nextPath);
+
+      await writeCloudSyncConfig(app, {
+        cloudDir: picked,
+        lastPulledRevision: keepLastPulled ? prev.lastPulledRevision : null,
+      });
+      await ensureCloudSyncLayout(picked);
+      const info = await getCloudSyncInfo(app);
+      return ok({ ...info, canceled: false });
+    } catch (err) {
+      return fail(err, 'Failed to set cloud sync folder.');
+    }
+  });
+
+  ipcMain.handle('storage:unlink-cloud-sync-dir', async () => {
+    try {
+      await writeCloudSyncConfig(app, { cloudDir: null, lastPulledRevision: null });
+      return ok(await getCloudSyncInfo(app));
+    } catch (err) {
+      return fail(err, 'Failed to unlink cloud sync folder.');
+    }
+  });
+
+  ipcMain.handle('storage:open-cloud-sync-dir', async () => {
+    try {
+      if (!shell || typeof shell.openPath !== 'function') {
+        return fail('Shell API unavailable.', 'Shell API unavailable.');
+      }
+      const cfg = await readCloudSyncConfig(app);
+      if (!cfg.cloudDir) return fail('Cloud sync folder is not configured.', 'Cloud sync folder is not configured.');
+      await fs.mkdir(cfg.cloudDir, { recursive: true });
+      const err = await shell.openPath(cfg.cloudDir);
+      if (typeof err === 'string' && err.trim()) {
+        return fail(err, 'Failed to open cloud sync folder.');
+      }
+      return ok({ path: cfg.cloudDir });
+    } catch (err) {
+      return fail(err, 'Failed to open cloud sync folder.');
+    }
+  });
+
+  ipcMain.handle('storage:cloud-sync-push', async (_event, req) => {
+    try {
+      const pushed = await pushStorageToCloud(app, { force: req?.force === true });
+      const info = await getCloudSyncInfo(app);
+      return ok({
+        ...info,
+        pushedRevision: pushed.revision,
+      });
+    } catch (err) {
+      return fail(err, 'Failed to push data to cloud folder.');
+    }
+  });
+
+  ipcMain.handle('storage:cloud-sync-pull', async () => {
+    try {
+      const pulled = await pullStorageFromCloud(app);
+      const info = await getCloudSyncInfo(app);
+      return ok({
+        ...info,
+        pulledRevision: pulled.revision,
+        backupPath: pulled.backupPath || undefined,
+      });
+    } catch (err) {
+      return fail(err, 'Failed to pull data from cloud folder.');
     }
   });
 

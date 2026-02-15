@@ -125,6 +125,56 @@ interface Window {
       error?: string;
     }>;
     storageOpenDataDir: () => Promise<{ ok: boolean; path?: string; error?: string }>;
+    storageGetCloudSyncInfo: () => Promise<{
+      ok: boolean;
+      connected?: boolean;
+      cloudDir?: string;
+      lastPulledRevision?: string;
+      remoteHeadRevision?: string;
+      remoteHeadUpdatedAt?: number;
+      error?: string;
+    }>;
+    storageChooseCloudSyncDir: () => Promise<{
+      ok: boolean;
+      canceled?: boolean;
+      connected?: boolean;
+      cloudDir?: string;
+      lastPulledRevision?: string;
+      remoteHeadRevision?: string;
+      remoteHeadUpdatedAt?: number;
+      error?: string;
+    }>;
+    storageUnlinkCloudSyncDir: () => Promise<{
+      ok: boolean;
+      connected?: boolean;
+      cloudDir?: string;
+      lastPulledRevision?: string;
+      remoteHeadRevision?: string;
+      remoteHeadUpdatedAt?: number;
+      error?: string;
+    }>;
+    storageOpenCloudSyncDir: () => Promise<{ ok: boolean; path?: string; error?: string }>;
+    storageCloudSyncPush: (req?: { force?: boolean }) => Promise<{
+      ok: boolean;
+      connected?: boolean;
+      cloudDir?: string;
+      lastPulledRevision?: string;
+      remoteHeadRevision?: string;
+      remoteHeadUpdatedAt?: number;
+      pushedRevision?: string;
+      error?: string;
+    }>;
+    storageCloudSyncPull: () => Promise<{
+      ok: boolean;
+      connected?: boolean;
+      cloudDir?: string;
+      lastPulledRevision?: string;
+      remoteHeadRevision?: string;
+      remoteHeadUpdatedAt?: number;
+      pulledRevision?: string;
+      backupPath?: string;
+      error?: string;
+    }>;
     storageClearAll: () => Promise<{ ok: boolean; error?: string }>;
   };
 }

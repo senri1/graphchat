@@ -159,6 +159,31 @@ type StorageDataDirInfo = {
   isDefault: boolean;
 };
 
+type CloudSyncInfo = {
+  connected: boolean;
+  cloudDir: string | null;
+  lastPulledRevision: string | null;
+  remoteHeadRevision: string | null;
+  remoteHeadUpdatedAt: number | null;
+};
+
+function cloudSyncInfoFromApiResult(value: any): CloudSyncInfo | null {
+  if (!value || typeof value !== 'object') return null;
+  const cloudDir = typeof value.cloudDir === 'string' && value.cloudDir.trim() ? value.cloudDir.trim() : null;
+  const lastPulledRevision =
+    typeof value.lastPulledRevision === 'string' && value.lastPulledRevision.trim() ? value.lastPulledRevision.trim() : null;
+  const remoteHeadRevision =
+    typeof value.remoteHeadRevision === 'string' && value.remoteHeadRevision.trim() ? value.remoteHeadRevision.trim() : null;
+  const remoteHeadUpdatedAtRaw = Number(value.remoteHeadUpdatedAt);
+  return {
+    connected: Boolean(value.connected) && Boolean(cloudDir),
+    cloudDir,
+    lastPulledRevision,
+    remoteHeadRevision,
+    remoteHeadUpdatedAt: Number.isFinite(remoteHeadUpdatedAtRaw) && remoteHeadUpdatedAtRaw > 0 ? remoteHeadUpdatedAtRaw : null,
+  };
+}
+
 const API_PROVIDER_LABELS: Record<RuntimeApiProvider, string> = {
   openai: 'OpenAI',
   gemini: 'Gemini',
@@ -1372,6 +1397,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsPanel, setSettingsPanel] = useState<'appearance' | 'models' | 'debug' | 'data' | 'reset'>('appearance');
   const [storageDataDirInfo, setStorageDataDirInfo] = useState<StorageDataDirInfo | null>(null);
+  const [cloudSyncInfo, setCloudSyncInfo] = useState<CloudSyncInfo | null>(null);
   const [runtimeApiKeys, setRuntimeApiKeys] = useState<RuntimeApiKeys>(() => getRuntimeApiKeys());
   const [debugHudVisible, setDebugHudVisible] = useState(DEFAULT_DEBUG_HUD_VISIBLE);
   const [sendAllEnabled, setSendAllEnabled] = useState(DEFAULT_SEND_ALL_ENABLED);
@@ -5562,6 +5588,18 @@ export default function App() {
       typeof (window as any)?.gcElectron?.storageChooseDataDir === 'function' &&
       typeof (window as any)?.gcElectron?.storageResetDataDir === 'function',
   );
+  const canManageCloudSync = Boolean(
+    typeof window !== 'undefined' &&
+      typeof (window as any)?.gcElectron?.storageGetCloudSyncInfo === 'function' &&
+      typeof (window as any)?.gcElectron?.storageChooseCloudSyncDir === 'function' &&
+      typeof (window as any)?.gcElectron?.storageUnlinkCloudSyncDir === 'function' &&
+      typeof (window as any)?.gcElectron?.storageCloudSyncPush === 'function' &&
+      typeof (window as any)?.gcElectron?.storageCloudSyncPull === 'function',
+  );
+  const canOpenCloudSyncFolder = Boolean(
+    typeof window !== 'undefined' &&
+      typeof (window as any)?.gcElectron?.storageOpenCloudSyncDir === 'function',
+  );
 
   const refreshStorageDataDirInfo = () => {
     const api = (window as any)?.gcElectron;
@@ -5587,9 +5625,27 @@ export default function App() {
     })();
   };
 
+  const refreshCloudSyncInfo = () => {
+    const api = (window as any)?.gcElectron;
+    if (!api || typeof api.storageGetCloudSyncInfo !== 'function') {
+      setCloudSyncInfo(null);
+      return;
+    }
+    void (async () => {
+      try {
+        const res = await api.storageGetCloudSyncInfo();
+        if (!res?.ok) return;
+        setCloudSyncInfo(cloudSyncInfoFromApiResult(res));
+      } catch {
+        // ignore
+      }
+    })();
+  };
+
   useEffect(() => {
     if (!settingsOpen || settingsPanel !== 'data') return;
     refreshStorageDataDirInfo();
+    refreshCloudSyncInfo();
   }, [settingsOpen, settingsPanel]);
 
   const openStorageFolder = () => {
@@ -5681,6 +5737,134 @@ export default function App() {
         );
       } catch (err: any) {
         showToast(`Failed to reset storage location: ${err?.message || String(err)}`, 'error');
+      }
+    })();
+  };
+
+  const chooseCloudSyncFolder = () => {
+    const api = (window as any)?.gcElectron;
+    if (!api || typeof api.storageChooseCloudSyncDir !== 'function') {
+      showToast('Cloud sync folder setup is only available in Electron desktop mode.', 'info');
+      return;
+    }
+    void (async () => {
+      try {
+        const res = await api.storageChooseCloudSyncDir();
+        if (!res?.ok) {
+          if (res?.canceled) return;
+          showToast(`Failed to choose cloud sync folder: ${String(res?.error ?? 'unknown error')}`, 'error');
+          return;
+        }
+        setCloudSyncInfo(cloudSyncInfoFromApiResult(res));
+        showToast('Cloud sync folder updated.', 'success');
+      } catch (err: any) {
+        showToast(`Failed to choose cloud sync folder: ${err?.message || String(err)}`, 'error');
+      }
+    })();
+  };
+
+  const unlinkCloudSyncFolder = () => {
+    const api = (window as any)?.gcElectron;
+    if (!api || typeof api.storageUnlinkCloudSyncDir !== 'function') {
+      showToast('Cloud sync folder setup is only available in Electron desktop mode.', 'info');
+      return;
+    }
+    if (!window.confirm('Unlink cloud sync folder on this device? This does not delete files from cloud storage.')) return;
+    void (async () => {
+      try {
+        const res = await api.storageUnlinkCloudSyncDir();
+        if (!res?.ok) {
+          showToast(`Failed to unlink cloud sync folder: ${String(res?.error ?? 'unknown error')}`, 'error');
+          return;
+        }
+        setCloudSyncInfo(cloudSyncInfoFromApiResult(res));
+        showToast('Cloud sync folder unlinked.', 'success');
+      } catch (err: any) {
+        showToast(`Failed to unlink cloud sync folder: ${err?.message || String(err)}`, 'error');
+      }
+    })();
+  };
+
+  const openCloudSyncFolder = () => {
+    const api = (window as any)?.gcElectron;
+    if (!api || typeof api.storageOpenCloudSyncDir !== 'function') {
+      showToast('Open cloud sync folder is only available in Electron desktop mode.', 'info');
+      return;
+    }
+    void (async () => {
+      try {
+        const res = await api.storageOpenCloudSyncDir();
+        if (!res?.ok) {
+          showToast(`Failed to open cloud sync folder: ${String(res?.error ?? 'unknown error')}`, 'error');
+        }
+      } catch (err: any) {
+        showToast(`Failed to open cloud sync folder: ${err?.message || String(err)}`, 'error');
+      }
+    })();
+  };
+
+  const flushPendingPersistenceForCloudSync = async () => {
+    schedulePersistSoon();
+    await new Promise<void>((resolve) => {
+      window.setTimeout(() => resolve(), 450);
+    });
+  };
+
+  const pushToCloudSyncFolder = () => {
+    const api = (window as any)?.gcElectron;
+    if (!api || typeof api.storageCloudSyncPush !== 'function') {
+      showToast('Cloud push is only available in Electron desktop mode.', 'info');
+      return;
+    }
+    void (async () => {
+      try {
+        await flushPendingPersistenceForCloudSync();
+        const res = await api.storageCloudSyncPush();
+        if (!res?.ok) {
+          showToast(`Cloud push failed: ${String(res?.error ?? 'unknown error')}`, 'error', 5200);
+          return;
+        }
+        setCloudSyncInfo(cloudSyncInfoFromApiResult(res));
+        const rev = String(res?.pushedRevision ?? '').trim();
+        showToast(rev ? `Pushed to cloud (${rev}).` : 'Pushed to cloud.', 'success');
+      } catch (err: any) {
+        showToast(`Cloud push failed: ${err?.message || String(err)}`, 'error', 5200);
+      }
+    })();
+  };
+
+  const pullFromCloudSyncFolder = () => {
+    const api = (window as any)?.gcElectron;
+    if (!api || typeof api.storageCloudSyncPull !== 'function') {
+      showToast('Cloud pull is only available in Electron desktop mode.', 'info');
+      return;
+    }
+    const head = String(cloudSyncInfo?.remoteHeadRevision ?? '').trim();
+    const prompt = head
+      ? `Pull cloud revision ${head} and replace local data?\n\nA local backup will be created automatically.`
+      : 'Pull from cloud and replace local data?\n\nA local backup will be created automatically.';
+    if (!window.confirm(prompt)) return;
+
+    void (async () => {
+      try {
+        await flushPendingPersistenceForCloudSync();
+        const res = await api.storageCloudSyncPull();
+        if (!res?.ok) {
+          showToast(`Cloud pull failed: ${String(res?.error ?? 'unknown error')}`, 'error', 5200);
+          return;
+        }
+        setCloudSyncInfo(cloudSyncInfoFromApiResult(res));
+        const backupPath = String(res?.backupPath ?? '').trim();
+        if (backupPath) {
+          showToast('Pull complete. Local backup created; reloading…', 'success', 1000);
+        } else {
+          showToast('Pull complete. Reloading…', 'success', 1000);
+        }
+        window.setTimeout(() => {
+          window.location.reload();
+        }, 260);
+      } catch (err: any) {
+        showToast(`Cloud pull failed: ${err?.message || String(err)}`, 'error', 5200);
       }
     })();
   };
@@ -8401,6 +8585,17 @@ export default function App() {
             onResetStorageLocation={resetStorageLocation}
             canOpenStorageFolder={canOpenStorageFolder}
             onOpenStorageFolder={openStorageFolder}
+            cloudSyncPath={cloudSyncInfo?.cloudDir ?? null}
+            cloudSyncLastPulledRevision={cloudSyncInfo?.lastPulledRevision ?? null}
+            cloudSyncRemoteHeadRevision={cloudSyncInfo?.remoteHeadRevision ?? null}
+            cloudSyncRemoteHeadUpdatedAt={cloudSyncInfo?.remoteHeadUpdatedAt ?? null}
+            canManageCloudSync={canManageCloudSync}
+            canOpenCloudSyncFolder={canOpenCloudSyncFolder}
+            onChooseCloudSyncFolder={chooseCloudSyncFolder}
+            onUnlinkCloudSyncFolder={unlinkCloudSyncFolder}
+            onOpenCloudSyncFolder={openCloudSyncFolder}
+            onPushCloudSync={pushToCloudSyncFolder}
+            onPullCloudSync={pullFromCloudSyncFolder}
             cleanupChatFoldersOnDelete={cleanupChatFoldersOnDelete}
             onToggleCleanupChatFoldersOnDelete={() => {
               const next = !cleanupChatFoldersOnDeleteRef.current;
