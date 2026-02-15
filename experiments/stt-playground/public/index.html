@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>STT Playground</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="hero">
+        <h1>Speech-to-Text Playground</h1>
+        <p>Push-to-talk harness with realtime and batch STT providers.</p>
+      </header>
+
+      <section class="card controls">
+        <div class="row">
+          <label>
+            Provider
+            <select id="provider">
+              <option value="web-speech">Browser Web Speech API</option>
+              <option value="openai">OpenAI Realtime (WebRTC, fastest)</option>
+              <option value="groq-pseudo-realtime">Groq Pseudo-Realtime (chunked uploads)</option>
+              <option value="groq-turbo">Groq Whisper Turbo (`whisper-large-v3-turbo`)</option>
+              <option value="groq-quality">Groq Whisper Quality (`whisper-large-v3`)</option>
+            </select>
+          </label>
+          <label>
+            Language (optional, ISO code)
+            <input id="language" type="text" placeholder="en, es, fr..." />
+          </label>
+        </div>
+
+        <div class="row buttons">
+          <button id="startBtn" class="btn btn-primary">Start Listening</button>
+          <button id="stopBtn" class="btn" disabled>Stop</button>
+          <button id="clearBtn" class="btn">Clear Transcript</button>
+        </div>
+
+        <div class="hotkeyCard">
+          <div class="hotkeyCard__title">Push-to-talk hotkey</div>
+          <div class="hotkeyCard__value" id="hotkeyValue">Space</div>
+          <div class="hotkeyCard__hint">Hold this key to listen, release to stop.</div>
+          <div class="row buttons">
+            <button id="setHotkeyBtn" class="btn">Set Hotkey</button>
+            <button id="clearHotkeyBtn" class="btn">Disable Hotkey</button>
+          </div>
+        </div>
+
+        <p id="status" class="status">Ready.</p>
+      </section>
+
+      <section class="card">
+        <h2>Transcript</h2>
+        <textarea id="transcript" rows="7" placeholder="Transcript appears here..."></textarea>
+        <p id="interim" class="interim"></p>
+
+        <div class="row">
+          <label class="grow">
+            Reference text (optional, for WER)
+            <textarea id="reference" rows="3" placeholder="Paste expected text to estimate word error rate..."></textarea>
+          </label>
+        </div>
+
+        <div class="metrics" id="metrics">
+          <span>Last run: n/a</span>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="row historyHeader">
+          <h2>Run History</h2>
+          <div>
+            <button id="exportBtn" class="btn">Export JSON</button>
+            <button id="clearHistoryBtn" class="btn">Clear History</button>
+          </div>
+        </div>
+        <div class="tableWrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Provider</th>
+                <th>Latency</th>
+                <th>WER</th>
+                <th>Preview</th>
+              </tr>
+            </thead>
+            <tbody id="historyRows"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
