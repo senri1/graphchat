@@ -136,6 +136,30 @@ type Props = {
   onOpenCloudSyncFolder: () => void;
   onPushCloudSync: () => void;
   onPullCloudSync: () => void;
+  googleDriveLinked: boolean;
+  googleDriveClientId: string | null;
+  googleDriveClientIdDraft: string;
+  onChangeGoogleDriveClientIdDraft: (next: string) => void;
+  googleDriveClientSecretDraft: string;
+  onChangeGoogleDriveClientSecretDraft: (next: string) => void;
+  googleDriveHasClientSecret: boolean;
+  googleDriveFolderId: string | null;
+  googleDriveLastPulledRevision: string | null;
+  googleDriveLastLinkError: string | null;
+  googleDriveRemoteHeadRevision: string | null;
+  googleDriveRemoteHeadUpdatedAt: number | null;
+  googleDriveRemoteError: string | null;
+  googleDriveConfigPath: string | null;
+  googleDriveConfigExists: boolean;
+  googleDriveUserDataPath: string | null;
+  googleDriveAppName: string | null;
+  canManageGoogleDriveSync: boolean;
+  canOpenGoogleDriveFolder: boolean;
+  onLinkGoogleDriveSync: () => void;
+  onUnlinkGoogleDriveSync: () => void;
+  onOpenGoogleDriveFolder: () => void;
+  onPushGoogleDriveSync: () => void;
+  onPullGoogleDriveSync: () => void;
   cleanupChatFoldersOnDelete: boolean;
   onToggleCleanupChatFoldersOnDelete: () => void;
 
@@ -1642,6 +1666,155 @@ export default function SettingsModal(props: Props) {
                         onClick={props.onOpenCloudSyncFolder}
                       >
                         Open cloud folder
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="settingsCard">
+                  <div className="settingsRow settingsRow--stack">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Google Drive sync (direct)</div>
+                      <div className="settingsRow__desc">
+                        Link Google Drive directly (OAuth), then push from one device and pull on another.
+                      </div>
+                      <div className="settingsRow__desc">Google OAuth client ID (Desktop app type)</div>
+                      <div className="settingsRow__actions settingsRow__actions--grow">
+                        <input
+                          className="settingsTextInput settingsTextInput--apiKey"
+                          type="text"
+                          value={props.googleDriveClientIdDraft}
+                          placeholder="1234567890-abc123def456.apps.googleusercontent.com"
+                          onChange={(e) => props.onChangeGoogleDriveClientIdDraft(e.currentTarget.value)}
+                          aria-label="Google OAuth client ID"
+                          autoComplete="off"
+                          spellCheck={false}
+                        />
+                      </div>
+                      <div className="settingsRow__desc">Google OAuth client secret (optional, required for some clients)</div>
+                      <div className="settingsRow__actions settingsRow__actions--grow">
+                        <input
+                          className="settingsTextInput settingsTextInput--apiKey"
+                          type="password"
+                          value={props.googleDriveClientSecretDraft}
+                          placeholder="GOCSPX-..."
+                          onChange={(e) => props.onChangeGoogleDriveClientSecretDraft(e.currentTarget.value)}
+                          aria-label="Google OAuth client secret"
+                          autoComplete="off"
+                          spellCheck={false}
+                        />
+                      </div>
+                      <div className="settingsRow__desc">
+                        Status: {props.googleDriveLinked ? 'Linked' : 'Not linked'}
+                      </div>
+                      {props.googleDriveClientId ? (
+                        <div className="settingsRow__desc">
+                          OAuth client id: <span className="settingsPathInline">{props.googleDriveClientId}</span>
+                        </div>
+                      ) : null}
+                      <div className="settingsRow__desc">
+                        OAuth client secret saved: {props.googleDriveHasClientSecret ? 'yes' : 'no'}
+                      </div>
+                      {props.googleDriveFolderId ? (
+                        <div className="settingsRow__desc">
+                          Drive folder id: <span className="settingsPathInline">{props.googleDriveFolderId}</span>
+                        </div>
+                      ) : null}
+                      {props.googleDriveRemoteHeadRevision ? (
+                        <div className="settingsRow__desc">
+                          Remote head: <span className="settingsPathInline">{props.googleDriveRemoteHeadRevision}</span>
+                        </div>
+                      ) : (
+                        <div className="settingsRow__desc">Remote head: none yet</div>
+                      )}
+                      {props.googleDriveLastPulledRevision ? (
+                        <div className="settingsRow__desc">
+                          Last pulled on this device: <span className="settingsPathInline">{props.googleDriveLastPulledRevision}</span>
+                        </div>
+                      ) : (
+                        <div className="settingsRow__desc">Last pulled on this device: never</div>
+                      )}
+                      {typeof props.googleDriveRemoteHeadUpdatedAt === 'number' && props.googleDriveRemoteHeadUpdatedAt > 0 ? (
+                        <div className="settingsRow__desc">
+                          Remote updated: {new Date(props.googleDriveRemoteHeadUpdatedAt).toLocaleString()}
+                        </div>
+                      ) : null}
+                      {props.googleDriveRemoteError ? (
+                        <div className="settingsRow__desc">Remote status warning: {props.googleDriveRemoteError}</div>
+                      ) : null}
+                      {props.googleDriveLastLinkError ? (
+                        <div className="settingsRow__desc">Last link error: {props.googleDriveLastLinkError}</div>
+                      ) : null}
+                      {props.googleDriveConfigPath ? (
+                        <div className="settingsRow__desc">
+                          Config path: <span className="settingsPathInline">{props.googleDriveConfigPath}</span>
+                        </div>
+                      ) : null}
+                      <div className="settingsRow__desc">
+                        Config file present: {props.googleDriveConfigExists ? 'yes' : 'no'}
+                      </div>
+                      {props.googleDriveUserDataPath ? (
+                        <div className="settingsRow__desc">
+                          Electron userData: <span className="settingsPathInline">{props.googleDriveUserDataPath}</span>
+                        </div>
+                      ) : null}
+                      {props.googleDriveAppName ? (
+                        <div className="settingsRow__desc">Electron app name: {props.googleDriveAppName}</div>
+                      ) : null}
+                    </div>
+                    <div className="settingsRow__actions">
+                      <button
+                        className="settingsBtn"
+                        type="button"
+                        disabled={!props.canManageGoogleDriveSync}
+                        onClick={props.onLinkGoogleDriveSync}
+                      >
+                        {props.googleDriveLinked ? 'Relink Google Drive…' : 'Link Google Drive…'}
+                      </button>
+                      <button
+                        className="settingsBtn"
+                        type="button"
+                        disabled={!props.canManageGoogleDriveSync || !props.googleDriveLinked}
+                        onClick={props.onUnlinkGoogleDriveSync}
+                      >
+                        Unlink
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="settingsCard">
+                  <div className="settingsRow">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Google Drive actions</div>
+                      <div className="settingsRow__desc">
+                        Push uploads a snapshot directly to Drive. Pull restores from Drive and reloads this app.
+                      </div>
+                    </div>
+                    <div className="settingsRow__actions">
+                      <button
+                        className="settingsBtn"
+                        type="button"
+                        disabled={!props.canManageGoogleDriveSync}
+                        onClick={props.onPushGoogleDriveSync}
+                      >
+                        Push to Drive
+                      </button>
+                      <button
+                        className="settingsBtn"
+                        type="button"
+                        disabled={!props.canManageGoogleDriveSync}
+                        onClick={props.onPullGoogleDriveSync}
+                      >
+                        Pull from Drive
+                      </button>
+                      <button
+                        className="settingsBtn"
+                        type="button"
+                        disabled={!props.canOpenGoogleDriveFolder}
+                        onClick={props.onOpenGoogleDriveFolder}
+                      >
+                        Open Drive folder
                       </button>
                     </div>
                   </div>

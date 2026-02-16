@@ -167,6 +167,22 @@ type CloudSyncInfo = {
   remoteHeadUpdatedAt: number | null;
 };
 
+type GoogleDriveSyncInfo = {
+  linked: boolean;
+  clientId: string | null;
+  hasClientSecret: boolean;
+  folderId: string | null;
+  lastPulledRevision: string | null;
+  lastLinkError: string | null;
+  remoteHeadRevision: string | null;
+  remoteHeadUpdatedAt: number | null;
+  remoteError: string | null;
+  configPath: string | null;
+  configExists: boolean;
+  userDataPath: string | null;
+  appName: string | null;
+};
+
 function cloudSyncInfoFromApiResult(value: any): CloudSyncInfo | null {
   if (!value || typeof value !== 'object') return null;
   const cloudDir = typeof value.cloudDir === 'string' && value.cloudDir.trim() ? value.cloudDir.trim() : null;
@@ -181,6 +197,39 @@ function cloudSyncInfoFromApiResult(value: any): CloudSyncInfo | null {
     lastPulledRevision,
     remoteHeadRevision,
     remoteHeadUpdatedAt: Number.isFinite(remoteHeadUpdatedAtRaw) && remoteHeadUpdatedAtRaw > 0 ? remoteHeadUpdatedAtRaw : null,
+  };
+}
+
+function googleDriveSyncInfoFromApiResult(value: any): GoogleDriveSyncInfo | null {
+  if (!value || typeof value !== 'object') return null;
+  const clientId = typeof value.clientId === 'string' && value.clientId.trim() ? value.clientId.trim() : null;
+  const hasClientSecret = Boolean(value.hasClientSecret);
+  const folderId = typeof value.folderId === 'string' && value.folderId.trim() ? value.folderId.trim() : null;
+  const lastPulledRevision =
+    typeof value.lastPulledRevision === 'string' && value.lastPulledRevision.trim() ? value.lastPulledRevision.trim() : null;
+  const lastLinkError =
+    typeof value.lastLinkError === 'string' && value.lastLinkError.trim() ? value.lastLinkError.trim() : null;
+  const remoteHeadRevision =
+    typeof value.remoteHeadRevision === 'string' && value.remoteHeadRevision.trim() ? value.remoteHeadRevision.trim() : null;
+  const remoteHeadUpdatedAtRaw = Number(value.remoteHeadUpdatedAt);
+  const remoteError = typeof value.remoteError === 'string' && value.remoteError.trim() ? value.remoteError.trim() : null;
+  const configPath = typeof value.configPath === 'string' && value.configPath.trim() ? value.configPath.trim() : null;
+  const userDataPath = typeof value.userDataPath === 'string' && value.userDataPath.trim() ? value.userDataPath.trim() : null;
+  const appName = typeof value.appName === 'string' && value.appName.trim() ? value.appName.trim() : null;
+  return {
+    linked: Boolean(value.linked) || Boolean(folderId),
+    clientId,
+    hasClientSecret,
+    folderId,
+    lastPulledRevision,
+    lastLinkError,
+    remoteHeadRevision,
+    remoteHeadUpdatedAt: Number.isFinite(remoteHeadUpdatedAtRaw) && remoteHeadUpdatedAtRaw > 0 ? remoteHeadUpdatedAtRaw : null,
+    remoteError,
+    configPath,
+    configExists: Boolean(value.configExists),
+    userDataPath,
+    appName,
   };
 }
 
@@ -1398,6 +1447,9 @@ export default function App() {
   const [settingsPanel, setSettingsPanel] = useState<'appearance' | 'models' | 'debug' | 'data' | 'reset'>('appearance');
   const [storageDataDirInfo, setStorageDataDirInfo] = useState<StorageDataDirInfo | null>(null);
   const [cloudSyncInfo, setCloudSyncInfo] = useState<CloudSyncInfo | null>(null);
+  const [googleDriveSyncInfo, setGoogleDriveSyncInfo] = useState<GoogleDriveSyncInfo | null>(null);
+  const [googleDriveClientIdDraft, setGoogleDriveClientIdDraft] = useState('');
+  const [googleDriveClientSecretDraft, setGoogleDriveClientSecretDraft] = useState('');
   const [runtimeApiKeys, setRuntimeApiKeys] = useState<RuntimeApiKeys>(() => getRuntimeApiKeys());
   const [debugHudVisible, setDebugHudVisible] = useState(DEFAULT_DEBUG_HUD_VISIBLE);
   const [sendAllEnabled, setSendAllEnabled] = useState(DEFAULT_SEND_ALL_ENABLED);
@@ -5600,6 +5652,18 @@ export default function App() {
     typeof window !== 'undefined' &&
       typeof (window as any)?.gcElectron?.storageOpenCloudSyncDir === 'function',
   );
+  const canManageGoogleDriveSync = Boolean(
+    typeof window !== 'undefined' &&
+      typeof (window as any)?.gcElectron?.storageGoogleDriveSyncInfo === 'function' &&
+      typeof (window as any)?.gcElectron?.storageGoogleDriveSyncLink === 'function' &&
+      typeof (window as any)?.gcElectron?.storageGoogleDriveSyncUnlink === 'function' &&
+      typeof (window as any)?.gcElectron?.storageGoogleDriveSyncPush === 'function' &&
+      typeof (window as any)?.gcElectron?.storageGoogleDriveSyncPull === 'function',
+  );
+  const canOpenGoogleDriveFolder = Boolean(
+    typeof window !== 'undefined' &&
+      typeof (window as any)?.gcElectron?.storageGoogleDriveSyncOpenFolder === 'function',
+  );
 
   const refreshStorageDataDirInfo = () => {
     const api = (window as any)?.gcElectron;
@@ -5642,10 +5706,35 @@ export default function App() {
     })();
   };
 
+  const refreshGoogleDriveSyncInfo = () => {
+    const api = (window as any)?.gcElectron;
+    if (!api || typeof api.storageGoogleDriveSyncInfo !== 'function') {
+      setGoogleDriveSyncInfo(null);
+      return;
+    }
+    void (async () => {
+      try {
+        const res = await api.storageGoogleDriveSyncInfo();
+        if (!res?.ok) return;
+        const nextInfo = googleDriveSyncInfoFromApiResult(res);
+        setGoogleDriveSyncInfo(nextInfo);
+        if (nextInfo?.clientId) {
+          setGoogleDriveClientIdDraft((prev) => {
+            const current = String(prev ?? '').trim();
+            return current ? prev : nextInfo.clientId ?? '';
+          });
+        }
+      } catch {
+        // ignore
+      }
+    })();
+  };
+
   useEffect(() => {
     if (!settingsOpen || settingsPanel !== 'data') return;
     refreshStorageDataDirInfo();
     refreshCloudSyncInfo();
+    refreshGoogleDriveSyncInfo();
   }, [settingsOpen, settingsPanel]);
 
   const openStorageFolder = () => {
@@ -5865,6 +5954,141 @@ export default function App() {
         }, 260);
       } catch (err: any) {
         showToast(`Cloud pull failed: ${err?.message || String(err)}`, 'error', 5200);
+      }
+    })();
+  };
+
+  const linkGoogleDriveSync = () => {
+    const api = (window as any)?.gcElectron;
+    if (!api || typeof api.storageGoogleDriveSyncLink !== 'function') {
+      showToast('Google Drive direct sync is only available in Electron desktop mode.', 'info');
+      return;
+    }
+
+    const clientId = String(googleDriveClientIdDraft ?? '').trim() || String(googleDriveSyncInfo?.clientId ?? '').trim();
+    if (!clientId) {
+      showToast('Enter your Google OAuth client ID in Settings before linking Google Drive.', 'error');
+      return;
+    }
+
+    void (async () => {
+      try {
+        const clientSecret = String(googleDriveClientSecretDraft ?? '').trim();
+        const req: { clientId: string; clientSecret?: string } = { clientId };
+        if (clientSecret) req.clientSecret = clientSecret;
+        const res = await api.storageGoogleDriveSyncLink(req);
+        if (!res?.ok) {
+          showToast(`Google Drive link failed: ${String(res?.error ?? 'unknown error')}`, 'error', 5200);
+          refreshGoogleDriveSyncInfo();
+          return;
+        }
+        const nextInfo = googleDriveSyncInfoFromApiResult(res);
+        setGoogleDriveSyncInfo(nextInfo);
+        if (nextInfo?.clientId) setGoogleDriveClientIdDraft(nextInfo.clientId);
+        refreshGoogleDriveSyncInfo();
+        showToast('Google Drive linked.', 'success');
+      } catch (err: any) {
+        showToast(`Google Drive link failed: ${err?.message || String(err)}`, 'error', 5200);
+        refreshGoogleDriveSyncInfo();
+      }
+    })();
+  };
+
+  const unlinkGoogleDriveSync = () => {
+    const api = (window as any)?.gcElectron;
+    if (!api || typeof api.storageGoogleDriveSyncUnlink !== 'function') {
+      showToast('Google Drive direct sync is only available in Electron desktop mode.', 'info');
+      return;
+    }
+    if (!window.confirm('Unlink Google Drive on this device? This does not delete snapshots already in Drive.')) return;
+    void (async () => {
+      try {
+        const res = await api.storageGoogleDriveSyncUnlink();
+        if (!res?.ok) {
+          showToast(`Failed to unlink Google Drive: ${String(res?.error ?? 'unknown error')}`, 'error');
+          return;
+        }
+        setGoogleDriveSyncInfo(googleDriveSyncInfoFromApiResult(res));
+        showToast('Google Drive unlinked.', 'success');
+      } catch (err: any) {
+        showToast(`Failed to unlink Google Drive: ${err?.message || String(err)}`, 'error');
+      }
+    })();
+  };
+
+  const openGoogleDriveFolder = () => {
+    const api = (window as any)?.gcElectron;
+    if (!api || typeof api.storageGoogleDriveSyncOpenFolder !== 'function') {
+      showToast('Open Google Drive folder is only available in Electron desktop mode.', 'info');
+      return;
+    }
+    void (async () => {
+      try {
+        const res = await api.storageGoogleDriveSyncOpenFolder();
+        if (!res?.ok) {
+          showToast(`Failed to open Google Drive folder: ${String(res?.error ?? 'unknown error')}`, 'error');
+        }
+      } catch (err: any) {
+        showToast(`Failed to open Google Drive folder: ${err?.message || String(err)}`, 'error');
+      }
+    })();
+  };
+
+  const pushToGoogleDriveSync = () => {
+    const api = (window as any)?.gcElectron;
+    if (!api || typeof api.storageGoogleDriveSyncPush !== 'function') {
+      showToast('Google Drive direct sync is only available in Electron desktop mode.', 'info');
+      return;
+    }
+    void (async () => {
+      try {
+        await flushPendingPersistenceForCloudSync();
+        const res = await api.storageGoogleDriveSyncPush();
+        if (!res?.ok) {
+          showToast(`Google Drive push failed: ${String(res?.error ?? 'unknown error')}`, 'error', 5200);
+          return;
+        }
+        setGoogleDriveSyncInfo(googleDriveSyncInfoFromApiResult(res));
+        const rev = String(res?.pushedRevision ?? '').trim();
+        showToast(rev ? `Pushed to Google Drive (${rev}).` : 'Pushed to Google Drive.', 'success');
+      } catch (err: any) {
+        showToast(`Google Drive push failed: ${err?.message || String(err)}`, 'error', 5200);
+      }
+    })();
+  };
+
+  const pullFromGoogleDriveSync = () => {
+    const api = (window as any)?.gcElectron;
+    if (!api || typeof api.storageGoogleDriveSyncPull !== 'function') {
+      showToast('Google Drive direct sync is only available in Electron desktop mode.', 'info');
+      return;
+    }
+    const head = String(googleDriveSyncInfo?.remoteHeadRevision ?? '').trim();
+    const prompt = head
+      ? `Pull Google Drive revision ${head} and replace local data?\n\nA local backup will be created automatically.`
+      : 'Pull from Google Drive and replace local data?\n\nA local backup will be created automatically.';
+    if (!window.confirm(prompt)) return;
+
+    void (async () => {
+      try {
+        await flushPendingPersistenceForCloudSync();
+        const res = await api.storageGoogleDriveSyncPull();
+        if (!res?.ok) {
+          showToast(`Google Drive pull failed: ${String(res?.error ?? 'unknown error')}`, 'error', 5200);
+          return;
+        }
+        setGoogleDriveSyncInfo(googleDriveSyncInfoFromApiResult(res));
+        const backupPath = String(res?.backupPath ?? '').trim();
+        if (backupPath) {
+          showToast('Google Drive pull complete. Local backup created; reloading…', 'success', 1000);
+        } else {
+          showToast('Google Drive pull complete. Reloading…', 'success', 1000);
+        }
+        window.setTimeout(() => {
+          window.location.reload();
+        }, 260);
+      } catch (err: any) {
+        showToast(`Google Drive pull failed: ${err?.message || String(err)}`, 'error', 5200);
       }
     })();
   };
@@ -8596,6 +8820,30 @@ export default function App() {
             onOpenCloudSyncFolder={openCloudSyncFolder}
             onPushCloudSync={pushToCloudSyncFolder}
             onPullCloudSync={pullFromCloudSyncFolder}
+            googleDriveLinked={Boolean(googleDriveSyncInfo?.linked)}
+            googleDriveClientId={googleDriveSyncInfo?.clientId ?? null}
+            googleDriveClientIdDraft={googleDriveClientIdDraft}
+            onChangeGoogleDriveClientIdDraft={(next) => setGoogleDriveClientIdDraft(next)}
+            googleDriveClientSecretDraft={googleDriveClientSecretDraft}
+            onChangeGoogleDriveClientSecretDraft={(next) => setGoogleDriveClientSecretDraft(next)}
+            googleDriveHasClientSecret={Boolean(googleDriveSyncInfo?.hasClientSecret)}
+            googleDriveFolderId={googleDriveSyncInfo?.folderId ?? null}
+            googleDriveLastPulledRevision={googleDriveSyncInfo?.lastPulledRevision ?? null}
+            googleDriveLastLinkError={googleDriveSyncInfo?.lastLinkError ?? null}
+            googleDriveRemoteHeadRevision={googleDriveSyncInfo?.remoteHeadRevision ?? null}
+            googleDriveRemoteHeadUpdatedAt={googleDriveSyncInfo?.remoteHeadUpdatedAt ?? null}
+            googleDriveRemoteError={googleDriveSyncInfo?.remoteError ?? null}
+            googleDriveConfigPath={googleDriveSyncInfo?.configPath ?? null}
+            googleDriveConfigExists={googleDriveSyncInfo?.configExists ?? false}
+            googleDriveUserDataPath={googleDriveSyncInfo?.userDataPath ?? null}
+            googleDriveAppName={googleDriveSyncInfo?.appName ?? null}
+            canManageGoogleDriveSync={canManageGoogleDriveSync}
+            canOpenGoogleDriveFolder={canOpenGoogleDriveFolder}
+            onLinkGoogleDriveSync={linkGoogleDriveSync}
+            onUnlinkGoogleDriveSync={unlinkGoogleDriveSync}
+            onOpenGoogleDriveFolder={openGoogleDriveFolder}
+            onPushGoogleDriveSync={pushToGoogleDriveSync}
+            onPullGoogleDriveSync={pullFromGoogleDriveSync}
             cleanupChatFoldersOnDelete={cleanupChatFoldersOnDelete}
             onToggleCleanupChatFoldersOnDelete={() => {
               const next = !cleanupChatFoldersOnDeleteRef.current;

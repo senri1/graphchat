@@ -1,7 +1,8 @@
 const fs = require('fs/promises');
 const fsSync = require('fs');
 const path = require('path');
-const { randomUUID } = require('crypto');
+const http = require('http');
+const { randomUUID, randomBytes, createHash } = require('crypto');
 
 const STORAGE_ROOT_DIRNAME = 'GraphChatV1Data';
 const STORAGE_SCHEMA_DIRNAME = 'v1';
@@ -10,6 +11,14 @@ const CLOUD_SYNC_CONFIG_FILE = 'cloud-sync.json';
 const CLOUD_SYNC_SNAPSHOTS_DIRNAME = 'snapshots';
 const CLOUD_SYNC_HEAD_FILE = 'HEAD.json';
 const CLOUD_SYNC_SCHEMA_VERSION = 1;
+const GOOGLE_DRIVE_SYNC_CONFIG_FILE = 'google-drive-sync.json';
+const GOOGLE_DRIVE_SCOPES = [
+  'https://www.googleapis.com/auth/drive.file',
+  'openid',
+  'email',
+];
+const GOOGLE_DRIVE_ROOT_FOLDER_NAME = 'GraphChatV1 Sync';
+const GOOGLE_DRIVE_HEAD_FILE = 'HEAD.json';
 
 let storageBaseDirOverride = null;
 let storageLocationConfigLoaded = false;
@@ -44,6 +53,10 @@ function storageLocationConfigPath(app) {
 
 function cloudSyncConfigPath(app) {
   return path.join(app.getPath('userData'), CLOUD_SYNC_CONFIG_FILE);
+}
+
+function googleDriveSyncConfigPath(app) {
+  return path.join(app.getPath('userData'), GOOGLE_DRIVE_SYNC_CONFIG_FILE);
 }
 
 function normalizeAbsoluteDirOrNull(value) {
@@ -309,6 +322,753 @@ async function pullStorageFromCloud(app) {
   return { revision, backupPath };
 }
 
+function normalizeGoogleDriveSyncConfig(raw) {
+  return {
+    clientId: asTrimmedString(raw?.clientId) || null,
+    clientSecret: asTrimmedString(raw?.clientSecret) || null,
+    refreshToken: asTrimmedString(raw?.refreshToken) || null,
+    folderId: asTrimmedString(raw?.folderId) || null,
+    lastPulledRevision: asTrimmedString(raw?.lastPulledRevision) || null,
+    lastLinkError: asTrimmedString(raw?.lastLinkError) || null,
+  };
+}
+
+async function readGoogleDriveSyncConfig(app) {
+  const cfg = await readJsonOrNull(googleDriveSyncConfigPath(app));
+  if (!cfg || typeof cfg !== 'object') {
+    return {
+      clientId: null,
+      clientSecret: null,
+      refreshToken: null,
+      folderId: null,
+      lastPulledRevision: null,
+      lastLinkError: null,
+    };
+  }
+  return normalizeGoogleDriveSyncConfig(cfg);
+}
+
+async function writeGoogleDriveSyncConfig(app, cfg) {
+  const next = normalizeGoogleDriveSyncConfig(cfg);
+  if (!next.clientId && !next.clientSecret && !next.refreshToken && !next.folderId && !next.lastPulledRevision && !next.lastLinkError) {
+    await removeFileIfExists(googleDriveSyncConfigPath(app));
+    return {
+      clientId: null,
+      clientSecret: null,
+      refreshToken: null,
+      folderId: null,
+      lastPulledRevision: null,
+      lastLinkError: null,
+    };
+  }
+  await writeJsonAtomic(googleDriveSyncConfigPath(app), {
+    clientId: next.clientId,
+    clientSecret: next.clientSecret,
+    refreshToken: next.refreshToken,
+    folderId: next.folderId,
+    lastPulledRevision: next.lastPulledRevision,
+    lastLinkError: next.lastLinkError,
+    updatedAt: Date.now(),
+  });
+  return next;
+}
+
+function base64UrlNoPad(bytes) {
+  const src = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+  return src
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function googleDriveQueryLiteral(value) {
+  return String(value ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+function googleSnapshotFileName(revision, relPath) {
+  return `snapshot-${revision}--${encodeURIComponent(relPath)}`;
+}
+
+function parseGoogleSnapshotRelPath(name, revision) {
+  const prefix = `snapshot-${revision}--`;
+  if (!String(name ?? '').startsWith(prefix)) return null;
+  const encoded = String(name).slice(prefix.length);
+  if (!encoded) return null;
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeRelativePathForWrite(relPath) {
+  const raw = String(relPath ?? '').replace(/\\/g, '/');
+  const normalized = path.posix.normalize(raw).replace(/^\/+/g, '');
+  if (!normalized || normalized === '.' || normalized.startsWith('../') || normalized.includes('/../')) return null;
+  return normalized;
+}
+
+async function collectLocalFilesRecursively(rootDir) {
+  const root = path.resolve(rootDir);
+  if (!(await dirExists(root))) return [];
+  const out = [];
+  const stack = [''];
+  while (stack.length > 0) {
+    const relDir = stack.pop() ?? '';
+    const absDir = path.join(root, relDir);
+    const entries = await fs.readdir(absDir, { withFileTypes: true });
+    entries.sort((a, b) => String(a.name ?? '').localeCompare(String(b.name ?? '')));
+    for (const entry of entries) {
+      const name = String(entry.name ?? '');
+      if (!name || name === '.' || name === '..') continue;
+      const relPath = relDir ? path.posix.join(relDir, name) : name;
+      if (entry.isDirectory()) {
+        stack.push(relPath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      out.push({
+        relPath,
+        absPath: path.join(root, relPath),
+      });
+    }
+  }
+  out.sort((a, b) => a.relPath.localeCompare(b.relPath));
+  return out;
+}
+
+async function runWithConcurrency(items, limit, worker) {
+  const max = Number.isFinite(Number(limit)) ? Math.max(1, Math.floor(Number(limit))) : 1;
+  if (!Array.isArray(items) || items.length === 0) return;
+  let nextIndex = 0;
+  const runners = new Array(Math.min(max, items.length)).fill(0).map(async () => {
+    while (true) {
+      const idx = nextIndex;
+      nextIndex += 1;
+      if (idx >= items.length) break;
+      await worker(items[idx], idx);
+    }
+  });
+  await Promise.all(runners);
+}
+
+async function googleFetchJson(url, opts, fallbackMessage) {
+  if (typeof fetch !== 'function') throw new Error('Fetch API is unavailable in this Electron runtime.');
+  const res = await fetch(url, opts);
+  const text = await res.text();
+  let parsed = null;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch {
+    parsed = null;
+  }
+  if (!res.ok) {
+    const apiMsg =
+      asTrimmedString(parsed?.error?.message) ||
+      asTrimmedString(parsed?.error_description) ||
+      asTrimmedString(parsed?.error) ||
+      asTrimmedString(text);
+    throw new Error(`${fallbackMessage} (${res.status})${apiMsg ? `: ${apiMsg}` : ''}`);
+  }
+  return parsed || {};
+}
+
+async function googleFetchBuffer(url, opts, fallbackMessage) {
+  if (typeof fetch !== 'function') throw new Error('Fetch API is unavailable in this Electron runtime.');
+  const res = await fetch(url, opts);
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    let parsed = null;
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      parsed = null;
+    }
+    const apiMsg =
+      asTrimmedString(parsed?.error?.message) ||
+      asTrimmedString(parsed?.error_description) ||
+      asTrimmedString(parsed?.error) ||
+      asTrimmedString(text);
+    throw new Error(`${fallbackMessage} (${res.status})${apiMsg ? `: ${apiMsg}` : ''}`);
+  }
+  const buf = Buffer.from(await res.arrayBuffer());
+  return buf;
+}
+
+async function googleTokenByRefreshToken(cfg) {
+  const clientId = asTrimmedString(cfg?.clientId);
+  const clientSecret = asTrimmedString(cfg?.clientSecret);
+  const refreshToken = asTrimmedString(cfg?.refreshToken);
+  if (!clientId || !refreshToken) throw new Error('Google Drive is not linked. Link Google Drive first.');
+  const body = new URLSearchParams({
+    client_id: clientId,
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+  });
+  if (clientSecret) body.set('client_secret', clientSecret);
+  const token = await googleFetchJson(
+    'https://oauth2.googleapis.com/token',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    },
+    'Failed to refresh Google access token',
+  );
+  const accessToken = asTrimmedString(token?.access_token);
+  if (!accessToken) throw new Error('Google token response did not include access_token.');
+  return accessToken;
+}
+
+async function googleDriveListFiles(accessToken, q, opts = {}) {
+  const pageSize = Number.isFinite(Number(opts.pageSize)) ? Math.max(1, Math.min(1000, Math.floor(Number(opts.pageSize)))) : 1000;
+  const fields = asTrimmedString(opts.fields) || 'nextPageToken,files(id,name,mimeType,modifiedTime,size)';
+  const out = [];
+  let pageToken = '';
+  while (true) {
+    const url = new URL('https://www.googleapis.com/drive/v3/files');
+    url.searchParams.set('q', q);
+    url.searchParams.set('spaces', 'drive');
+    url.searchParams.set('fields', fields);
+    url.searchParams.set('pageSize', String(pageSize));
+    url.searchParams.set('orderBy', 'name');
+    if (pageToken) url.searchParams.set('pageToken', pageToken);
+    const res = await googleFetchJson(
+      url.toString(),
+      {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${accessToken}` },
+      },
+      'Failed to list Google Drive files',
+    );
+    const files = Array.isArray(res?.files) ? res.files : [];
+    out.push(...files);
+    const next = asTrimmedString(res?.nextPageToken);
+    if (!next) break;
+    pageToken = next;
+  }
+  return out;
+}
+
+async function googleDriveFindFileByName(accessToken, parentId, name, opts = {}) {
+  const parent = asTrimmedString(parentId);
+  const fileName = asTrimmedString(name);
+  if (!parent || !fileName) return null;
+  let q = `'${googleDriveQueryLiteral(parent)}' in parents and trashed=false and name='${googleDriveQueryLiteral(fileName)}'`;
+  const mimeType = asTrimmedString(opts.mimeType);
+  if (mimeType) q += ` and mimeType='${googleDriveQueryLiteral(mimeType)}'`;
+  const files = await googleDriveListFiles(accessToken, q, {
+    pageSize: 10,
+    fields: 'files(id,name,mimeType,modifiedTime,size)',
+  });
+  return files[0] ?? null;
+}
+
+async function googleDriveCreateFolder(accessToken, parentId, name) {
+  const metadata = {
+    name,
+    mimeType: 'application/vnd.google-apps.folder',
+    parents: [parentId],
+  };
+  const res = await googleFetchJson(
+    'https://www.googleapis.com/drive/v3/files?fields=id,name',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json; charset=utf-8',
+      },
+      body: JSON.stringify(metadata),
+    },
+    'Failed to create Google Drive folder',
+  );
+  const id = asTrimmedString(res?.id);
+  if (!id) throw new Error('Google Drive folder creation returned no id.');
+  return id;
+}
+
+async function googleDriveEnsureFolder(accessToken, parentId, name) {
+  const existing = await googleDriveFindFileByName(accessToken, parentId, name, {
+    mimeType: 'application/vnd.google-apps.folder',
+  });
+  const existingId = asTrimmedString(existing?.id);
+  if (existingId) return existingId;
+  return await googleDriveCreateFolder(accessToken, parentId, name);
+}
+
+function googleMultipartBody(metadata, bytes, mimeType) {
+  const boundary = `graphchatv1_${Date.now().toString(36)}_${Math.random().toString(16).slice(2)}`;
+  const metaPart = Buffer.from(
+    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n`,
+    'utf8',
+  );
+  const dataPartHeader = Buffer.from(
+    `--${boundary}\r\nContent-Type: ${mimeType || 'application/octet-stream'}\r\n\r\n`,
+    'utf8',
+  );
+  const dataPart = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+  const tail = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
+  return {
+    boundary,
+    body: Buffer.concat([metaPart, dataPartHeader, dataPart, tail]),
+  };
+}
+
+async function googleDriveCreateMultipartFile(accessToken, metadata, bytes, mimeType) {
+  const { boundary, body } = googleMultipartBody(metadata, bytes, mimeType);
+  const res = await googleFetchJson(
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': `multipart/related; boundary=${boundary}`,
+      },
+      body,
+    },
+    'Failed to upload file to Google Drive',
+  );
+  return res;
+}
+
+async function googleDriveUpdateMultipartFile(accessToken, fileId, metadata, bytes, mimeType) {
+  const id = asTrimmedString(fileId);
+  if (!id) throw new Error('Google Drive file id is missing.');
+  const { boundary, body } = googleMultipartBody(metadata, bytes, mimeType);
+  const res = await googleFetchJson(
+    `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(id)}?uploadType=multipart&fields=id,name`,
+    {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': `multipart/related; boundary=${boundary}`,
+      },
+      body,
+    },
+    'Failed to update file in Google Drive',
+  );
+  return res;
+}
+
+async function googleDriveDownloadFile(accessToken, fileId) {
+  const id = asTrimmedString(fileId);
+  if (!id) throw new Error('Google Drive file id is missing.');
+  return await googleFetchBuffer(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?alt=media`,
+    {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    },
+    'Failed to download file from Google Drive',
+  );
+}
+
+async function googleDriveReadHead(accessToken, folderId) {
+  const headFile = await googleDriveFindFileByName(accessToken, folderId, GOOGLE_DRIVE_HEAD_FILE);
+  const headFileId = asTrimmedString(headFile?.id);
+  if (!headFileId) return null;
+  const buf = await googleDriveDownloadFile(accessToken, headFileId);
+  let parsed = null;
+  try {
+    parsed = JSON.parse(buf.toString('utf8'));
+  } catch {
+    parsed = null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const revision = asTrimmedString(parsed.revision);
+  if (!revision) return null;
+  const updatedAtRaw = Number(parsed.updatedAt);
+  return {
+    fileId: headFileId,
+    revision,
+    updatedAt: Number.isFinite(updatedAtRaw) ? updatedAtRaw : 0,
+  };
+}
+
+async function googleDriveWriteHead(accessToken, folderId, payload) {
+  const json = Buffer.from(`${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  const existing = await googleDriveFindFileByName(accessToken, folderId, GOOGLE_DRIVE_HEAD_FILE);
+  const existingId = asTrimmedString(existing?.id);
+  if (existingId) {
+    await googleDriveUpdateMultipartFile(
+      accessToken,
+      existingId,
+      { name: GOOGLE_DRIVE_HEAD_FILE },
+      json,
+      'application/json',
+    );
+    return existingId;
+  }
+  const created = await googleDriveCreateMultipartFile(
+    accessToken,
+    { name: GOOGLE_DRIVE_HEAD_FILE, parents: [folderId] },
+    json,
+    'application/json',
+  );
+  return asTrimmedString(created?.id);
+}
+
+async function getGoogleDriveSyncInfo(app) {
+  const configPath = googleDriveSyncConfigPath(app);
+  const userDataPath = asStringOrUndefined(app?.getPath?.('userData'));
+  const cfg = await readGoogleDriveSyncConfig(app);
+  const configExists = await fileExists(configPath);
+  const linked = Boolean(cfg.clientId && cfg.refreshToken && cfg.folderId);
+  let remoteHead = null;
+  let remoteError = null;
+  if (linked) {
+    try {
+      const accessToken = await googleTokenByRefreshToken(cfg);
+      remoteHead = await googleDriveReadHead(accessToken, cfg.folderId);
+    } catch (err) {
+      remoteHead = null;
+      remoteError = shortError(err?.message ?? err, 'Failed to read Google Drive head.');
+    }
+  }
+  return {
+    linked,
+    clientId: cfg.clientId || undefined,
+    hasClientSecret: Boolean(cfg.clientSecret),
+    folderId: cfg.folderId || undefined,
+    lastPulledRevision: cfg.lastPulledRevision || undefined,
+    lastLinkError: cfg.lastLinkError || undefined,
+    remoteHeadRevision: remoteHead?.revision || undefined,
+    remoteHeadUpdatedAt: remoteHead ? remoteHead.updatedAt : undefined,
+    remoteError: remoteError || undefined,
+    configPath: configPath || undefined,
+    configExists,
+    appName: asStringOrUndefined(app?.getName?.()),
+    userDataPath,
+  };
+}
+
+async function runGoogleDriveOAuthFlow(args) {
+  const clientId = asTrimmedString(args?.clientId);
+  const clientSecret = asTrimmedString(args?.clientSecret);
+  const shell = args?.shell;
+  if (!clientId) throw new Error('Google OAuth client ID is required.');
+  if (!shell || typeof shell.openExternal !== 'function') throw new Error('Shell API unavailable.');
+  if (typeof fetch !== 'function') throw new Error('Fetch API is unavailable in this Electron runtime.');
+
+  const codeVerifier = base64UrlNoPad(randomBytes(64));
+  const codeChallenge = base64UrlNoPad(createHash('sha256').update(codeVerifier).digest());
+  const state = base64UrlNoPad(randomBytes(20));
+
+  const server = http.createServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', reject);
+      resolve();
+    });
+  });
+
+  const address = server.address();
+  const port = address && typeof address === 'object' ? Number(address.port) : 0;
+  if (!Number.isFinite(port) || port <= 0) {
+    server.close();
+    throw new Error('Failed to start OAuth callback server.');
+  }
+
+  const redirectUri = `http://127.0.0.1:${port}/oauth2callback`;
+  const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+  authUrl.searchParams.set('client_id', clientId);
+  authUrl.searchParams.set('redirect_uri', redirectUri);
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('scope', GOOGLE_DRIVE_SCOPES.join(' '));
+  authUrl.searchParams.set('access_type', 'offline');
+  authUrl.searchParams.set('prompt', 'consent');
+  authUrl.searchParams.set('include_granted_scopes', 'true');
+  authUrl.searchParams.set('code_challenge', codeChallenge);
+  authUrl.searchParams.set('code_challenge_method', 'S256');
+  authUrl.searchParams.set('state', state);
+
+  const callbackResultPromise = new Promise((resolve, reject) => {
+    let settled = false;
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      fn(value);
+    };
+
+    const timeout = setTimeout(() => {
+      settle(reject, new Error('Google sign-in timed out.'));
+    }, 180000);
+
+    server.on('request', (req, res) => {
+      const host = asTrimmedString(req?.headers?.host) || `127.0.0.1:${port}`;
+      const parsed = new URL(req?.url || '/', `http://${host}`);
+      if (parsed.pathname !== '/oauth2callback') {
+        res.statusCode = 404;
+        res.end('Not found');
+        return;
+      }
+
+      const incomingState = asTrimmedString(parsed.searchParams.get('state'));
+      const code = asTrimmedString(parsed.searchParams.get('code'));
+      const error = asTrimmedString(parsed.searchParams.get('error'));
+
+      if (incomingState !== state) {
+        res.statusCode = 400;
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.end('<h3>State mismatch. You can close this tab.</h3>');
+        clearTimeout(timeout);
+        settle(reject, new Error('Google OAuth state mismatch.'));
+        return;
+      }
+
+      if (error) {
+        res.statusCode = 400;
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.end('<h3>Google sign-in was canceled. You can close this tab.</h3>');
+        clearTimeout(timeout);
+        settle(reject, new Error(`Google sign-in failed: ${error}`));
+        return;
+      }
+
+      if (!code) {
+        res.statusCode = 400;
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.end('<h3>Missing authorization code. You can close this tab.</h3>');
+        clearTimeout(timeout);
+        settle(reject, new Error('Google sign-in did not return an authorization code.'));
+        return;
+      }
+
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.end('<h3>Authorization received. Return to GraphChatV1 to finish linking.</h3>');
+      clearTimeout(timeout);
+      settle(resolve, { code });
+    });
+  });
+
+  const openErr = await shell.openExternal(authUrl.toString());
+  if (asTrimmedString(openErr)) {
+    server.close();
+    throw new Error(`Failed to open browser for Google sign-in: ${openErr}`);
+  }
+
+  try {
+    const callback = await callbackResultPromise;
+    const code = asTrimmedString(callback?.code);
+    if (!code) throw new Error('Google sign-in failed: missing code.');
+    const tokenBody = new URLSearchParams({
+      code,
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      grant_type: 'authorization_code',
+      code_verifier: codeVerifier,
+    });
+    if (clientSecret) tokenBody.set('client_secret', clientSecret);
+    const token = await googleFetchJson(
+      'https://oauth2.googleapis.com/token',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: tokenBody.toString(),
+      },
+      'Failed to exchange Google authorization code',
+    );
+    const accessToken = asTrimmedString(token?.access_token);
+    const refreshToken = asTrimmedString(token?.refresh_token);
+    if (!accessToken) throw new Error('Google token response did not include access_token.');
+    if (!refreshToken) {
+      throw new Error('Google token response did not include refresh_token. Remove existing app access and try again.');
+    }
+    return {
+      clientId,
+      clientSecret: clientSecret || null,
+      accessToken,
+      refreshToken,
+    };
+  } finally {
+    try {
+      server.close();
+    } catch {
+      // ignore
+    }
+  }
+}
+
+async function linkGoogleDriveSync(app, shell, req) {
+  const current = await readGoogleDriveSyncConfig(app);
+  const requestedClientId = asTrimmedString(req?.clientId);
+  const hasRequestedClientSecret = Boolean(req && Object.prototype.hasOwnProperty.call(req, 'clientSecret'));
+  const requestedClientSecret = asTrimmedString(req?.clientSecret);
+  const clientId = requestedClientId || current.clientId;
+  const clientSecret = hasRequestedClientSecret ? (requestedClientSecret || null) : current.clientSecret;
+  if (!clientId) throw new Error('Google OAuth client ID is required.');
+
+  const auth = await runGoogleDriveOAuthFlow({ clientId, clientSecret, shell });
+  const folderId = await googleDriveEnsureFolder(auth.accessToken, 'root', GOOGLE_DRIVE_ROOT_FOLDER_NAME);
+  const head = await googleDriveReadHead(auth.accessToken, folderId);
+  await writeGoogleDriveSyncConfig(app, {
+    clientId,
+    clientSecret: auth.clientSecret || null,
+    refreshToken: auth.refreshToken,
+    folderId,
+    lastPulledRevision: head?.revision || null,
+    lastLinkError: null,
+  });
+  const persisted = await readGoogleDriveSyncConfig(app);
+  if (!persisted.clientId || !persisted.refreshToken || !persisted.folderId) {
+    throw new Error(
+      `Google authorization succeeded, but credentials could not be persisted at ${googleDriveSyncConfigPath(app)}.`,
+    );
+  }
+  return await getGoogleDriveSyncInfo(app);
+}
+
+async function pushStorageToGoogleDrive(app, opts = {}) {
+  const cfg = await readGoogleDriveSyncConfig(app);
+  if (!cfg.clientId || !cfg.refreshToken || !cfg.folderId) {
+    throw new Error('Google Drive is not linked. Link Google Drive first.');
+  }
+
+  const accessToken = await googleTokenByRefreshToken(cfg);
+  const remoteHead = await googleDriveReadHead(accessToken, cfg.folderId);
+  const remoteRevision = remoteHead?.revision || null;
+  const localLastPulled = cfg.lastPulledRevision || null;
+  const force = opts?.force === true;
+  if (!force && remoteRevision && remoteRevision !== localLastPulled) {
+    if (localLastPulled) {
+      throw new Error(`Google Drive has newer revision ${remoteRevision}. Pull first (local last pulled ${localLastPulled}).`);
+    }
+    throw new Error(`Google Drive already has revision ${remoteRevision}. Pull first on this device before pushing.`);
+  }
+
+  const revision = makeCloudRevisionId();
+  const localRoot = storageRootDir(app);
+  const localFiles = await collectLocalFilesRecursively(localRoot);
+
+  const manifest = Buffer.from(
+    `${JSON.stringify(
+      {
+        schemaVersion: CLOUD_SYNC_SCHEMA_VERSION,
+        revision,
+        createdAt: Date.now(),
+        createdAtIso: new Date().toISOString(),
+        app: 'graphchatv1',
+        storageSchema: STORAGE_SCHEMA_DIRNAME,
+        fileCount: localFiles.length,
+      },
+      null,
+      2,
+    )}\n`,
+    'utf8',
+  );
+
+  await googleDriveCreateMultipartFile(
+    accessToken,
+    {
+      name: googleSnapshotFileName(revision, 'manifest.json'),
+      parents: [cfg.folderId],
+    },
+    manifest,
+    'application/json',
+  );
+
+  await runWithConcurrency(localFiles, 3, async (file) => {
+    const bytes = await fs.readFile(file.absPath);
+    await googleDriveCreateMultipartFile(
+      accessToken,
+      {
+        name: googleSnapshotFileName(revision, file.relPath),
+        parents: [cfg.folderId],
+      },
+      bytes,
+      'application/octet-stream',
+    );
+  });
+
+  await googleDriveWriteHead(accessToken, cfg.folderId, {
+    schemaVersion: CLOUD_SYNC_SCHEMA_VERSION,
+    revision,
+    updatedAt: Date.now(),
+    updatedAtIso: new Date().toISOString(),
+  });
+
+  await writeGoogleDriveSyncConfig(app, {
+    ...cfg,
+    lastPulledRevision: revision,
+  });
+  return { revision, fileCount: localFiles.length + 1 };
+}
+
+async function pullStorageFromGoogleDrive(app) {
+  const cfg = await readGoogleDriveSyncConfig(app);
+  if (!cfg.clientId || !cfg.refreshToken || !cfg.folderId) {
+    throw new Error('Google Drive is not linked. Link Google Drive first.');
+  }
+
+  const accessToken = await googleTokenByRefreshToken(cfg);
+  const remoteHead = await googleDriveReadHead(accessToken, cfg.folderId);
+  const revision = asTrimmedString(remoteHead?.revision);
+  if (!revision) throw new Error('Google Drive has no pushed snapshot yet.');
+
+  const prefix = `snapshot-${revision}--`;
+  const q = `'${googleDriveQueryLiteral(cfg.folderId)}' in parents and trashed=false and name contains '${googleDriveQueryLiteral(prefix)}'`;
+  const remoteFilesRaw = await googleDriveListFiles(accessToken, q, {
+    pageSize: 1000,
+    fields: 'nextPageToken,files(id,name,size,modifiedTime,mimeType)',
+  });
+  const remoteFiles = remoteFilesRaw
+    .map((f) => ({
+      id: asTrimmedString(f?.id),
+      name: asTrimmedString(f?.name),
+      relPath: parseGoogleSnapshotRelPath(f?.name, revision),
+    }))
+    .filter((f) => f.id && f.name && f.relPath);
+  if (remoteFiles.length === 0) throw new Error(`Google Drive snapshot ${revision} is empty or missing.`);
+
+  const localRoot = storageRootDir(app);
+  const localTmpDir = `${localRoot}.gdrive-pull-tmp-${process.pid}-${Date.now()}`;
+  await fs.rm(localTmpDir, { recursive: true, force: true });
+  await fs.mkdir(localTmpDir, { recursive: true });
+
+  await runWithConcurrency(remoteFiles, 3, async (remoteFile) => {
+    const safeRelPath = normalizeRelativePathForWrite(remoteFile.relPath);
+    if (!safeRelPath) return;
+    const bytes = await googleDriveDownloadFile(accessToken, remoteFile.id);
+    const absPath = path.join(localTmpDir, ...safeRelPath.split('/'));
+    await fs.mkdir(path.dirname(absPath), { recursive: true });
+    await fs.writeFile(absPath, bytes);
+  });
+
+  let backupPath = null;
+  if (await dirExists(localRoot)) {
+    const stamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
+    const suffix = Math.random().toString(36).slice(2, 7);
+    backupPath = path.join(
+      localCloudPullBackupsDir(app),
+      `${stamp}-${encodeFsSegment(revision.slice(0, 20) || 'backup', 'Backup revision')}-${suffix}`,
+    );
+    await fs.mkdir(path.dirname(backupPath), { recursive: true });
+    await fs.cp(localRoot, backupPath, {
+      recursive: true,
+      force: false,
+      errorOnExist: true,
+    });
+  }
+
+  try {
+    await fs.rm(localRoot, { recursive: true, force: true });
+    await fs.mkdir(path.dirname(localRoot), { recursive: true });
+    await fs.rename(localTmpDir, localRoot);
+  } catch (err) {
+    await fs.rm(localTmpDir, { recursive: true, force: true });
+    throw err;
+  }
+
+  await writeGoogleDriveSyncConfig(app, {
+    ...cfg,
+    lastPulledRevision: revision,
+  });
+  return { revision, backupPath, fileCount: remoteFiles.length };
+}
+
 async function persistStorageLocationConfig(app) {
   const cfgPath = storageLocationConfigPath(app);
   if (!storageBaseDirOverride) {
@@ -325,6 +1085,16 @@ async function dirExists(absPath) {
   try {
     const stat = await fs.stat(absPath);
     return Boolean(stat?.isDirectory?.());
+  } catch (err) {
+    if (err && typeof err === 'object' && err.code === 'ENOENT') return false;
+    throw err;
+  }
+}
+
+async function fileExists(absPath) {
+  try {
+    const stat = await fs.stat(absPath);
+    return Boolean(stat?.isFile?.());
   } catch (err) {
     if (err && typeof err === 'object' && err.code === 'ENOENT') return false;
     throw err;
@@ -963,6 +1733,101 @@ function registerStorageIpcHandlers(args) {
       });
     } catch (err) {
       return fail(err, 'Failed to pull data from cloud folder.');
+    }
+  });
+
+  ipcMain.handle('storage:google-drive-sync-info', async () => {
+    try {
+      const info = await getGoogleDriveSyncInfo(app);
+      return ok(info);
+    } catch (err) {
+      return fail(err, 'Failed to load Google Drive sync status.');
+    }
+  });
+
+  ipcMain.handle('storage:google-drive-sync-link', async (_event, req) => {
+    try {
+      const info = await linkGoogleDriveSync(app, shell, req ?? {});
+      return ok(info);
+    } catch (err) {
+      try {
+        const existing = await readGoogleDriveSyncConfig(app);
+        const requestedClientId = asTrimmedString(req?.clientId);
+        const hasRequestedClientSecret = Boolean(req && Object.prototype.hasOwnProperty.call(req, 'clientSecret'));
+        const requestedClientSecret = asTrimmedString(req?.clientSecret);
+        await writeGoogleDriveSyncConfig(app, {
+          ...existing,
+          clientId: requestedClientId || existing.clientId,
+          clientSecret: hasRequestedClientSecret ? (requestedClientSecret || null) : existing.clientSecret,
+          lastLinkError: shortError(err?.message ?? err, 'Failed to link Google Drive.'),
+        });
+      } catch {
+        // ignore secondary persistence failures
+      }
+      return fail(err, 'Failed to link Google Drive.');
+    }
+  });
+
+  ipcMain.handle('storage:google-drive-sync-unlink', async () => {
+    try {
+      await writeGoogleDriveSyncConfig(app, {
+        clientId: null,
+        clientSecret: null,
+        refreshToken: null,
+        folderId: null,
+        lastPulledRevision: null,
+        lastLinkError: null,
+      });
+      return ok(await getGoogleDriveSyncInfo(app));
+    } catch (err) {
+      return fail(err, 'Failed to unlink Google Drive.');
+    }
+  });
+
+  ipcMain.handle('storage:google-drive-sync-open-folder', async () => {
+    try {
+      if (!shell || typeof shell.openExternal !== 'function') {
+        return fail('Shell API unavailable.', 'Shell API unavailable.');
+      }
+      const cfg = await readGoogleDriveSyncConfig(app);
+      if (!cfg.folderId) return fail('Google Drive is not linked.', 'Google Drive is not linked.');
+      const url = `https://drive.google.com/drive/folders/${encodeURIComponent(cfg.folderId)}`;
+      const err = await shell.openExternal(url);
+      if (asTrimmedString(err)) {
+        return fail(err, 'Failed to open Google Drive folder.');
+      }
+      return ok({ url });
+    } catch (err) {
+      return fail(err, 'Failed to open Google Drive folder.');
+    }
+  });
+
+  ipcMain.handle('storage:google-drive-sync-push', async (_event, req) => {
+    try {
+      const pushed = await pushStorageToGoogleDrive(app, { force: req?.force === true });
+      const info = await getGoogleDriveSyncInfo(app);
+      return ok({
+        ...info,
+        pushedRevision: pushed.revision,
+        pushedFileCount: pushed.fileCount,
+      });
+    } catch (err) {
+      return fail(err, 'Failed to push to Google Drive.');
+    }
+  });
+
+  ipcMain.handle('storage:google-drive-sync-pull', async () => {
+    try {
+      const pulled = await pullStorageFromGoogleDrive(app);
+      const info = await getGoogleDriveSyncInfo(app);
+      return ok({
+        ...info,
+        pulledRevision: pulled.revision,
+        pulledFileCount: pulled.fileCount,
+        backupPath: pulled.backupPath || undefined,
+      });
+    } catch (err) {
+      return fail(err, 'Failed to pull from Google Drive.');
     }
   });
 
