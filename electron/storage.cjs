@@ -11,9 +11,14 @@ const CLOUD_SYNC_CONFIG_FILE = 'cloud-sync.json';
 const CLOUD_SYNC_SNAPSHOTS_DIRNAME = 'snapshots';
 const CLOUD_SYNC_HEAD_FILE = 'HEAD.json';
 const CLOUD_SYNC_SCHEMA_VERSION = 1;
+const CLOUD_SYNC_MAX_REMOTE_REVISIONS = 3;
 const GOOGLE_DRIVE_SYNC_CONFIG_FILE = 'google-drive-sync.json';
 const LOCAL_SYNC_BACKUPS_DIRNAME = 'sync-backups';
 const LOCAL_SYNC_BACKUP_LATEST_DIRNAME = 'latest';
+const GOOGLE_DRIVE_SNAPSHOT_ARTIFACT_EXT = '.gcsnap';
+const GOOGLE_DRIVE_SNAPSHOT_ARTIFACT_MAGIC = Buffer.from('GCSNAP01', 'ascii');
+const GOOGLE_DRIVE_SNAPSHOT_ARTIFACT_HEADER_BYTES = GOOGLE_DRIVE_SNAPSHOT_ARTIFACT_MAGIC.length + 4;
+const GOOGLE_DRIVE_MAX_REMOTE_REVISIONS = 3;
 const GOOGLE_DRIVE_SCOPES = [
   'https://www.googleapis.com/auth/drive.file',
   'openid',
@@ -164,8 +169,8 @@ function storageRootDir(app) {
   return currentStorageRootDir(app);
 }
 
-function cloudSnapshotDir(cloudDir, revision) {
-  return path.join(cloudDir, CLOUD_SYNC_SNAPSHOTS_DIRNAME, encodeFsSegment(revision, 'Revision id'));
+function cloudSnapshotArtifactPath(cloudDir, revision) {
+  return path.join(cloudDir, CLOUD_SYNC_SNAPSHOTS_DIRNAME, googleSnapshotArtifactFileName(revision));
 }
 
 function cloudHeadPath(cloudDir) {
@@ -208,9 +213,11 @@ async function readCloudHead(cloudDir) {
   const revision = asTrimmedString(rec.revision);
   if (!revision) return null;
   const updatedAtRaw = Number(rec.updatedAt);
+  const snapshotFile = asTrimmedString(rec.snapshotFile) || null;
   return {
     revision,
     updatedAt: Number.isFinite(updatedAtRaw) ? updatedAtRaw : 0,
+    snapshotFile,
   };
 }
 
@@ -397,6 +404,93 @@ async function deleteLocalSyncBackups(app) {
   return { deleted: hadAny, backupPath: latestBackupPath };
 }
 
+async function pruneCloudSnapshotRevisions(cloudDir, opts = {}) {
+  const keepLatestRaw = Number(opts?.keepLatest);
+  const keepLatest = Number.isFinite(keepLatestRaw) && keepLatestRaw > 0 ? Math.floor(keepLatestRaw) : CLOUD_SYNC_MAX_REMOTE_REVISIONS;
+  const protectedRevision = asTrimmedString(opts?.protectedRevision) || null;
+  const snapshotsDir = path.join(cloudDir, CLOUD_SYNC_SNAPSHOTS_DIRNAME);
+
+  let entries = [];
+  try {
+    entries = await fs.readdir(snapshotsDir, { withFileTypes: true });
+  } catch (err) {
+    if (err && typeof err === 'object' && err.code === 'ENOENT') {
+      return {
+        keptRevisions: [],
+        deletedRevisions: [],
+        deletedEntries: 0,
+      };
+    }
+    throw err;
+  }
+
+  const byRevision = new Map();
+  for (const entry of entries) {
+    const name = asTrimmedString(entry?.name);
+    if (!name || name === '.' || name === '..') continue;
+
+    const absPath = path.join(snapshotsDir, name);
+    let revision = null;
+    if (entry.isFile()) {
+      revision = parseGoogleSnapshotRevisionFromFileName(name);
+    } else if (entry.isDirectory()) {
+      // Legacy cloud snapshots were stored as one directory per revision.
+      revision = asTrimmedString(decodeFsSegment(name)) || null;
+    }
+    if (!revision) continue;
+
+    const revTime = revisionTimestampFromRevisionId(revision);
+    let mtimeMs = 0;
+    if (!(revTime > 0)) {
+      try {
+        const stat = await fs.stat(absPath);
+        const parsed = Number(stat?.mtimeMs);
+        mtimeMs = Number.isFinite(parsed) ? parsed : 0;
+      } catch {
+        mtimeMs = 0;
+      }
+    }
+    const score = revTime > 0 ? revTime : mtimeMs;
+    const bucket = byRevision.get(revision) || { revision, paths: [], score: 0 };
+    bucket.paths.push(absPath);
+    if (score > bucket.score) bucket.score = score;
+    byRevision.set(revision, bucket);
+  }
+
+  const revisions = Array.from(byRevision.values()).sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return b.revision.localeCompare(a.revision);
+  });
+  if (revisions.length <= keepLatest && !protectedRevision) {
+    return {
+      keptRevisions: revisions.map((entry) => entry.revision),
+      deletedRevisions: [],
+      deletedEntries: 0,
+    };
+  }
+
+  const keepSet = new Set();
+  for (let i = 0; i < revisions.length && keepSet.size < keepLatest; i += 1) {
+    keepSet.add(revisions[i].revision);
+  }
+  if (protectedRevision) keepSet.add(protectedRevision);
+
+  const toDelete = revisions.filter((entry) => !keepSet.has(entry.revision));
+  let deletedEntries = 0;
+  for (const entry of toDelete) {
+    await runWithConcurrency(entry.paths, 3, async (absPath) => {
+      await removePathIfExists(absPath);
+      deletedEntries += 1;
+    });
+  }
+
+  return {
+    keptRevisions: revisions.map((entry) => entry.revision).filter((revision) => keepSet.has(revision)),
+    deletedRevisions: toDelete.map((entry) => entry.revision),
+    deletedEntries,
+  };
+}
+
 async function pushStorageToCloud(app, opts = {}) {
   const cfg = await readCloudSyncConfig(app);
   const cloudDir = cfg.cloudDir;
@@ -421,41 +515,44 @@ async function pushStorageToCloud(app, opts = {}) {
   }
 
   const revision = makeCloudRevisionId();
-  const snapshotDir = cloudSnapshotDir(cloudDir, revision);
-  const tmpSnapshotDir = `${snapshotDir}.tmp-${process.pid}-${Date.now()}`;
-  await fs.rm(tmpSnapshotDir, { recursive: true, force: true });
+  const snapshotPath = cloudSnapshotArtifactPath(cloudDir, revision);
+  const tmpSnapshotPath = `${snapshotPath}.tmp-${process.pid}-${Date.now()}`;
+  await removePathIfExists(tmpSnapshotPath);
+
+  const localFiles = await collectLocalFilesRecursively(localRoot);
+  const artifact = await createGoogleDriveSnapshotArtifact({
+    localRoot,
+    files: localFiles,
+    revision,
+  });
 
   try {
-    if (await dirExists(localRoot)) {
-      await fs.cp(localRoot, tmpSnapshotDir, {
-        recursive: true,
-        force: false,
-        errorOnExist: true,
-      });
-    } else {
-      await fs.mkdir(tmpSnapshotDir, { recursive: true });
-    }
-    await writeJsonAtomic(path.join(tmpSnapshotDir, 'manifest.json'), {
-      schemaVersion: CLOUD_SYNC_SCHEMA_VERSION,
-      revision,
-      createdAt: Date.now(),
-      createdAtIso: new Date().toISOString(),
-      app: 'graphchatv1',
-      storageSchema: STORAGE_SCHEMA_DIRNAME,
-    });
-    await fs.mkdir(path.dirname(snapshotDir), { recursive: true });
-    await fs.rename(tmpSnapshotDir, snapshotDir);
+    await fs.mkdir(path.dirname(snapshotPath), { recursive: true });
+    await fs.copyFile(artifact.artifactPath, tmpSnapshotPath);
+    await fs.rename(tmpSnapshotPath, snapshotPath);
   } catch (err) {
-    await fs.rm(tmpSnapshotDir, { recursive: true, force: true });
+    await removePathIfExists(tmpSnapshotPath);
     throw err;
+  } finally {
+    await removePathIfExists(artifact.artifactPath);
   }
 
   await writeJsonAtomic(cloudHeadPath(cloudDir), {
     schemaVersion: CLOUD_SYNC_SCHEMA_VERSION,
     revision,
+    snapshotFile: path.basename(snapshotPath),
+    snapshotFormat: 'graphchatv1-gdrive-snapshot',
     updatedAt: Date.now(),
     updatedAtIso: new Date().toISOString(),
   });
+  try {
+    await pruneCloudSnapshotRevisions(cloudDir, {
+      keepLatest: CLOUD_SYNC_MAX_REMOTE_REVISIONS,
+      protectedRevision: revision,
+    });
+  } catch {
+    // keep push successful even if cleanup fails
+  }
   await writeCloudSyncConfig(app, { cloudDir, lastPulledRevision: revision });
   return { revision };
 }
@@ -473,19 +570,28 @@ async function pullStorageFromCloud(app) {
   const remoteHead = await readCloudHead(cloudDir);
   const revision = remoteHead?.revision ?? '';
   if (!revision) throw new Error('Cloud folder has no pushed snapshot yet.');
-
-  const snapshotDir = cloudSnapshotDir(cloudDir, revision);
-  if (!(await dirExists(snapshotDir))) {
-    throw new Error(`Cloud snapshot ${revision} is missing.`);
+  const snapshotFileRaw = asTrimmedString(remoteHead?.snapshotFile) || googleSnapshotArtifactFileName(revision);
+  const snapshotFile = path.basename(snapshotFileRaw);
+  if (!snapshotFile || snapshotFile !== snapshotFileRaw) {
+    throw new Error('Cloud snapshot metadata is invalid.');
   }
+  const snapshotPath = path.join(cloudDir, CLOUD_SYNC_SNAPSHOTS_DIRNAME, snapshotFile);
+  if (!(await fileExists(snapshotPath))) throw new Error(`Cloud snapshot ${revision} is missing.`);
 
   const localTmpDir = `${localRoot}.pull-tmp-${process.pid}-${Date.now()}`;
   await fs.rm(localTmpDir, { recursive: true, force: true });
-  await fs.cp(snapshotDir, localTmpDir, {
-    recursive: true,
-    force: true,
-    errorOnExist: false,
-  });
+  await fs.mkdir(localTmpDir, { recursive: true });
+
+  try {
+    const artifactBytes = await fs.readFile(snapshotPath);
+    const extracted = await extractGoogleDriveSnapshotArtifactToDir(artifactBytes, localTmpDir);
+    if (extracted.revision && extracted.revision !== revision) {
+      throw new Error(`Cloud snapshot revision mismatch (expected ${revision}, got ${extracted.revision}).`);
+    }
+  } catch (err) {
+    await fs.rm(localTmpDir, { recursive: true, force: true });
+    throw err;
+  }
 
   let backupPath = null;
   backupPath = await createSingleLocalPullBackup(app, localRoot);
@@ -567,20 +673,34 @@ function googleDriveQueryLiteral(value) {
   return String(value ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
-function googleSnapshotFileName(revision, relPath) {
-  return `snapshot-${revision}--${encodeURIComponent(relPath)}`;
+function googleSnapshotArtifactFileName(revision) {
+  return `snapshot-${revision}${GOOGLE_DRIVE_SNAPSHOT_ARTIFACT_EXT}`;
 }
 
-function parseGoogleSnapshotRelPath(name, revision) {
-  const prefix = `snapshot-${revision}--`;
-  if (!String(name ?? '').startsWith(prefix)) return null;
-  const encoded = String(name).slice(prefix.length);
-  if (!encoded) return null;
-  try {
-    return decodeURIComponent(encoded);
-  } catch {
-    return null;
+function parseGoogleSnapshotRevisionFromFileName(name) {
+  const raw = asTrimmedString(name);
+  if (!raw || !raw.startsWith('snapshot-')) return null;
+  const body = raw.slice('snapshot-'.length);
+  if (!body) return null;
+  if (body.endsWith(GOOGLE_DRIVE_SNAPSHOT_ARTIFACT_EXT)) {
+    const rev = body.slice(0, -GOOGLE_DRIVE_SNAPSHOT_ARTIFACT_EXT.length).trim();
+    return rev || null;
   }
+  const legacySep = body.indexOf('--');
+  if (legacySep > 0) {
+    const rev = body.slice(0, legacySep).trim();
+    return rev || null;
+  }
+  return null;
+}
+
+function revisionTimestampFromRevisionId(revision) {
+  const raw = asTrimmedString(revision);
+  if (!raw) return 0;
+  const match = /^rev_([0-9a-z]+)_/i.exec(raw);
+  if (!match) return 0;
+  const parsed = parseInt(match[1], 36);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
 function normalizeRelativePathForWrite(relPath) {
@@ -588,6 +708,185 @@ function normalizeRelativePathForWrite(relPath) {
   const normalized = path.posix.normalize(raw).replace(/^\/+/g, '');
   if (!normalized || normalized === '.' || normalized.startsWith('../') || normalized.includes('/../')) return null;
   return normalized;
+}
+
+async function createGoogleDriveSnapshotArtifact(args) {
+  const localRoot = path.resolve(args?.localRoot ?? '');
+  const files = Array.isArray(args?.files) ? args.files : [];
+  const revision = asTrimmedString(args?.revision);
+  if (!localRoot) throw new Error('Local storage path is missing.');
+  if (!revision) throw new Error('Revision is missing.');
+
+  const onProgress = typeof args?.onProgress === 'function' ? args.onProgress : null;
+  const emit = (payload) => safeProgressReport(onProgress, payload);
+
+  const entries = [];
+  let totalBytes = 0;
+  for (const file of files) {
+    const relPath = asTrimmedString(file?.relPath);
+    const absPath = path.resolve(String(file?.absPath ?? ''));
+    if (!relPath || !absPath) continue;
+    const stat = await fs.stat(absPath);
+    if (!stat?.isFile?.()) continue;
+    const size = Number(stat.size);
+    const safeSize = Number.isFinite(size) && size >= 0 ? Math.floor(size) : 0;
+    entries.push({ relPath, absPath, size: safeSize });
+    totalBytes += safeSize;
+  }
+  entries.sort((a, b) => a.relPath.localeCompare(b.relPath));
+
+  const artifactMeta = {
+    format: 'graphchatv1-gdrive-snapshot',
+    schemaVersion: CLOUD_SYNC_SCHEMA_VERSION,
+    storageSchema: STORAGE_SCHEMA_DIRNAME,
+    revision,
+    createdAt: Date.now(),
+    createdAtIso: new Date().toISOString(),
+    fileCount: entries.length,
+    totalBytes,
+    files: entries.map((entry) => ({
+      path: entry.relPath,
+      size: entry.size,
+    })),
+  };
+
+  const metaBytes = Buffer.from(JSON.stringify(artifactMeta), 'utf8');
+  if (metaBytes.length >= 2 ** 32) {
+    throw new Error('Snapshot metadata is too large.');
+  }
+
+  const header = Buffer.alloc(GOOGLE_DRIVE_SNAPSHOT_ARTIFACT_HEADER_BYTES);
+  GOOGLE_DRIVE_SNAPSHOT_ARTIFACT_MAGIC.copy(header, 0);
+  header.writeUInt32BE(metaBytes.length, GOOGLE_DRIVE_SNAPSHOT_ARTIFACT_MAGIC.length);
+
+  const artifactPath = path.join(
+    path.dirname(localRoot),
+    `.gdrive-snapshot-${encodeFsSegment(revision, 'Revision id')}-${process.pid}-${Date.now()}${GOOGLE_DRIVE_SNAPSHOT_ARTIFACT_EXT}`,
+  );
+  await removePathIfExists(artifactPath);
+
+  const handle = await fs.open(artifactPath, 'w');
+  let writtenFiles = 0;
+  try {
+    await handle.writeFile(header);
+    await handle.writeFile(metaBytes);
+
+    for (const entry of entries) {
+      const bytes = await fs.readFile(entry.absPath);
+      await handle.writeFile(bytes);
+      writtenFiles += 1;
+      emit({
+        done: false,
+        stage: 'package',
+        phaseIndex: 2,
+        phaseCount: 5,
+        message: `Packing snapshot... (${writtenFiles}/${entries.length})`,
+        indeterminate: false,
+        completed: writtenFiles,
+        total: entries.length,
+      });
+    }
+  } catch (err) {
+    await handle.close().catch(() => {});
+    await removePathIfExists(artifactPath);
+    throw err;
+  }
+  await handle.close();
+
+  const artifactStat = await fs.stat(artifactPath);
+  const artifactSize = Number.isFinite(Number(artifactStat.size)) ? Math.max(0, Number(artifactStat.size)) : 0;
+  return {
+    artifactPath,
+    artifactName: googleSnapshotArtifactFileName(revision),
+    artifactSize,
+    fileCount: entries.length,
+    totalBytes,
+  };
+}
+
+function parseGoogleDriveSnapshotArtifact(buffer) {
+  const bytes = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+  if (bytes.length < GOOGLE_DRIVE_SNAPSHOT_ARTIFACT_HEADER_BYTES) {
+    throw new Error('Snapshot artifact is too small.');
+  }
+
+  const magic = bytes.subarray(0, GOOGLE_DRIVE_SNAPSHOT_ARTIFACT_MAGIC.length);
+  if (!magic.equals(GOOGLE_DRIVE_SNAPSHOT_ARTIFACT_MAGIC)) {
+    throw new Error('Snapshot artifact format is not supported.');
+  }
+
+  const metaLength = bytes.readUInt32BE(GOOGLE_DRIVE_SNAPSHOT_ARTIFACT_MAGIC.length);
+  const metaStart = GOOGLE_DRIVE_SNAPSHOT_ARTIFACT_HEADER_BYTES;
+  const metaEnd = metaStart + metaLength;
+  if (metaEnd > bytes.length) throw new Error('Snapshot artifact metadata is truncated.');
+
+  let meta = null;
+  try {
+    meta = JSON.parse(bytes.subarray(metaStart, metaEnd).toString('utf8'));
+  } catch {
+    meta = null;
+  }
+  if (!meta || typeof meta !== 'object') throw new Error('Snapshot artifact metadata is invalid.');
+
+  const filesRaw = Array.isArray(meta.files) ? meta.files : null;
+  if (!filesRaw) throw new Error('Snapshot artifact is missing files list.');
+
+  const files = filesRaw
+    .map((rec) => ({
+      relPath: asTrimmedString(rec?.path),
+      size: Number(rec?.size),
+    }))
+    .filter((rec) => rec.relPath && Number.isFinite(rec.size) && rec.size >= 0)
+    .map((rec) => ({
+      relPath: rec.relPath,
+      size: Math.floor(rec.size),
+    }));
+
+  let offset = metaEnd;
+  const segments = [];
+  for (const rec of files) {
+    const nextOffset = offset + rec.size;
+    if (!Number.isFinite(nextOffset) || nextOffset > bytes.length) {
+      throw new Error(`Snapshot artifact data is truncated for ${rec.relPath}.`);
+    }
+    segments.push({
+      relPath: rec.relPath,
+      start: offset,
+      end: nextOffset,
+    });
+    offset = nextOffset;
+  }
+  if (offset !== bytes.length) {
+    throw new Error('Snapshot artifact has unexpected trailing bytes.');
+  }
+
+  return {
+    meta,
+    segments,
+  };
+}
+
+async function extractGoogleDriveSnapshotArtifactToDir(buffer, targetDir) {
+  const parsed = parseGoogleDriveSnapshotArtifact(buffer);
+  const absTarget = path.resolve(String(targetDir ?? ''));
+  if (!absTarget) throw new Error('Snapshot destination path is missing.');
+  await fs.mkdir(absTarget, { recursive: true });
+
+  const bytes = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+  let written = 0;
+  for (const segment of parsed.segments) {
+    const safeRelPath = normalizeRelativePathForWrite(segment.relPath);
+    if (!safeRelPath) throw new Error(`Snapshot artifact path is invalid: ${segment.relPath}`);
+    const outPath = path.join(absTarget, ...safeRelPath.split('/'));
+    await fs.mkdir(path.dirname(outPath), { recursive: true });
+    await fs.writeFile(outPath, bytes.subarray(segment.start, segment.end));
+    written += 1;
+  }
+
+  return {
+    revision: asTrimmedString(parsed.meta?.revision) || null,
+    fileCount: written,
+  };
 }
 
 async function collectLocalFilesRecursively(rootDir) {
@@ -843,6 +1142,95 @@ async function googleDriveDownloadFile(accessToken, fileId) {
     },
     'Failed to download file from Google Drive',
   );
+}
+
+async function googleDriveDeleteFile(accessToken, fileId) {
+  const id = asTrimmedString(fileId);
+  if (!id) return;
+  if (typeof fetch !== 'function') throw new Error('Fetch API is unavailable in this Electron runtime.');
+
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (res.ok || res.status === 404) return;
+  const text = await res.text().catch(() => '');
+  let parsed = null;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch {
+    parsed = null;
+  }
+  const apiMsg =
+    asTrimmedString(parsed?.error?.message) ||
+    asTrimmedString(parsed?.error_description) ||
+    asTrimmedString(parsed?.error) ||
+    asTrimmedString(text);
+  throw new Error(`Failed to delete file from Google Drive (${res.status})${apiMsg ? `: ${apiMsg}` : ''}`);
+}
+
+async function pruneGoogleDriveSnapshotRevisions(accessToken, folderId, opts = {}) {
+  const keepLatestRaw = Number(opts?.keepLatest);
+  const keepLatest = Number.isFinite(keepLatestRaw) && keepLatestRaw > 0 ? Math.floor(keepLatestRaw) : GOOGLE_DRIVE_MAX_REMOTE_REVISIONS;
+  const protectedRevision = asTrimmedString(opts?.protectedRevision) || null;
+  const parent = asTrimmedString(folderId);
+  if (!parent) return { keptRevisions: [], deletedRevisions: [], deletedFiles: 0 };
+
+  const q = `'${googleDriveQueryLiteral(parent)}' in parents and trashed=false and name contains 'snapshot-'`;
+  const files = await googleDriveListFiles(accessToken, q, {
+    pageSize: 1000,
+    fields: 'nextPageToken,files(id,name,modifiedTime)',
+  });
+
+  const byRevision = new Map();
+  for (const file of files) {
+    const id = asTrimmedString(file?.id);
+    const name = asTrimmedString(file?.name);
+    const revision = parseGoogleSnapshotRevisionFromFileName(name);
+    if (!id || !name || !revision) continue;
+    const modifiedAt = Date.parse(asTrimmedString(file?.modifiedTime));
+    const modifiedMs = Number.isFinite(modifiedAt) ? modifiedAt : 0;
+    const revTime = revisionTimestampFromRevisionId(revision);
+    const score = revTime > 0 ? revTime : modifiedMs;
+    const bucket = byRevision.get(revision) || { revision, files: [], score: 0 };
+    bucket.files.push({ id, name });
+    if (score > bucket.score) bucket.score = score;
+    byRevision.set(revision, bucket);
+  }
+
+  const revisions = Array.from(byRevision.values()).sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return b.revision.localeCompare(a.revision);
+  });
+  if (revisions.length <= keepLatest && !protectedRevision) {
+    return {
+      keptRevisions: revisions.map((r) => r.revision),
+      deletedRevisions: [],
+      deletedFiles: 0,
+    };
+  }
+
+  const keepSet = new Set();
+  for (let i = 0; i < revisions.length && keepSet.size < keepLatest; i += 1) {
+    keepSet.add(revisions[i].revision);
+  }
+  if (protectedRevision) keepSet.add(protectedRevision);
+
+  const toDelete = revisions.filter((entry) => !keepSet.has(entry.revision));
+  let deletedFiles = 0;
+  for (const entry of toDelete) {
+    await runWithConcurrency(entry.files, 3, async (file) => {
+      await googleDriveDeleteFile(accessToken, file.id);
+      deletedFiles += 1;
+    });
+  }
+
+  return {
+    keptRevisions: revisions.map((entry) => entry.revision).filter((revision) => keepSet.has(revision)),
+    deletedRevisions: toDelete.map((entry) => entry.revision),
+    deletedFiles,
+  };
 }
 
 async function googleDriveReadHead(accessToken, folderId) {
@@ -1115,7 +1503,7 @@ async function pushStorageToGoogleDrive(app, opts = {}) {
   emitProgress({
     stage: 'prepare',
     phaseIndex: 1,
-    phaseCount: 4,
+    phaseCount: 5,
     message: 'Checking Google Drive status...',
   });
 
@@ -1139,109 +1527,92 @@ async function pushStorageToGoogleDrive(app, opts = {}) {
   emitProgress({
     stage: 'prepare',
     phaseIndex: 1,
-    phaseCount: 4,
+    phaseCount: 5,
     message: 'Scanning local files...',
   });
 
   const revision = makeCloudRevisionId();
   const localRoot = storageRootDir(app);
   const localFiles = await collectLocalFilesRecursively(localRoot);
-  const totalUploads = localFiles.length + 1;
-  let uploadedCount = 0;
-
-  const manifest = Buffer.from(
-    `${JSON.stringify(
-      {
-        schemaVersion: CLOUD_SYNC_SCHEMA_VERSION,
-        revision,
-        createdAt: Date.now(),
-        createdAtIso: new Date().toISOString(),
-        app: 'graphchatv1',
-        storageSchema: STORAGE_SCHEMA_DIRNAME,
-        fileCount: localFiles.length,
-      },
-      null,
-      2,
-    )}\n`,
-    'utf8',
-  );
-
   safeProgressReport(reportProgress, {
     done: false,
-    stage: 'upload',
+    stage: 'package',
     phaseIndex: 2,
-    phaseCount: 4,
-    message: 'Uploading manifest...',
-    indeterminate: false,
-    completed: uploadedCount,
-    total: totalUploads,
+    phaseCount: 5,
+    message: `Packing snapshot... (0/${localFiles.length})`,
+    indeterminate: localFiles.length === 0,
+    completed: 0,
+    total: localFiles.length,
   });
 
-  await googleDriveCreateMultipartFile(
-    accessToken,
-    {
-      name: googleSnapshotFileName(revision, 'manifest.json'),
-      parents: [cfg.folderId],
-    },
-    manifest,
-    'application/json',
-  );
-
-  uploadedCount += 1;
-  safeProgressReport(reportProgress, {
-    done: false,
-    stage: 'upload',
-    phaseIndex: 2,
-    phaseCount: 4,
-    message: `Uploading files... (${uploadedCount}/${totalUploads})`,
-    indeterminate: false,
-    completed: uploadedCount,
-    total: totalUploads,
+  const artifact = await createGoogleDriveSnapshotArtifact({
+    localRoot,
+    files: localFiles,
+    revision,
+    onProgress: reportProgress,
   });
+  const artifactPath = artifact.artifactPath;
 
-  await runWithConcurrency(localFiles, 3, async (file) => {
-    const bytes = await fs.readFile(file.absPath);
-    await googleDriveCreateMultipartFile(
-      accessToken,
-      {
-        name: googleSnapshotFileName(revision, file.relPath),
-        parents: [cfg.folderId],
-      },
-      bytes,
-      'application/octet-stream',
-    );
-
-    uploadedCount += 1;
+  try {
     safeProgressReport(reportProgress, {
       done: false,
       stage: 'upload',
-      phaseIndex: 2,
-      phaseCount: 4,
-      message: `Uploading files... (${uploadedCount}/${totalUploads})`,
+      phaseIndex: 3,
+      phaseCount: 5,
+      message: 'Uploading snapshot artifact...',
       indeterminate: false,
-      completed: uploadedCount,
-      total: totalUploads,
+      completed: 0,
+      total: 1,
     });
-  });
+    const artifactBytes = await fs.readFile(artifactPath);
+    await googleDriveCreateMultipartFile(
+      accessToken,
+      {
+        name: artifact.artifactName,
+        parents: [cfg.folderId],
+      },
+      artifactBytes,
+      'application/octet-stream',
+    );
+  } finally {
+    await removePathIfExists(artifactPath);
+  }
 
   emitProgress({
     stage: 'finalize',
-    phaseIndex: 3,
-    phaseCount: 4,
+    phaseIndex: 4,
+    phaseCount: 5,
     message: 'Updating remote revision head...',
   });
 
   await googleDriveWriteHead(accessToken, cfg.folderId, {
     schemaVersion: CLOUD_SYNC_SCHEMA_VERSION,
     revision,
+    snapshotFile: artifact.artifactName,
+    snapshotFormat: 'graphchatv1-gdrive-snapshot',
     updatedAt: Date.now(),
     updatedAtIso: new Date().toISOString(),
   });
 
   emitProgress({
     stage: 'finalize',
-    phaseIndex: 4,
-    phaseCount: 4,
+    phaseIndex: 5,
+    phaseCount: 5,
+    message: 'Pruning older remote snapshots...',
+  });
+  try {
+    await pruneGoogleDriveSnapshotRevisions(accessToken, cfg.folderId, {
+      keepLatest: GOOGLE_DRIVE_MAX_REMOTE_REVISIONS,
+      protectedRevision: revision,
+    });
+  } catch {
+    // keep push successful even if cleanup fails
+  }
+
+  emitProgress({
+    stage: 'finalize',
+    phaseIndex: 5,
+    phaseCount: 5,
     message: 'Finalizing local sync state...',
   });
 
@@ -1249,7 +1620,7 @@ async function pushStorageToGoogleDrive(app, opts = {}) {
     ...cfg,
     lastPulledRevision: revision,
   });
-  return { revision, fileCount: localFiles.length + 1 };
+  return { revision, fileCount: artifact.fileCount + 1 };
 }
 
 async function pullStorageFromGoogleDrive(app, opts = {}) {
@@ -1265,7 +1636,7 @@ async function pullStorageFromGoogleDrive(app, opts = {}) {
   emitProgress({
     stage: 'prepare',
     phaseIndex: 1,
-    phaseCount: 5,
+    phaseCount: 6,
     message: 'Reading Google Drive snapshot metadata...',
   });
 
@@ -1279,23 +1650,14 @@ async function pullStorageFromGoogleDrive(app, opts = {}) {
   const revision = asTrimmedString(remoteHead?.revision);
   if (!revision) throw new Error('Google Drive has no pushed snapshot yet.');
 
-  const prefix = `snapshot-${revision}--`;
-  const q = `'${googleDriveQueryLiteral(cfg.folderId)}' in parents and trashed=false and name contains '${googleDriveQueryLiteral(prefix)}'`;
-  const remoteFilesRaw = await googleDriveListFiles(accessToken, q, {
-    pageSize: 1000,
-    fields: 'nextPageToken,files(id,name,size,modifiedTime,mimeType)',
-  });
-  const remoteFiles = remoteFilesRaw
-    .map((f) => ({
-      id: asTrimmedString(f?.id),
-      name: asTrimmedString(f?.name),
-      relPath: parseGoogleSnapshotRelPath(f?.name, revision),
-    }))
-    .filter((f) => f.id && f.name && f.relPath);
-  if (remoteFiles.length === 0) throw new Error(`Google Drive snapshot ${revision} is empty or missing.`);
+  const snapshotFileName = googleSnapshotArtifactFileName(revision);
+  const snapshotFile = await googleDriveFindFileByName(accessToken, cfg.folderId, snapshotFileName);
+  const snapshotFileId = asTrimmedString(snapshotFile?.id);
+  if (!snapshotFileId) {
+    throw new Error(`Google Drive snapshot artifact is missing for revision ${revision}.`);
+  }
 
-  let downloadedCount = 0;
-  const totalDownloads = remoteFiles.length;
+  let fileCount = 0;
 
   const localRoot = storageRootDir(app);
   const localTmpDir = `${localRoot}.gdrive-pull-tmp-${process.pid}-${Date.now()}`;
@@ -1306,38 +1668,46 @@ async function pullStorageFromGoogleDrive(app, opts = {}) {
     done: false,
     stage: 'download',
     phaseIndex: 2,
-    phaseCount: 5,
-    message: `Downloading files... (${downloadedCount}/${totalDownloads})`,
+    phaseCount: 6,
+    message: 'Downloading snapshot artifact...',
     indeterminate: false,
-    completed: downloadedCount,
-    total: totalDownloads,
+    completed: 0,
+    total: 1,
   });
 
-  await runWithConcurrency(remoteFiles, 3, async (remoteFile) => {
-    const safeRelPath = normalizeRelativePathForWrite(remoteFile.relPath);
-    if (!safeRelPath) return;
-    const bytes = await googleDriveDownloadFile(accessToken, remoteFile.id);
-    const absPath = path.join(localTmpDir, ...safeRelPath.split('/'));
-    await fs.mkdir(path.dirname(absPath), { recursive: true });
-    await fs.writeFile(absPath, bytes);
-
-    downloadedCount += 1;
+  try {
+    const artifactBytes = await googleDriveDownloadFile(accessToken, snapshotFileId);
     safeProgressReport(reportProgress, {
       done: false,
       stage: 'download',
       phaseIndex: 2,
-      phaseCount: 5,
-      message: `Downloading files... (${downloadedCount}/${totalDownloads})`,
+      phaseCount: 6,
+      message: 'Downloading snapshot artifact...',
       indeterminate: false,
-      completed: downloadedCount,
-      total: totalDownloads,
+      completed: 1,
+      total: 1,
     });
-  });
+
+    emitProgress({
+      stage: 'extract',
+      phaseIndex: 3,
+      phaseCount: 6,
+      message: 'Extracting snapshot artifact...',
+    });
+    const extracted = await extractGoogleDriveSnapshotArtifactToDir(artifactBytes, localTmpDir);
+    if (extracted.revision && extracted.revision !== revision) {
+      throw new Error(`Snapshot artifact revision mismatch (expected ${revision}, got ${extracted.revision}).`);
+    }
+    fileCount = Math.max(0, Number(extracted.fileCount) || 0);
+  } catch (err) {
+    await fs.rm(localTmpDir, { recursive: true, force: true });
+    throw err;
+  }
 
   emitProgress({
     stage: 'backup',
-    phaseIndex: 3,
-    phaseCount: 5,
+    phaseIndex: 4,
+    phaseCount: 6,
     message: 'Creating local backup before replace...',
   });
 
@@ -1346,8 +1716,8 @@ async function pullStorageFromGoogleDrive(app, opts = {}) {
 
   emitProgress({
     stage: 'apply',
-    phaseIndex: 4,
-    phaseCount: 5,
+    phaseIndex: 5,
+    phaseCount: 6,
     message: 'Applying downloaded snapshot locally...',
   });
 
@@ -1362,8 +1732,8 @@ async function pullStorageFromGoogleDrive(app, opts = {}) {
 
   emitProgress({
     stage: 'finalize',
-    phaseIndex: 5,
-    phaseCount: 5,
+    phaseIndex: 6,
+    phaseCount: 6,
     message: 'Finalizing local sync state...',
   });
 
@@ -1371,7 +1741,7 @@ async function pullStorageFromGoogleDrive(app, opts = {}) {
     ...cfg,
     lastPulledRevision: revision,
   });
-  return { revision, backupPath, fileCount: remoteFiles.length };
+  return { revision, backupPath, fileCount };
 }
 
 async function persistStorageLocationConfig(app) {
@@ -2172,7 +2542,7 @@ function registerStorageIpcHandlers(args) {
       done: false,
       stage: 'start',
       phaseIndex: 1,
-      phaseCount: 4,
+      phaseCount: 5,
       message: 'Starting Google Drive push...',
       indeterminate: true,
     });
@@ -2186,8 +2556,8 @@ function registerStorageIpcHandlers(args) {
       reportProgress({
         done: true,
         stage: 'done',
-        phaseIndex: 4,
-        phaseCount: 4,
+        phaseIndex: 5,
+        phaseCount: 5,
         message: 'Google Drive push complete.',
         indeterminate: false,
         completed: pushed.fileCount,
@@ -2203,8 +2573,8 @@ function registerStorageIpcHandlers(args) {
       reportProgress({
         done: true,
         stage: 'error',
-        phaseIndex: 4,
-        phaseCount: 4,
+        phaseIndex: 5,
+        phaseCount: 5,
         message: msg,
         error: msg,
         indeterminate: true,
@@ -2238,7 +2608,7 @@ function registerStorageIpcHandlers(args) {
       done: false,
       stage: 'start',
       phaseIndex: 1,
-      phaseCount: 5,
+      phaseCount: 6,
       message: 'Starting Google Drive pull...',
       indeterminate: true,
     });
@@ -2249,8 +2619,8 @@ function registerStorageIpcHandlers(args) {
       reportProgress({
         done: true,
         stage: 'done',
-        phaseIndex: 5,
-        phaseCount: 5,
+        phaseIndex: 6,
+        phaseCount: 6,
         message: 'Google Drive pull complete.',
         indeterminate: false,
         completed: pulled.fileCount,
@@ -2267,8 +2637,8 @@ function registerStorageIpcHandlers(args) {
       reportProgress({
         done: true,
         stage: 'error',
-        phaseIndex: 5,
-        phaseCount: 5,
+        phaseIndex: 6,
+        phaseCount: 6,
         message: msg,
         error: msg,
         indeterminate: true,
