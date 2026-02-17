@@ -20,6 +20,21 @@ export type SettingsPanelId = 'appearance' | 'models' | 'debug' | 'data' | 'rese
 
 type PanelDef = { id: SettingsPanelId; title: string; description: string };
 
+function formatBytes(value: number | null | undefined): string {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return 'Unknown';
+  if (n < 1024) return `${Math.round(n)} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let next = n / 1024;
+  let idx = 0;
+  while (next >= 1024 && idx < units.length - 1) {
+    next /= 1024;
+    idx += 1;
+  }
+  const digits = next >= 100 ? 0 : next >= 10 ? 1 : 2;
+  return `${next.toFixed(digits)} ${units[idx]}`;
+}
+
 type Props = {
   open: boolean;
   activePanel: SettingsPanelId;
@@ -125,6 +140,12 @@ type Props = {
   onResetStorageLocation: () => void;
   canOpenStorageFolder: boolean;
   onOpenStorageFolder: () => void;
+  localSyncBackupPath: string | null;
+  localSyncBackupExists: boolean;
+  localSyncBackupSizeBytes: number | null;
+  localSyncBackupUpdatedAt: number | null;
+  canManageLocalSyncBackup: boolean;
+  onDeleteLocalSyncBackup: () => void;
   cloudSyncPath: string | null;
   cloudSyncLastPulledRevision: string | null;
   cloudSyncRemoteHeadRevision: string | null;
@@ -1585,6 +1606,43 @@ export default function SettingsModal(props: Props) {
                         onClick={props.onOpenStorageFolder}
                       >
                         Open folder
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="settingsCard">
+                  <div className="settingsRow">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Local sync backup (kept: 1)</div>
+                      <div className="settingsRow__desc">
+                        Pull keeps one local fallback snapshot before replace. Delete it if you need to reclaim disk space.
+                      </div>
+                      <div className="settingsPathValue" title={props.localSyncBackupPath ?? ''}>
+                        {props.localSyncBackupPath ?? 'Backup path unavailable in this mode.'}
+                      </div>
+                      <div className="settingsRow__desc">
+                        Status: {props.localSyncBackupExists ? 'Present' : 'None'}
+                      </div>
+                      {props.localSyncBackupExists ? (
+                        <div className="settingsRow__desc">Size: {formatBytes(props.localSyncBackupSizeBytes)}</div>
+                      ) : null}
+                      {props.localSyncBackupExists &&
+                      typeof props.localSyncBackupUpdatedAt === 'number' &&
+                      props.localSyncBackupUpdatedAt > 0 ? (
+                        <div className="settingsRow__desc">
+                          Last updated: {new Date(props.localSyncBackupUpdatedAt).toLocaleString()}
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="settingsRow__actions">
+                      <button
+                        className="settingsBtn"
+                        type="button"
+                        disabled={!props.canManageLocalSyncBackup || !props.localSyncBackupExists}
+                        onClick={props.onDeleteLocalSyncBackup}
+                      >
+                        Delete local backup
                       </button>
                     </div>
                   </div>

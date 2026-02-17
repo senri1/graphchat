@@ -12,6 +12,8 @@ const CLOUD_SYNC_SNAPSHOTS_DIRNAME = 'snapshots';
 const CLOUD_SYNC_HEAD_FILE = 'HEAD.json';
 const CLOUD_SYNC_SCHEMA_VERSION = 1;
 const GOOGLE_DRIVE_SYNC_CONFIG_FILE = 'google-drive-sync.json';
+const LOCAL_SYNC_BACKUPS_DIRNAME = 'sync-backups';
+const LOCAL_SYNC_BACKUP_LATEST_DIRNAME = 'latest';
 const GOOGLE_DRIVE_SCOPES = [
   'https://www.googleapis.com/auth/drive.file',
   'openid',
@@ -244,7 +246,155 @@ async function ensureCloudSyncLayout(cloudDir) {
 }
 
 function localCloudPullBackupsDir(app) {
-  return path.join(path.dirname(storageRootDir(app)), 'sync-backups');
+  return path.join(path.dirname(storageRootDir(app)), LOCAL_SYNC_BACKUPS_DIRNAME);
+}
+
+function localCloudLatestPullBackupPath(app) {
+  return path.join(localCloudPullBackupsDir(app), LOCAL_SYNC_BACKUP_LATEST_DIRNAME);
+}
+
+async function removePathIfExists(absPath) {
+  try {
+    await fs.rm(absPath, { recursive: true, force: true });
+  } catch (err) {
+    if (!(err && typeof err === 'object' && err.code === 'ENOENT')) throw err;
+  }
+}
+
+async function removeLocalSyncBackupsExcept(backupsDir, keepName) {
+  let entries = [];
+  try {
+    entries = await fs.readdir(backupsDir, { withFileTypes: true });
+  } catch (err) {
+    if (err && typeof err === 'object' && err.code === 'ENOENT') return;
+    throw err;
+  }
+  await Promise.all(
+    entries.map(async (entry) => {
+      const name = String(entry?.name ?? '');
+      if (!name || name === keepName || name === '.' || name === '..') return;
+      await removePathIfExists(path.join(backupsDir, name));
+    }),
+  );
+}
+
+async function createSingleLocalPullBackup(app, localRoot) {
+  const exists = await dirExists(localRoot);
+  if (!exists) return null;
+
+  const backupsDir = localCloudPullBackupsDir(app);
+  const latestBackupPath = localCloudLatestPullBackupPath(app);
+  const tmpBackupPath = `${latestBackupPath}.tmp-${process.pid}-${Date.now()}`;
+  const prevBackupPath = `${latestBackupPath}.prev-${process.pid}-${Date.now()}`;
+
+  await fs.mkdir(backupsDir, { recursive: true });
+  await removePathIfExists(tmpBackupPath);
+  await removePathIfExists(prevBackupPath);
+  await fs.cp(localRoot, tmpBackupPath, {
+    recursive: true,
+    force: false,
+    errorOnExist: true,
+  });
+
+  if ((await dirExists(latestBackupPath)) || (await fileExists(latestBackupPath))) {
+    await fs.rename(latestBackupPath, prevBackupPath);
+  }
+
+  try {
+    await fs.rename(tmpBackupPath, latestBackupPath);
+  } catch (err) {
+    await removePathIfExists(tmpBackupPath);
+    if (!(await dirExists(latestBackupPath)) && ((await dirExists(prevBackupPath)) || (await fileExists(prevBackupPath)))) {
+      try {
+        await fs.rename(prevBackupPath, latestBackupPath);
+      } catch {
+        // ignore rollback failure
+      }
+    }
+    throw err;
+  }
+
+  await removePathIfExists(prevBackupPath);
+  await removeLocalSyncBackupsExcept(backupsDir, LOCAL_SYNC_BACKUP_LATEST_DIRNAME);
+  return latestBackupPath;
+}
+
+async function summarizePathUsage(absPath) {
+  const stack = [absPath];
+  let totalSizeBytes = 0;
+  let updatedAt = 0;
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) continue;
+
+    let stat = null;
+    try {
+      stat = await fs.stat(current);
+    } catch (err) {
+      if (err && typeof err === 'object' && err.code === 'ENOENT') continue;
+      throw err;
+    }
+    if (!stat) continue;
+
+    const mtimeMs = Number(stat.mtimeMs);
+    if (Number.isFinite(mtimeMs) && mtimeMs > updatedAt) updatedAt = mtimeMs;
+
+    if (stat.isDirectory()) {
+      let entries = [];
+      try {
+        entries = await fs.readdir(current, { withFileTypes: true });
+      } catch (err) {
+        if (err && typeof err === 'object' && err.code === 'ENOENT') continue;
+        throw err;
+      }
+      for (const entry of entries) {
+        const name = String(entry?.name ?? '');
+        if (!name || name === '.' || name === '..') continue;
+        stack.push(path.join(current, name));
+      }
+      continue;
+    }
+
+    if (stat.isFile()) {
+      const size = Number(stat.size);
+      if (Number.isFinite(size) && size > 0) totalSizeBytes += size;
+    }
+  }
+
+  return {
+    sizeBytes: totalSizeBytes,
+    updatedAt: updatedAt > 0 ? Math.floor(updatedAt) : 0,
+  };
+}
+
+async function getLocalSyncBackupInfo(app) {
+  const backupPath = localCloudLatestPullBackupPath(app);
+  const exists = (await dirExists(backupPath)) || (await fileExists(backupPath));
+  if (!exists) {
+    return {
+      exists: false,
+      backupPath,
+      sizeBytes: 0,
+      updatedAt: 0,
+    };
+  }
+
+  const summary = await summarizePathUsage(backupPath);
+  return {
+    exists: true,
+    backupPath,
+    sizeBytes: summary.sizeBytes,
+    updatedAt: summary.updatedAt,
+  };
+}
+
+async function deleteLocalSyncBackups(app) {
+  const backupsDir = localCloudPullBackupsDir(app);
+  const latestBackupPath = localCloudLatestPullBackupPath(app);
+  const hadAny = (await dirExists(backupsDir)) || (await fileExists(backupsDir));
+  await removePathIfExists(backupsDir);
+  return { deleted: hadAny, backupPath: latestBackupPath };
 }
 
 async function pushStorageToCloud(app, opts = {}) {
@@ -338,21 +488,7 @@ async function pullStorageFromCloud(app) {
   });
 
   let backupPath = null;
-  const localExists = await dirExists(localRoot);
-  if (localExists) {
-    const stamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
-    const suffix = Math.random().toString(36).slice(2, 7);
-    backupPath = path.join(
-      localCloudPullBackupsDir(app),
-      `${stamp}-${encodeFsSegment(revision.slice(0, 20) || 'backup', 'Backup revision')}-${suffix}`,
-    );
-    await fs.mkdir(path.dirname(backupPath), { recursive: true });
-    await fs.cp(localRoot, backupPath, {
-      recursive: true,
-      force: false,
-      errorOnExist: true,
-    });
-  }
+  backupPath = await createSingleLocalPullBackup(app, localRoot);
 
   try {
     await fs.rm(localRoot, { recursive: true, force: true });
@@ -1206,20 +1342,7 @@ async function pullStorageFromGoogleDrive(app, opts = {}) {
   });
 
   let backupPath = null;
-  if (await dirExists(localRoot)) {
-    const stamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
-    const suffix = Math.random().toString(36).slice(2, 7);
-    backupPath = path.join(
-      localCloudPullBackupsDir(app),
-      `${stamp}-${encodeFsSegment(revision.slice(0, 20) || 'backup', 'Backup revision')}-${suffix}`,
-    );
-    await fs.mkdir(path.dirname(backupPath), { recursive: true });
-    await fs.cp(localRoot, backupPath, {
-      recursive: true,
-      force: false,
-      errorOnExist: true,
-    });
-  }
+  backupPath = await createSingleLocalPullBackup(app, localRoot);
 
   emitProgress({
     stage: 'apply',
@@ -1927,6 +2050,36 @@ function registerStorageIpcHandlers(args) {
       return fail(err, 'Failed to pull data from cloud folder.');
     } finally {
       endStorageSyncOperation(syncOp);
+    }
+  });
+
+  ipcMain.handle('storage:get-local-sync-backup-info', async () => {
+    try {
+      const info = await getLocalSyncBackupInfo(app);
+      return ok({
+        exists: info.exists,
+        backupPath: info.backupPath,
+        sizeBytes: info.sizeBytes,
+        updatedAt: info.updatedAt,
+      });
+    } catch (err) {
+      return fail(err, 'Failed to load local sync backup info.');
+    }
+  });
+
+  ipcMain.handle('storage:delete-local-sync-backup', async () => {
+    try {
+      const del = await deleteLocalSyncBackups(app);
+      const info = await getLocalSyncBackupInfo(app);
+      return ok({
+        deleted: del.deleted,
+        exists: info.exists,
+        backupPath: info.backupPath,
+        sizeBytes: info.sizeBytes,
+        updatedAt: info.updatedAt,
+      });
+    } catch (err) {
+      return fail(err, 'Failed to delete local sync backup.');
     }
   });
 

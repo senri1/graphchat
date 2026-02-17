@@ -175,6 +175,23 @@ interface Window {
       backupPath?: string;
       error?: string;
     }>;
+    storageGetLocalSyncBackupInfo: () => Promise<{
+      ok: boolean;
+      exists?: boolean;
+      backupPath?: string;
+      sizeBytes?: number;
+      updatedAt?: number;
+      error?: string;
+    }>;
+    storageDeleteLocalSyncBackup: () => Promise<{
+      ok: boolean;
+      deleted?: boolean;
+      exists?: boolean;
+      backupPath?: string;
+      sizeBytes?: number;
+      updatedAt?: number;
+      error?: string;
+    }>;
     storageGoogleDriveSyncInfo: () => Promise<{
       ok: boolean;
       linked?: boolean;

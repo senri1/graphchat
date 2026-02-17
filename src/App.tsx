@@ -183,6 +183,13 @@ type GoogleDriveSyncInfo = {
   appName: string | null;
 };
 
+type LocalSyncBackupInfo = {
+  exists: boolean;
+  backupPath: string | null;
+  sizeBytes: number | null;
+  updatedAt: number | null;
+};
+
 type GoogleDriveSyncMode = 'push' | 'pull';
 
 type GoogleDriveSyncRunState = {
@@ -252,6 +259,19 @@ function googleDriveSyncInfoFromApiResult(value: any): GoogleDriveSyncInfo | nul
     configExists: Boolean(value.configExists),
     userDataPath,
     appName,
+  };
+}
+
+function localSyncBackupInfoFromApiResult(value: any): LocalSyncBackupInfo | null {
+  if (!value || typeof value !== 'object') return null;
+  const backupPath = typeof value.backupPath === 'string' && value.backupPath.trim() ? value.backupPath.trim() : null;
+  const sizeBytesRaw = Number(value.sizeBytes);
+  const updatedAtRaw = Number(value.updatedAt);
+  return {
+    exists: Boolean(value.exists),
+    backupPath,
+    sizeBytes: Number.isFinite(sizeBytesRaw) && sizeBytesRaw >= 0 ? Math.floor(sizeBytesRaw) : null,
+    updatedAt: Number.isFinite(updatedAtRaw) && updatedAtRaw > 0 ? Math.floor(updatedAtRaw) : null,
   };
 }
 
@@ -1508,6 +1528,7 @@ export default function App() {
   const [settingsPanel, setSettingsPanel] = useState<'appearance' | 'models' | 'debug' | 'data' | 'reset'>('appearance');
   const [storageDataDirInfo, setStorageDataDirInfo] = useState<StorageDataDirInfo | null>(null);
   const [cloudSyncInfo, setCloudSyncInfo] = useState<CloudSyncInfo | null>(null);
+  const [localSyncBackupInfo, setLocalSyncBackupInfo] = useState<LocalSyncBackupInfo | null>(null);
   const [googleDriveSyncInfo, setGoogleDriveSyncInfo] = useState<GoogleDriveSyncInfo | null>(null);
   const [googleDriveSyncRun, setGoogleDriveSyncRun] = useState<GoogleDriveSyncRunState | null>(null);
   const [googleDriveSyncProgress, setGoogleDriveSyncProgress] = useState<GoogleDriveSyncProgressState | null>(null);
@@ -5738,6 +5759,11 @@ export default function App() {
     typeof window !== 'undefined' &&
       typeof (window as any)?.gcElectron?.storageOpenCloudSyncDir === 'function',
   );
+  const canManageLocalSyncBackup = Boolean(
+    typeof window !== 'undefined' &&
+      typeof (window as any)?.gcElectron?.storageGetLocalSyncBackupInfo === 'function' &&
+      typeof (window as any)?.gcElectron?.storageDeleteLocalSyncBackup === 'function',
+  );
   const canManageGoogleDriveSync = Boolean(
     typeof window !== 'undefined' &&
       typeof (window as any)?.gcElectron?.storageGoogleDriveSyncInfo === 'function' &&
@@ -5792,6 +5818,23 @@ export default function App() {
     })();
   };
 
+  const refreshLocalSyncBackupInfo = () => {
+    const api = (window as any)?.gcElectron;
+    if (!api || typeof api.storageGetLocalSyncBackupInfo !== 'function') {
+      setLocalSyncBackupInfo(null);
+      return;
+    }
+    void (async () => {
+      try {
+        const res = await api.storageGetLocalSyncBackupInfo();
+        if (!res?.ok) return;
+        setLocalSyncBackupInfo(localSyncBackupInfoFromApiResult(res));
+      } catch {
+        // ignore
+      }
+    })();
+  };
+
   const refreshGoogleDriveSyncInfo = () => {
     const api = (window as any)?.gcElectron;
     if (!api || typeof api.storageGoogleDriveSyncInfo !== 'function') {
@@ -5840,6 +5883,7 @@ export default function App() {
     if (!settingsOpen || settingsPanel !== 'data') return;
     refreshStorageDataDirInfo();
     refreshCloudSyncInfo();
+    refreshLocalSyncBackupInfo();
     refreshGoogleDriveSyncInfo();
   }, [settingsOpen, settingsPanel]);
 
@@ -5857,6 +5901,37 @@ export default function App() {
         }
       } catch (err: any) {
         showToast(`Failed to open storage folder: ${err?.message || String(err)}`, 'error');
+      }
+    })();
+  };
+
+  const deleteLocalSyncBackup = () => {
+    const api = (window as any)?.gcElectron;
+    if (!api || typeof api.storageDeleteLocalSyncBackup !== 'function') {
+      showToast('Local sync backup controls are only available in Electron desktop mode.', 'info');
+      return;
+    }
+    const hasBackup = Boolean(localSyncBackupInfo?.exists);
+    const prompt = hasBackup
+      ? 'Delete the local sync backup?\n\nThis removes the on-device fallback snapshot used before pull replace.'
+      : 'No local sync backup exists. Refresh backup status anyway?';
+    if (!window.confirm(prompt)) return;
+
+    void (async () => {
+      try {
+        const res = await api.storageDeleteLocalSyncBackup();
+        if (!res?.ok) {
+          showToast(`Failed to delete local sync backup: ${String(res?.error ?? 'unknown error')}`, 'error');
+          return;
+        }
+        const nextInfo = localSyncBackupInfoFromApiResult(res);
+        setLocalSyncBackupInfo(nextInfo);
+        showToast(
+          Boolean(res?.deleted) ? 'Local sync backup deleted.' : 'No local sync backup found to delete.',
+          'success',
+        );
+      } catch (err: any) {
+        showToast(`Failed to delete local sync backup: ${err?.message || String(err)}`, 'error');
       }
     })();
   };
@@ -6063,9 +6138,11 @@ export default function App() {
         const res = await api.storageCloudSyncPull();
         if (!res?.ok) {
           showToast(`Cloud pull failed: ${String(res?.error ?? 'unknown error')}`, 'error', 5200);
+          refreshLocalSyncBackupInfo();
           return;
         }
         setCloudSyncInfo(cloudSyncInfoFromApiResult(res));
+        refreshLocalSyncBackupInfo();
         const backupPath = String(res?.backupPath ?? '').trim();
         if (backupPath) {
           showToast('Pull complete. Local backup created; reloading…', 'success', 1000);
@@ -6077,6 +6154,7 @@ export default function App() {
         }, 260);
       } catch (err: any) {
         showToast(`Cloud pull failed: ${err?.message || String(err)}`, 'error', 5200);
+        refreshLocalSyncBackupInfo();
       }
     })();
   };
@@ -6246,10 +6324,12 @@ export default function App() {
         const res = await api.storageGoogleDriveSyncPull();
         if (!res?.ok) {
           showToast(`Google Drive pull failed: ${String(res?.error ?? 'unknown error')}`, 'error', 5200);
+          refreshLocalSyncBackupInfo();
           setGoogleDriveSyncRun(null);
           return;
         }
         setGoogleDriveSyncInfo(googleDriveSyncInfoFromApiResult(res));
+        refreshLocalSyncBackupInfo();
         const backupPath = String(res?.backupPath ?? '').trim();
         if (backupPath) {
           showToast('Google Drive pull complete. Local backup created; reloading…', 'success', 1000);
@@ -6261,6 +6341,7 @@ export default function App() {
         }, 260);
       } catch (err: any) {
         showToast(`Google Drive pull failed: ${err?.message || String(err)}`, 'error', 5200);
+        refreshLocalSyncBackupInfo();
         setGoogleDriveSyncRun(null);
       }
     })();
@@ -9029,6 +9110,12 @@ export default function App() {
             onResetStorageLocation={resetStorageLocation}
             canOpenStorageFolder={canOpenStorageFolder}
             onOpenStorageFolder={openStorageFolder}
+            localSyncBackupPath={localSyncBackupInfo?.backupPath ?? null}
+            localSyncBackupExists={localSyncBackupInfo?.exists ?? false}
+            localSyncBackupSizeBytes={localSyncBackupInfo?.sizeBytes ?? null}
+            localSyncBackupUpdatedAt={localSyncBackupInfo?.updatedAt ?? null}
+            canManageLocalSyncBackup={canManageLocalSyncBackup}
+            onDeleteLocalSyncBackup={deleteLocalSyncBackup}
             cloudSyncPath={cloudSyncInfo?.cloudDir ?? null}
             cloudSyncLastPulledRevision={cloudSyncInfo?.lastPulledRevision ?? null}
             cloudSyncRemoteHeadRevision={cloudSyncInfo?.remoteHeadRevision ?? null}
