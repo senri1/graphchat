@@ -155,6 +155,11 @@ type Props = {
   googleDriveAppName: string | null;
   canManageGoogleDriveSync: boolean;
   canOpenGoogleDriveFolder: boolean;
+  googleDriveSyncInProgress: boolean;
+  googleDriveSyncMode: 'push' | 'pull' | null;
+  googleDriveSyncProgressMessage: string | null;
+  googleDriveSyncProgressDetail: string | null;
+  googleDriveSyncProgressPct: number | null;
   onLinkGoogleDriveSync: () => void;
   onUnlinkGoogleDriveSync: () => void;
   onOpenGoogleDriveFolder: () => void;
@@ -1766,7 +1771,7 @@ export default function SettingsModal(props: Props) {
                       <button
                         className="settingsBtn"
                         type="button"
-                        disabled={!props.canManageGoogleDriveSync}
+                        disabled={!props.canManageGoogleDriveSync || props.googleDriveSyncInProgress}
                         onClick={props.onLinkGoogleDriveSync}
                       >
                         {props.googleDriveLinked ? 'Relink Google Drive…' : 'Link Google Drive…'}
@@ -1774,7 +1779,7 @@ export default function SettingsModal(props: Props) {
                       <button
                         className="settingsBtn"
                         type="button"
-                        disabled={!props.canManageGoogleDriveSync || !props.googleDriveLinked}
+                        disabled={!props.canManageGoogleDriveSync || !props.googleDriveLinked || props.googleDriveSyncInProgress}
                         onClick={props.onUnlinkGoogleDriveSync}
                       >
                         Unlink
@@ -1790,12 +1795,28 @@ export default function SettingsModal(props: Props) {
                       <div className="settingsRow__desc">
                         Push uploads a snapshot directly to Drive. Pull restores from Drive and reloads this app.
                       </div>
+                      {props.googleDriveSyncInProgress ? (
+                        <div className="settingsSyncProgress" aria-live="polite">
+                          <div className="settingsSyncProgress__label">
+                            {props.googleDriveSyncProgressMessage ??
+                              (props.googleDriveSyncMode === 'pull' ? 'Pulling from Google Drive...' : 'Pushing to Google Drive...')}
+                          </div>
+                          {typeof props.googleDriveSyncProgressPct === 'number' ? (
+                            <progress className="settingsSyncProgress__bar" max={100} value={props.googleDriveSyncProgressPct} />
+                          ) : (
+                            <progress className="settingsSyncProgress__bar" />
+                          )}
+                          {props.googleDriveSyncProgressDetail ? (
+                            <div className="settingsSyncProgress__meta">{props.googleDriveSyncProgressDetail}</div>
+                          ) : null}
+                        </div>
+                      ) : null}
                     </div>
                     <div className="settingsRow__actions">
                       <button
                         className="settingsBtn"
                         type="button"
-                        disabled={!props.canManageGoogleDriveSync}
+                        disabled={!props.canManageGoogleDriveSync || props.googleDriveSyncInProgress}
                         onClick={props.onPushGoogleDriveSync}
                       >
                         Push to Drive
@@ -1803,7 +1824,7 @@ export default function SettingsModal(props: Props) {
                       <button
                         className="settingsBtn"
                         type="button"
-                        disabled={!props.canManageGoogleDriveSync}
+                        disabled={!props.canManageGoogleDriveSync || props.googleDriveSyncInProgress}
                         onClick={props.onPullGoogleDriveSync}
                       >
                         Pull from Drive
@@ -1811,7 +1832,7 @@ export default function SettingsModal(props: Props) {
                       <button
                         className="settingsBtn"
                         type="button"
-                        disabled={!props.canOpenGoogleDriveFolder}
+                        disabled={!props.canOpenGoogleDriveFolder || props.googleDriveSyncInProgress}
                         onClick={props.onOpenGoogleDriveFolder}
                       >
                         Open Drive folder

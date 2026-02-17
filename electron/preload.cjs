@@ -43,5 +43,19 @@ contextBridge.exposeInMainWorld('gcElectron', {
   storageGoogleDriveSyncOpenFolder: () => ipcRenderer.invoke('storage:google-drive-sync-open-folder'),
   storageGoogleDriveSyncPush: (req) => ipcRenderer.invoke('storage:google-drive-sync-push', req ?? {}),
   storageGoogleDriveSyncPull: () => ipcRenderer.invoke('storage:google-drive-sync-pull'),
+  storageGoogleDriveSyncOnProgress: (cb) => {
+    if (typeof cb !== 'function') return () => {};
+    const listener = (_event, payload) => {
+      try {
+        cb(payload);
+      } catch {
+        // ignore listener errors
+      }
+    };
+    ipcRenderer.on('storage:google-drive-sync-progress', listener);
+    return () => {
+      ipcRenderer.removeListener('storage:google-drive-sync-progress', listener);
+    };
+  },
   storageClearAll: () => ipcRenderer.invoke('storage:clear-all'),
 });

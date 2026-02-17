@@ -19,9 +19,54 @@ const GOOGLE_DRIVE_SCOPES = [
 ];
 const GOOGLE_DRIVE_ROOT_FOLDER_NAME = 'GraphChatV1 Sync';
 const GOOGLE_DRIVE_HEAD_FILE = 'HEAD.json';
+const GOOGLE_DRIVE_SYNC_PROGRESS_CHANNEL = 'storage:google-drive-sync-progress';
 
 let storageBaseDirOverride = null;
 let storageLocationConfigLoaded = false;
+let activeStorageSyncOperation = null;
+
+function makeSyncOperationId(prefix) {
+  const p = String(prefix ?? '').replace(/[^a-z0-9_-]/gi, '').slice(0, 20) || 'sync';
+  try {
+    return `${p}_${randomUUID()}`;
+  } catch {
+    return `${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  }
+}
+
+function beginStorageSyncOperation(kind) {
+  if (activeStorageSyncOperation) return null;
+  const op = {
+    id: makeSyncOperationId(kind),
+    kind: asTrimmedString(kind) || 'sync',
+    startedAt: Date.now(),
+  };
+  activeStorageSyncOperation = op;
+  return op;
+}
+
+function endStorageSyncOperation(op) {
+  if (!op || !activeStorageSyncOperation) return;
+  if (activeStorageSyncOperation.id === op.id) {
+    activeStorageSyncOperation = null;
+  }
+}
+
+function activeStorageSyncOperationMessage() {
+  const op = activeStorageSyncOperation;
+  if (!op || typeof op !== 'object') return 'Another sync operation is already in progress.';
+  const kind = asTrimmedString(op.kind) || 'sync';
+  return `Another sync operation is already in progress (${kind}).`;
+}
+
+function safeProgressReport(reporter, payload) {
+  if (typeof reporter !== 'function') return;
+  try {
+    reporter(payload);
+  } catch {
+    // ignore progress callback errors
+  }
+}
 
 function shortError(value, fallback) {
   const raw = typeof value === 'string' ? value.trim() : String(value ?? '').trim();
@@ -922,6 +967,22 @@ async function linkGoogleDriveSync(app, shell, req) {
 }
 
 async function pushStorageToGoogleDrive(app, opts = {}) {
+  const reportProgress = typeof opts?.onProgress === 'function' ? opts.onProgress : null;
+  const emitProgress = (patch) => {
+    safeProgressReport(reportProgress, {
+      done: false,
+      indeterminate: true,
+      ...patch,
+    });
+  };
+
+  emitProgress({
+    stage: 'prepare',
+    phaseIndex: 1,
+    phaseCount: 4,
+    message: 'Checking Google Drive status...',
+  });
+
   const cfg = await readGoogleDriveSyncConfig(app);
   if (!cfg.clientId || !cfg.refreshToken || !cfg.folderId) {
     throw new Error('Google Drive is not linked. Link Google Drive first.');
@@ -939,9 +1000,18 @@ async function pushStorageToGoogleDrive(app, opts = {}) {
     throw new Error(`Google Drive already has revision ${remoteRevision}. Pull first on this device before pushing.`);
   }
 
+  emitProgress({
+    stage: 'prepare',
+    phaseIndex: 1,
+    phaseCount: 4,
+    message: 'Scanning local files...',
+  });
+
   const revision = makeCloudRevisionId();
   const localRoot = storageRootDir(app);
   const localFiles = await collectLocalFilesRecursively(localRoot);
+  const totalUploads = localFiles.length + 1;
+  let uploadedCount = 0;
 
   const manifest = Buffer.from(
     `${JSON.stringify(
@@ -960,6 +1030,17 @@ async function pushStorageToGoogleDrive(app, opts = {}) {
     'utf8',
   );
 
+  safeProgressReport(reportProgress, {
+    done: false,
+    stage: 'upload',
+    phaseIndex: 2,
+    phaseCount: 4,
+    message: 'Uploading manifest...',
+    indeterminate: false,
+    completed: uploadedCount,
+    total: totalUploads,
+  });
+
   await googleDriveCreateMultipartFile(
     accessToken,
     {
@@ -969,6 +1050,18 @@ async function pushStorageToGoogleDrive(app, opts = {}) {
     manifest,
     'application/json',
   );
+
+  uploadedCount += 1;
+  safeProgressReport(reportProgress, {
+    done: false,
+    stage: 'upload',
+    phaseIndex: 2,
+    phaseCount: 4,
+    message: `Uploading files... (${uploadedCount}/${totalUploads})`,
+    indeterminate: false,
+    completed: uploadedCount,
+    total: totalUploads,
+  });
 
   await runWithConcurrency(localFiles, 3, async (file) => {
     const bytes = await fs.readFile(file.absPath);
@@ -981,6 +1074,25 @@ async function pushStorageToGoogleDrive(app, opts = {}) {
       bytes,
       'application/octet-stream',
     );
+
+    uploadedCount += 1;
+    safeProgressReport(reportProgress, {
+      done: false,
+      stage: 'upload',
+      phaseIndex: 2,
+      phaseCount: 4,
+      message: `Uploading files... (${uploadedCount}/${totalUploads})`,
+      indeterminate: false,
+      completed: uploadedCount,
+      total: totalUploads,
+    });
+  });
+
+  emitProgress({
+    stage: 'finalize',
+    phaseIndex: 3,
+    phaseCount: 4,
+    message: 'Updating remote revision head...',
   });
 
   await googleDriveWriteHead(accessToken, cfg.folderId, {
@@ -990,6 +1102,13 @@ async function pushStorageToGoogleDrive(app, opts = {}) {
     updatedAtIso: new Date().toISOString(),
   });
 
+  emitProgress({
+    stage: 'finalize',
+    phaseIndex: 4,
+    phaseCount: 4,
+    message: 'Finalizing local sync state...',
+  });
+
   await writeGoogleDriveSyncConfig(app, {
     ...cfg,
     lastPulledRevision: revision,
@@ -997,7 +1116,23 @@ async function pushStorageToGoogleDrive(app, opts = {}) {
   return { revision, fileCount: localFiles.length + 1 };
 }
 
-async function pullStorageFromGoogleDrive(app) {
+async function pullStorageFromGoogleDrive(app, opts = {}) {
+  const reportProgress = typeof opts?.onProgress === 'function' ? opts.onProgress : null;
+  const emitProgress = (patch) => {
+    safeProgressReport(reportProgress, {
+      done: false,
+      indeterminate: true,
+      ...patch,
+    });
+  };
+
+  emitProgress({
+    stage: 'prepare',
+    phaseIndex: 1,
+    phaseCount: 5,
+    message: 'Reading Google Drive snapshot metadata...',
+  });
+
   const cfg = await readGoogleDriveSyncConfig(app);
   if (!cfg.clientId || !cfg.refreshToken || !cfg.folderId) {
     throw new Error('Google Drive is not linked. Link Google Drive first.');
@@ -1023,10 +1158,24 @@ async function pullStorageFromGoogleDrive(app) {
     .filter((f) => f.id && f.name && f.relPath);
   if (remoteFiles.length === 0) throw new Error(`Google Drive snapshot ${revision} is empty or missing.`);
 
+  let downloadedCount = 0;
+  const totalDownloads = remoteFiles.length;
+
   const localRoot = storageRootDir(app);
   const localTmpDir = `${localRoot}.gdrive-pull-tmp-${process.pid}-${Date.now()}`;
   await fs.rm(localTmpDir, { recursive: true, force: true });
   await fs.mkdir(localTmpDir, { recursive: true });
+
+  safeProgressReport(reportProgress, {
+    done: false,
+    stage: 'download',
+    phaseIndex: 2,
+    phaseCount: 5,
+    message: `Downloading files... (${downloadedCount}/${totalDownloads})`,
+    indeterminate: false,
+    completed: downloadedCount,
+    total: totalDownloads,
+  });
 
   await runWithConcurrency(remoteFiles, 3, async (remoteFile) => {
     const safeRelPath = normalizeRelativePathForWrite(remoteFile.relPath);
@@ -1035,6 +1184,25 @@ async function pullStorageFromGoogleDrive(app) {
     const absPath = path.join(localTmpDir, ...safeRelPath.split('/'));
     await fs.mkdir(path.dirname(absPath), { recursive: true });
     await fs.writeFile(absPath, bytes);
+
+    downloadedCount += 1;
+    safeProgressReport(reportProgress, {
+      done: false,
+      stage: 'download',
+      phaseIndex: 2,
+      phaseCount: 5,
+      message: `Downloading files... (${downloadedCount}/${totalDownloads})`,
+      indeterminate: false,
+      completed: downloadedCount,
+      total: totalDownloads,
+    });
+  });
+
+  emitProgress({
+    stage: 'backup',
+    phaseIndex: 3,
+    phaseCount: 5,
+    message: 'Creating local backup before replace...',
   });
 
   let backupPath = null;
@@ -1053,6 +1221,13 @@ async function pullStorageFromGoogleDrive(app) {
     });
   }
 
+  emitProgress({
+    stage: 'apply',
+    phaseIndex: 4,
+    phaseCount: 5,
+    message: 'Applying downloaded snapshot locally...',
+  });
+
   try {
     await fs.rm(localRoot, { recursive: true, force: true });
     await fs.mkdir(path.dirname(localRoot), { recursive: true });
@@ -1061,6 +1236,13 @@ async function pullStorageFromGoogleDrive(app) {
     await fs.rm(localTmpDir, { recursive: true, force: true });
     throw err;
   }
+
+  emitProgress({
+    stage: 'finalize',
+    phaseIndex: 5,
+    phaseCount: 5,
+    message: 'Finalizing local sync state...',
+  });
 
   await writeGoogleDriveSyncConfig(app, {
     ...cfg,
@@ -1710,6 +1892,10 @@ function registerStorageIpcHandlers(args) {
   });
 
   ipcMain.handle('storage:cloud-sync-push', async (_event, req) => {
+    const syncOp = beginStorageSyncOperation('cloud-push');
+    if (!syncOp) {
+      return fail(activeStorageSyncOperationMessage(), 'Another sync operation is already in progress.');
+    }
     try {
       const pushed = await pushStorageToCloud(app, { force: req?.force === true });
       const info = await getCloudSyncInfo(app);
@@ -1719,10 +1905,16 @@ function registerStorageIpcHandlers(args) {
       });
     } catch (err) {
       return fail(err, 'Failed to push data to cloud folder.');
+    } finally {
+      endStorageSyncOperation(syncOp);
     }
   });
 
   ipcMain.handle('storage:cloud-sync-pull', async () => {
+    const syncOp = beginStorageSyncOperation('cloud-pull');
+    if (!syncOp) {
+      return fail(activeStorageSyncOperationMessage(), 'Another sync operation is already in progress.');
+    }
     try {
       const pulled = await pullStorageFromCloud(app);
       const info = await getCloudSyncInfo(app);
@@ -1733,6 +1925,8 @@ function registerStorageIpcHandlers(args) {
       });
     } catch (err) {
       return fail(err, 'Failed to pull data from cloud folder.');
+    } finally {
+      endStorageSyncOperation(syncOp);
     }
   });
 
@@ -1802,24 +1996,113 @@ function registerStorageIpcHandlers(args) {
     }
   });
 
-  ipcMain.handle('storage:google-drive-sync-push', async (_event, req) => {
+  ipcMain.handle('storage:google-drive-sync-push', async (event, req) => {
+    const syncOp = beginStorageSyncOperation('google-drive-push');
+    if (!syncOp) {
+      return fail(activeStorageSyncOperationMessage(), 'Another sync operation is already in progress.');
+    }
+
+    const reportProgress = (patch) => {
+      try {
+        event.sender.send(GOOGLE_DRIVE_SYNC_PROGRESS_CHANNEL, {
+          opId: syncOp.id,
+          op: 'push',
+          at: Date.now(),
+          ...patch,
+        });
+      } catch {
+        // ignore progress delivery failures
+      }
+    };
+
+    reportProgress({
+      done: false,
+      stage: 'start',
+      phaseIndex: 1,
+      phaseCount: 4,
+      message: 'Starting Google Drive push...',
+      indeterminate: true,
+    });
+
     try {
-      const pushed = await pushStorageToGoogleDrive(app, { force: req?.force === true });
+      const pushed = await pushStorageToGoogleDrive(app, {
+        force: req?.force === true,
+        onProgress: reportProgress,
+      });
       const info = await getGoogleDriveSyncInfo(app);
+      reportProgress({
+        done: true,
+        stage: 'done',
+        phaseIndex: 4,
+        phaseCount: 4,
+        message: 'Google Drive push complete.',
+        indeterminate: false,
+        completed: pushed.fileCount,
+        total: pushed.fileCount,
+      });
       return ok({
         ...info,
         pushedRevision: pushed.revision,
         pushedFileCount: pushed.fileCount,
       });
     } catch (err) {
+      const msg = shortError(err?.message ?? err, 'Failed to push to Google Drive.');
+      reportProgress({
+        done: true,
+        stage: 'error',
+        phaseIndex: 4,
+        phaseCount: 4,
+        message: msg,
+        error: msg,
+        indeterminate: true,
+      });
       return fail(err, 'Failed to push to Google Drive.');
+    } finally {
+      endStorageSyncOperation(syncOp);
     }
   });
 
-  ipcMain.handle('storage:google-drive-sync-pull', async () => {
+  ipcMain.handle('storage:google-drive-sync-pull', async (event) => {
+    const syncOp = beginStorageSyncOperation('google-drive-pull');
+    if (!syncOp) {
+      return fail(activeStorageSyncOperationMessage(), 'Another sync operation is already in progress.');
+    }
+
+    const reportProgress = (patch) => {
+      try {
+        event.sender.send(GOOGLE_DRIVE_SYNC_PROGRESS_CHANNEL, {
+          opId: syncOp.id,
+          op: 'pull',
+          at: Date.now(),
+          ...patch,
+        });
+      } catch {
+        // ignore progress delivery failures
+      }
+    };
+
+    reportProgress({
+      done: false,
+      stage: 'start',
+      phaseIndex: 1,
+      phaseCount: 5,
+      message: 'Starting Google Drive pull...',
+      indeterminate: true,
+    });
+
     try {
-      const pulled = await pullStorageFromGoogleDrive(app);
+      const pulled = await pullStorageFromGoogleDrive(app, { onProgress: reportProgress });
       const info = await getGoogleDriveSyncInfo(app);
+      reportProgress({
+        done: true,
+        stage: 'done',
+        phaseIndex: 5,
+        phaseCount: 5,
+        message: 'Google Drive pull complete.',
+        indeterminate: false,
+        completed: pulled.fileCount,
+        total: pulled.fileCount,
+      });
       return ok({
         ...info,
         pulledRevision: pulled.revision,
@@ -1827,7 +2110,19 @@ function registerStorageIpcHandlers(args) {
         backupPath: pulled.backupPath || undefined,
       });
     } catch (err) {
+      const msg = shortError(err?.message ?? err, 'Failed to pull from Google Drive.');
+      reportProgress({
+        done: true,
+        stage: 'error',
+        phaseIndex: 5,
+        phaseCount: 5,
+        message: msg,
+        error: msg,
+        indeterminate: true,
+      });
       return fail(err, 'Failed to pull from Google Drive.');
+    } finally {
+      endStorageSyncOperation(syncOp);
     }
   });
 

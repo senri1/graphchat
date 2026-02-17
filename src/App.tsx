@@ -183,6 +183,28 @@ type GoogleDriveSyncInfo = {
   appName: string | null;
 };
 
+type GoogleDriveSyncMode = 'push' | 'pull';
+
+type GoogleDriveSyncRunState = {
+  mode: GoogleDriveSyncMode;
+  startedAt: number;
+};
+
+type GoogleDriveSyncProgressState = {
+  opId: string;
+  mode: GoogleDriveSyncMode;
+  stage: string;
+  phaseIndex: number | null;
+  phaseCount: number | null;
+  message: string;
+  error: string | null;
+  indeterminate: boolean;
+  completed: number | null;
+  total: number | null;
+  done: boolean;
+  at: number;
+};
+
 function cloudSyncInfoFromApiResult(value: any): CloudSyncInfo | null {
   if (!value || typeof value !== 'object') return null;
   const cloudDir = typeof value.cloudDir === 'string' && value.cloudDir.trim() ? value.cloudDir.trim() : null;
@@ -230,6 +252,44 @@ function googleDriveSyncInfoFromApiResult(value: any): GoogleDriveSyncInfo | nul
     configExists: Boolean(value.configExists),
     userDataPath,
     appName,
+  };
+}
+
+function googleDriveSyncModeFromRaw(value: unknown): GoogleDriveSyncMode | null {
+  if (value === 'push') return 'push';
+  if (value === 'pull') return 'pull';
+  return null;
+}
+
+function googleDriveSyncProgressFromEvent(value: any): GoogleDriveSyncProgressState | null {
+  if (!value || typeof value !== 'object') return null;
+  const mode = googleDriveSyncModeFromRaw(value.op);
+  if (!mode) return null;
+
+  const opIdRaw = typeof value.opId === 'string' ? value.opId.trim() : '';
+  const opId = opIdRaw || `gdrive-${mode}`;
+  const stage = typeof value.stage === 'string' && value.stage.trim() ? value.stage.trim() : 'progress';
+  const message = typeof value.message === 'string' && value.message.trim() ? value.message.trim() : '';
+  const error = typeof value.error === 'string' && value.error.trim() ? value.error.trim() : null;
+  const atRaw = Number(value.at);
+  const completedRaw = Number(value.completed);
+  const totalRaw = Number(value.total);
+  const phaseIndexRaw = Number(value.phaseIndex);
+  const phaseCountRaw = Number(value.phaseCount);
+
+  return {
+    opId,
+    mode,
+    stage,
+    phaseIndex: Number.isFinite(phaseIndexRaw) && phaseIndexRaw > 0 ? Math.floor(phaseIndexRaw) : null,
+    phaseCount: Number.isFinite(phaseCountRaw) && phaseCountRaw > 0 ? Math.floor(phaseCountRaw) : null,
+    message,
+    error,
+    indeterminate: Boolean(value.indeterminate),
+    completed: Number.isFinite(completedRaw) && completedRaw >= 0 ? Math.floor(completedRaw) : null,
+    total: Number.isFinite(totalRaw) && totalRaw >= 0 ? Math.floor(totalRaw) : null,
+    done: Boolean(value.done),
+    at: Number.isFinite(atRaw) && atRaw > 0 ? atRaw : Date.now(),
   };
 }
 
@@ -1401,6 +1461,7 @@ export default function App() {
     chatMeta: Map<string, ChatRuntimeMeta>;
   } | null>(null);
   const persistTimerRef = useRef<number | null>(null);
+  const persistInFlightRef = useRef<Promise<void> | null>(null);
   const hydratingPdfChatsRef = useRef<Set<string>>(new Set());
   const attachmentsGcDirtyRef = useRef(false);
   const attachmentsGcRunningRef = useRef(false);
@@ -1448,6 +1509,8 @@ export default function App() {
   const [storageDataDirInfo, setStorageDataDirInfo] = useState<StorageDataDirInfo | null>(null);
   const [cloudSyncInfo, setCloudSyncInfo] = useState<CloudSyncInfo | null>(null);
   const [googleDriveSyncInfo, setGoogleDriveSyncInfo] = useState<GoogleDriveSyncInfo | null>(null);
+  const [googleDriveSyncRun, setGoogleDriveSyncRun] = useState<GoogleDriveSyncRunState | null>(null);
+  const [googleDriveSyncProgress, setGoogleDriveSyncProgress] = useState<GoogleDriveSyncProgressState | null>(null);
   const [googleDriveClientIdDraft, setGoogleDriveClientIdDraft] = useState('');
   const [googleDriveClientSecretDraft, setGoogleDriveClientSecretDraft] = useState('');
   const [runtimeApiKeys, setRuntimeApiKeys] = useState<RuntimeApiKeys>(() => getRuntimeApiKeys());
@@ -1511,6 +1574,19 @@ export default function App() {
   const [sidebarFontSizePx, setSidebarFontSizePx] = useState<number>(() => DEFAULT_SIDEBAR_FONT_SIZE_PX);
   const backgroundLibraryRef = useRef<BackgroundLibraryItem[]>(backgroundLibrary);
   const glassNodesEnabledRef = useRef<boolean>(glassNodesEnabled);
+  const googleDriveSyncRunRef = useRef<GoogleDriveSyncRunState | null>(googleDriveSyncRun);
+  const googleDriveSyncBusy = googleDriveSyncRun != null;
+  const googleDrivePullLockActive = googleDriveSyncRun?.mode === 'pull';
+
+  useEffect(() => {
+    googleDriveSyncRunRef.current = googleDriveSyncRun;
+  }, [googleDriveSyncRun]);
+
+  useEffect(() => {
+    if (!googleDrivePullLockActive) return;
+    const active = document.activeElement as HTMLElement | null;
+    if (active && typeof active.blur === 'function') active.blur();
+  }, [googleDrivePullLockActive]);
 
   useEffect(() => {
     const editingId = String(ui.editingNodeId ?? '').trim();
@@ -1990,7 +2066,7 @@ export default function App() {
         }
       }
 
-      void (async () => {
+      const persistPromise = (async () => {
         try {
           await putWorkspaceSnapshot({
             key: 'workspace',
@@ -2102,6 +2178,12 @@ export default function App() {
           }
         }
       })();
+      persistInFlightRef.current = persistPromise;
+      void persistPromise.finally(() => {
+        if (persistInFlightRef.current === persistPromise) {
+          persistInFlightRef.current = null;
+        }
+      });
     };
 
     return () => {
@@ -4449,6 +4531,10 @@ export default function App() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
+      if (googleDriveSyncRunRef.current?.mode === 'pull') {
+        e.preventDefault();
+        return;
+      }
       if (ui.editingNodeId) return;
       if (!engineRef.current) return;
 
@@ -5731,6 +5817,26 @@ export default function App() {
   };
 
   useEffect(() => {
+    const api = (window as any)?.gcElectron;
+    if (!api || typeof api.storageGoogleDriveSyncOnProgress !== 'function') return;
+
+    const unsubscribe = api.storageGoogleDriveSyncOnProgress((payload: any) => {
+      const next = googleDriveSyncProgressFromEvent(payload);
+      if (!next) return;
+      setGoogleDriveSyncProgress(next);
+      if (next.done && next.mode !== 'pull') {
+        window.setTimeout(() => {
+          setGoogleDriveSyncProgress((prev) => (prev?.opId === next.opId ? null : prev));
+        }, 1400);
+      }
+    });
+
+    return () => {
+      if (typeof unsubscribe === 'function') unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
     if (!settingsOpen || settingsPanel !== 'data') return;
     refreshStorageDataDirInfo();
     refreshCloudSyncInfo();
@@ -5894,9 +6000,26 @@ export default function App() {
 
   const flushPendingPersistenceForCloudSync = async () => {
     schedulePersistSoon();
-    await new Promise<void>((resolve) => {
-      window.setTimeout(() => resolve(), 450);
-    });
+    const sleep = (ms: number) =>
+      new Promise<void>((resolve) => {
+        window.setTimeout(() => resolve(), ms);
+      });
+
+    const deadline = Date.now() + 7000;
+    while (Date.now() < deadline) {
+      const timerPending = persistTimerRef.current != null;
+      const inFlight = persistInFlightRef.current;
+      if (!timerPending && !inFlight) return;
+      if (inFlight) {
+        try {
+          await Promise.race([inFlight, sleep(120)]);
+        } catch {
+          // ignore persistence failures and continue
+        }
+      } else {
+        await sleep(120);
+      }
+    }
   };
 
   const pushToCloudSyncFolder = () => {
@@ -6040,12 +6163,34 @@ export default function App() {
       showToast('Google Drive direct sync is only available in Electron desktop mode.', 'info');
       return;
     }
+    if (googleDriveSyncRunRef.current) {
+      showToast('A sync operation is already in progress. Wait for it to finish.', 'info');
+      return;
+    }
+
+    setGoogleDriveSyncRun({ mode: 'push', startedAt: Date.now() });
+    setGoogleDriveSyncProgress({
+      opId: 'local-push',
+      mode: 'push',
+      stage: 'start',
+      phaseIndex: 1,
+      phaseCount: 4,
+      message: 'Starting Google Drive push...',
+      error: null,
+      indeterminate: true,
+      completed: null,
+      total: null,
+      done: false,
+      at: Date.now(),
+    });
+
     void (async () => {
       try {
         await flushPendingPersistenceForCloudSync();
         const res = await api.storageGoogleDriveSyncPush();
         if (!res?.ok) {
           showToast(`Google Drive push failed: ${String(res?.error ?? 'unknown error')}`, 'error', 5200);
+          setGoogleDriveSyncRun(null);
           return;
         }
         setGoogleDriveSyncInfo(googleDriveSyncInfoFromApiResult(res));
@@ -6053,6 +6198,8 @@ export default function App() {
         showToast(rev ? `Pushed to Google Drive (${rev}).` : 'Pushed to Google Drive.', 'success');
       } catch (err: any) {
         showToast(`Google Drive push failed: ${err?.message || String(err)}`, 'error', 5200);
+      } finally {
+        setGoogleDriveSyncRun(null);
       }
     })();
   };
@@ -6063,18 +6210,43 @@ export default function App() {
       showToast('Google Drive direct sync is only available in Electron desktop mode.', 'info');
       return;
     }
+    if (googleDriveSyncRunRef.current) {
+      showToast('A sync operation is already in progress. Wait for it to finish.', 'info');
+      return;
+    }
     const head = String(googleDriveSyncInfo?.remoteHeadRevision ?? '').trim();
     const prompt = head
       ? `Pull Google Drive revision ${head} and replace local data?\n\nA local backup will be created automatically.`
       : 'Pull from Google Drive and replace local data?\n\nA local backup will be created automatically.';
     if (!window.confirm(prompt)) return;
 
+    setGoogleDriveSyncRun({ mode: 'pull', startedAt: Date.now() });
+    setGoogleDriveSyncProgress({
+      opId: 'local-pull',
+      mode: 'pull',
+      stage: 'start',
+      phaseIndex: 1,
+      phaseCount: 5,
+      message: 'Starting Google Drive pull...',
+      error: null,
+      indeterminate: true,
+      completed: null,
+      total: null,
+      done: false,
+      at: Date.now(),
+    });
+
     void (async () => {
       try {
+        const activeJobs = Array.from(generationJobsByAssistantIdRef.current.keys());
+        for (const assistantNodeId of activeJobs) {
+          cancelJob(assistantNodeId);
+        }
         await flushPendingPersistenceForCloudSync();
         const res = await api.storageGoogleDriveSyncPull();
         if (!res?.ok) {
           showToast(`Google Drive pull failed: ${String(res?.error ?? 'unknown error')}`, 'error', 5200);
+          setGoogleDriveSyncRun(null);
           return;
         }
         setGoogleDriveSyncInfo(googleDriveSyncInfoFromApiResult(res));
@@ -6089,9 +6261,41 @@ export default function App() {
         }, 260);
       } catch (err: any) {
         showToast(`Google Drive pull failed: ${err?.message || String(err)}`, 'error', 5200);
+        setGoogleDriveSyncRun(null);
       }
     })();
   };
+
+  const googleDriveSyncProgressPct = useMemo(() => {
+    const p = googleDriveSyncProgress;
+    if (!p || p.indeterminate) return null;
+    if (!Number.isFinite(Number(p.completed)) || !Number.isFinite(Number(p.total))) return null;
+    const completed = Number(p.completed);
+    const total = Number(p.total);
+    if (total <= 0) return null;
+    return Math.max(0, Math.min(100, (completed / total) * 100));
+  }, [googleDriveSyncProgress]);
+
+  const googleDriveSyncProgressMessage = useMemo(() => {
+    const text = String(googleDriveSyncProgress?.message ?? '').trim();
+    if (text) return text;
+    if (googleDriveSyncRun?.mode === 'push') return 'Syncing to Google Drive...';
+    if (googleDriveSyncRun?.mode === 'pull') return 'Pulling from Google Drive...';
+    return null;
+  }, [googleDriveSyncProgress?.message, googleDriveSyncRun]);
+
+  const googleDriveSyncProgressDetail = useMemo(() => {
+    const p = googleDriveSyncProgress;
+    if (!p) return null;
+    const parts: string[] = [];
+    if (Number.isFinite(Number(p.phaseIndex)) && Number.isFinite(Number(p.phaseCount)) && Number(p.phaseCount) > 0) {
+      parts.push(`Step ${Math.max(1, Number(p.phaseIndex))}/${Math.max(1, Number(p.phaseCount))}`);
+    }
+    if (Number.isFinite(Number(p.completed)) && Number.isFinite(Number(p.total)) && Number(p.total) > 0) {
+      parts.push(`${Math.max(0, Number(p.completed))}/${Math.max(1, Number(p.total))} files`);
+    }
+    return parts.length ? parts.join(' • ') : null;
+  }, [googleDriveSyncProgress]);
 
   useEffect(() => {
     if (!settingsOpen || settingsPanel !== 'models') return;
@@ -7475,6 +7679,21 @@ export default function App() {
 	            document.body,
 	          )
 	        : null}
+	      {googleDrivePullLockActive ? (
+	        <div className="syncLockOverlay" role="status" aria-live="polite" aria-atomic="true">
+	          <div className="syncLockOverlay__card">
+	            <div className="syncLockOverlay__title">Google Drive pull in progress</div>
+	            <div className="syncLockOverlay__desc">Chat editing is locked until this pull finishes and the app reloads.</div>
+	            <div className="syncLockOverlay__label">{googleDriveSyncProgressMessage ?? 'Syncing...'}</div>
+	            {typeof googleDriveSyncProgressPct === 'number' ? (
+	              <progress className="syncLockOverlay__bar" max={100} value={googleDriveSyncProgressPct} />
+	            ) : (
+	              <progress className="syncLockOverlay__bar" />
+	            )}
+	            {googleDriveSyncProgressDetail ? <div className="syncLockOverlay__meta">{googleDriveSyncProgressDetail}</div> : null}
+	          </div>
+	        </div>
+	      ) : null}
 		      <FolderPickerDialog
 		        open={pendingImportArchive != null}
 		        title="Import to…"
@@ -8013,6 +8232,7 @@ export default function App() {
 
         <ChatComposer
           containerRef={composerDockRef}
+          disabled={googleDrivePullLockActive}
           minimized={composerMinimized}
           onChangeMinimized={(next) => {
             const value = Boolean(next);
@@ -8835,13 +9055,18 @@ export default function App() {
             googleDriveRemoteError={googleDriveSyncInfo?.remoteError ?? null}
             googleDriveConfigPath={googleDriveSyncInfo?.configPath ?? null}
             googleDriveConfigExists={googleDriveSyncInfo?.configExists ?? false}
-            googleDriveUserDataPath={googleDriveSyncInfo?.userDataPath ?? null}
-            googleDriveAppName={googleDriveSyncInfo?.appName ?? null}
-            canManageGoogleDriveSync={canManageGoogleDriveSync}
-            canOpenGoogleDriveFolder={canOpenGoogleDriveFolder}
-            onLinkGoogleDriveSync={linkGoogleDriveSync}
-            onUnlinkGoogleDriveSync={unlinkGoogleDriveSync}
-            onOpenGoogleDriveFolder={openGoogleDriveFolder}
+	            googleDriveUserDataPath={googleDriveSyncInfo?.userDataPath ?? null}
+	            googleDriveAppName={googleDriveSyncInfo?.appName ?? null}
+	            canManageGoogleDriveSync={canManageGoogleDriveSync}
+	            canOpenGoogleDriveFolder={canOpenGoogleDriveFolder}
+            googleDriveSyncInProgress={googleDriveSyncBusy}
+            googleDriveSyncMode={googleDriveSyncRun?.mode ?? null}
+            googleDriveSyncProgressMessage={googleDriveSyncProgressMessage}
+            googleDriveSyncProgressDetail={googleDriveSyncProgressDetail}
+            googleDriveSyncProgressPct={googleDriveSyncProgressPct}
+	            onLinkGoogleDriveSync={linkGoogleDriveSync}
+	            onUnlinkGoogleDriveSync={unlinkGoogleDriveSync}
+	            onOpenGoogleDriveFolder={openGoogleDriveFolder}
             onPushGoogleDriveSync={pushToGoogleDriveSync}
             onPullGoogleDriveSync={pullFromGoogleDriveSync}
             cleanupChatFoldersOnDelete={cleanupChatFoldersOnDelete}

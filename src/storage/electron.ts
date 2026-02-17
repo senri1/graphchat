@@ -207,6 +207,20 @@ export type ElectronStorageApi = {
     backupPath?: string;
     error?: string;
   }>;
+  storageGoogleDriveSyncOnProgress?: (cb: (payload: {
+    opId?: string;
+    op?: 'push' | 'pull' | string;
+    at?: number;
+    done?: boolean;
+    stage?: string;
+    phaseIndex?: number;
+    phaseCount?: number;
+    message?: string;
+    error?: string;
+    indeterminate?: boolean;
+    completed?: number;
+    total?: number;
+  }) => void) => () => void;
   storageClearAll?: () => Promise<{ ok: boolean; error?: string }>;
 };
 
