@@ -12,6 +12,8 @@ const CLOUD_SYNC_SNAPSHOTS_DIRNAME = 'snapshots';
 const CLOUD_SYNC_HEAD_FILE = 'HEAD.json';
 const CLOUD_SYNC_SCHEMA_VERSION = 1;
 const CLOUD_SYNC_MAX_REMOTE_REVISIONS = 3;
+const CLOUD_SYNC_SNAPSHOT_APPEAR_TIMEOUT_MS = 20_000;
+const CLOUD_SYNC_SNAPSHOT_APPEAR_POLL_MS = 500;
 const GOOGLE_DRIVE_SYNC_CONFIG_FILE = 'google-drive-sync.json';
 const LOCAL_SYNC_BACKUPS_DIRNAME = 'sync-backups';
 const LOCAL_SYNC_BACKUP_LATEST_DIRNAME = 'latest';
@@ -19,6 +21,8 @@ const GOOGLE_DRIVE_SNAPSHOT_ARTIFACT_EXT = '.gcsnap';
 const GOOGLE_DRIVE_SNAPSHOT_ARTIFACT_MAGIC = Buffer.from('GCSNAP01', 'ascii');
 const GOOGLE_DRIVE_SNAPSHOT_ARTIFACT_HEADER_BYTES = GOOGLE_DRIVE_SNAPSHOT_ARTIFACT_MAGIC.length + 4;
 const GOOGLE_DRIVE_MAX_REMOTE_REVISIONS = 3;
+const GOOGLE_DRIVE_SNAPSHOT_APPEAR_TIMEOUT_MS = 20_000;
+const GOOGLE_DRIVE_SNAPSHOT_APPEAR_POLL_MS = 1_000;
 const GOOGLE_DRIVE_SCOPES = [
   'https://www.googleapis.com/auth/drive.file',
   'openid',
@@ -73,6 +77,13 @@ function safeProgressReport(reporter, payload) {
   } catch {
     // ignore progress callback errors
   }
+}
+
+function sleep(ms) {
+  const delay = Number(ms);
+  const waitMs = Number.isFinite(delay) && delay > 0 ? Math.floor(delay) : 0;
+  if (waitMs <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, waitMs));
 }
 
 function shortError(value, fallback) {
@@ -404,6 +415,37 @@ async function deleteLocalSyncBackups(app) {
   return { deleted: hadAny, backupPath: latestBackupPath };
 }
 
+async function waitForLocalFile(absPath, opts = {}) {
+  const timeoutRaw = Number(opts?.timeoutMs);
+  const pollRaw = Number(opts?.pollMs);
+  const timeoutMs = Number.isFinite(timeoutRaw) && timeoutRaw >= 0 ? Math.floor(timeoutRaw) : CLOUD_SYNC_SNAPSHOT_APPEAR_TIMEOUT_MS;
+  const pollMs = Number.isFinite(pollRaw) && pollRaw > 0 ? Math.floor(pollRaw) : CLOUD_SYNC_SNAPSHOT_APPEAR_POLL_MS;
+
+  const started = Date.now();
+  while (true) {
+    if (await fileExists(absPath)) return true;
+    if (Date.now() - started >= timeoutMs) return false;
+    await sleep(pollMs);
+  }
+}
+
+async function listLocalSnapshotArtifactNames(cloudDir, limit = 8) {
+  const snapshotsDir = path.join(cloudDir, CLOUD_SYNC_SNAPSHOTS_DIRNAME);
+  let entries = [];
+  try {
+    entries = await fs.readdir(snapshotsDir, { withFileTypes: true });
+  } catch (err) {
+    if (err && typeof err === 'object' && err.code === 'ENOENT') return [];
+    throw err;
+  }
+
+  return entries
+    .filter((entry) => entry?.isFile?.() && String(entry?.name ?? '').endsWith(GOOGLE_DRIVE_SNAPSHOT_ARTIFACT_EXT))
+    .map((entry) => String(entry.name))
+    .sort((a, b) => b.localeCompare(a))
+    .slice(0, Math.max(1, Math.floor(Number(limit) || 8)));
+}
+
 async function pruneCloudSnapshotRevisions(cloudDir, opts = {}) {
   const keepLatestRaw = Number(opts?.keepLatest);
   const keepLatest = Number.isFinite(keepLatestRaw) && keepLatestRaw > 0 ? Math.floor(keepLatestRaw) : CLOUD_SYNC_MAX_REMOTE_REVISIONS;
@@ -576,7 +618,17 @@ async function pullStorageFromCloud(app) {
     throw new Error('Cloud snapshot metadata is invalid.');
   }
   const snapshotPath = path.join(cloudDir, CLOUD_SYNC_SNAPSHOTS_DIRNAME, snapshotFile);
-  if (!(await fileExists(snapshotPath))) throw new Error(`Cloud snapshot ${revision} is missing.`);
+  if (!(await fileExists(snapshotPath))) {
+    const appeared = await waitForLocalFile(snapshotPath, {
+      timeoutMs: CLOUD_SYNC_SNAPSHOT_APPEAR_TIMEOUT_MS,
+      pollMs: CLOUD_SYNC_SNAPSHOT_APPEAR_POLL_MS,
+    });
+    if (!appeared) {
+      const available = await listLocalSnapshotArtifactNames(cloudDir, 8).catch(() => []);
+      const suffix = available.length > 0 ? ` Available: ${available.join(', ')}` : ' Available: none';
+      throw new Error(`Cloud snapshot ${revision} is missing at ${snapshotPath}.${suffix}`);
+    }
+  }
 
   const localTmpDir = `${localRoot}.pull-tmp-${process.pid}-${Date.now()}`;
   await fs.rm(localTmpDir, { recursive: true, force: true });
@@ -1170,6 +1222,48 @@ async function googleDriveDeleteFile(accessToken, fileId) {
   throw new Error(`Failed to delete file from Google Drive (${res.status})${apiMsg ? `: ${apiMsg}` : ''}`);
 }
 
+async function waitForGoogleDriveFileByName(accessToken, folderId, name, opts = {}) {
+  const timeoutRaw = Number(opts?.timeoutMs);
+  const pollRaw = Number(opts?.pollMs);
+  const timeoutMs = Number.isFinite(timeoutRaw) && timeoutRaw >= 0 ? Math.floor(timeoutRaw) : GOOGLE_DRIVE_SNAPSHOT_APPEAR_TIMEOUT_MS;
+  const pollMs = Number.isFinite(pollRaw) && pollRaw > 0 ? Math.floor(pollRaw) : GOOGLE_DRIVE_SNAPSHOT_APPEAR_POLL_MS;
+
+  const started = Date.now();
+  while (true) {
+    const found = await googleDriveFindFileByName(accessToken, folderId, name);
+    const foundId = asTrimmedString(found?.id);
+    if (foundId) return found;
+    if (Date.now() - started >= timeoutMs) return null;
+    await sleep(pollMs);
+  }
+}
+
+async function listGoogleDriveSnapshotArtifactNames(accessToken, folderId, limit = 8) {
+  const parent = asTrimmedString(folderId);
+  if (!parent) return [];
+  const q = `'${googleDriveQueryLiteral(parent)}' in parents and trashed=false and name contains 'snapshot-' and name contains '${googleDriveQueryLiteral(
+    GOOGLE_DRIVE_SNAPSHOT_ARTIFACT_EXT,
+  )}'`;
+  const files = await googleDriveListFiles(accessToken, q, {
+    pageSize: 1000,
+    fields: 'nextPageToken,files(name,modifiedTime)',
+  });
+  return files
+    .map((file) => ({
+      name: asTrimmedString(file?.name),
+      modifiedAt: Date.parse(asTrimmedString(file?.modifiedTime)),
+    }))
+    .filter((rec) => rec.name)
+    .sort((a, b) => {
+      const am = Number.isFinite(a.modifiedAt) ? a.modifiedAt : 0;
+      const bm = Number.isFinite(b.modifiedAt) ? b.modifiedAt : 0;
+      if (bm !== am) return bm - am;
+      return b.name.localeCompare(a.name);
+    })
+    .slice(0, Math.max(1, Math.floor(Number(limit) || 8)))
+    .map((rec) => rec.name);
+}
+
 async function pruneGoogleDriveSnapshotRevisions(accessToken, folderId, opts = {}) {
   const keepLatestRaw = Number(opts?.keepLatest);
   const keepLatest = Number.isFinite(keepLatestRaw) && keepLatestRaw > 0 ? Math.floor(keepLatestRaw) : GOOGLE_DRIVE_MAX_REMOTE_REVISIONS;
@@ -1651,10 +1745,15 @@ async function pullStorageFromGoogleDrive(app, opts = {}) {
   if (!revision) throw new Error('Google Drive has no pushed snapshot yet.');
 
   const snapshotFileName = googleSnapshotArtifactFileName(revision);
-  const snapshotFile = await googleDriveFindFileByName(accessToken, cfg.folderId, snapshotFileName);
+  const snapshotFile = await waitForGoogleDriveFileByName(accessToken, cfg.folderId, snapshotFileName, {
+    timeoutMs: GOOGLE_DRIVE_SNAPSHOT_APPEAR_TIMEOUT_MS,
+    pollMs: GOOGLE_DRIVE_SNAPSHOT_APPEAR_POLL_MS,
+  });
   const snapshotFileId = asTrimmedString(snapshotFile?.id);
   if (!snapshotFileId) {
-    throw new Error(`Google Drive snapshot artifact is missing for revision ${revision}.`);
+    const available = await listGoogleDriveSnapshotArtifactNames(accessToken, cfg.folderId, 8).catch(() => []);
+    const suffix = available.length > 0 ? ` Available: ${available.join(', ')}` : ' Available: none';
+    throw new Error(`Google Drive snapshot artifact is missing for revision ${revision} (expected ${snapshotFileName}).${suffix}`);
   }
 
   let fileCount = 0;
