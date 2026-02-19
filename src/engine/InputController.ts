@@ -5,6 +5,7 @@ import type { Camera } from './Camera';
 type PointerInfo = {
   id: number;
   type: string;
+  button: number;
   startPos: Vec2;
   pos: Vec2;
   lastPos: Vec2;
@@ -21,7 +22,7 @@ export type InputControllerEvents = {
   onChange?: () => void;
   onInteractingChange?: (isInteracting: boolean) => void;
   onTap?: (p: Vec2, info: { pointerType: string; pointerId: number; wheelInput: WheelInputResolved }) => void;
-  onPointerDown?: (p: Vec2, info: { pointerType: string; pointerId: number }) => PointerCaptureMode | null;
+  onPointerDown?: (p: Vec2, info: { pointerType: string; pointerId: number; button: number }) => PointerCaptureMode | null;
   onPointerMove?: (p: Vec2, info: { pointerType: string; pointerId: number }) => void;
   onPointerUp?: (p: Vec2, info: { pointerType: string; pointerId: number; wasDrag: boolean }) => void;
   onPointerCancel?: (info: { pointerType: string; pointerId: number }) => void;
@@ -37,8 +38,8 @@ function normalizeWheelInputPreference(value: unknown): WheelInputPreference {
   return 'auto';
 }
 
-function isPrimaryButton(ev: PointerEvent): boolean {
-  if (ev.pointerType === 'mouse') return ev.button === 0;
+function isSupportedPointerDownButton(ev: PointerEvent): boolean {
+  if (ev.pointerType === 'mouse') return ev.button === 0 || ev.button === 2;
   return true;
 }
 
@@ -92,6 +93,7 @@ export class InputController {
     pos: Vec2;
     captureMode: PointerCaptureMode;
     forceDrag?: boolean;
+    button?: number;
   }): void {
     const pointerId = opts.pointerId;
     const pointerType = opts.pointerType || 'mouse';
@@ -121,7 +123,14 @@ export class InputController {
 
     cancelPointer(pointerId);
 
-    const info: PointerInfo = { id: pointerId, type: pointerType, startPos: pos, pos, lastPos: pos };
+    const info: PointerInfo = {
+      id: pointerId,
+      type: pointerType,
+      button: Number.isFinite(opts.button) ? Number(opts.button) : 0,
+      startPos: pos,
+      pos,
+      lastPos: pos,
+    };
     this.pointers.set(pointerId, info);
     this.capturedPointers.set(pointerId, opts.captureMode);
     this.dragBegan.delete(pointerId);
@@ -238,12 +247,21 @@ export class InputController {
   };
 
   private onPointerDown = (ev: PointerEvent) => {
-    if (!isPrimaryButton(ev)) return;
+    if (!isSupportedPointerDownButton(ev)) return;
 
     const pos = this.getLocalPos(ev);
+    const pointerType = ev.pointerType || 'mouse';
+    const button = pointerType === 'mouse' ? ev.button : 0;
+    const mode = this.events.onPointerDown?.(pos, { pointerType, pointerId: ev.pointerId, button }) ?? null;
+    if (pointerType === 'mouse' && button === 2 && !mode) {
+      ev.preventDefault();
+      return;
+    }
+
     const info: PointerInfo = {
       id: ev.pointerId,
-      type: ev.pointerType || 'mouse',
+      type: pointerType,
+      button,
       startPos: pos,
       pos,
       lastPos: pos,
@@ -252,7 +270,6 @@ export class InputController {
     this.dragBegan.delete(ev.pointerId);
     this.capturedPointers.delete(ev.pointerId);
 
-    const mode = this.events.onPointerDown?.(pos, { pointerType: info.type, pointerId: ev.pointerId }) ?? null;
     if (mode) {
       this.capturedPointers.set(ev.pointerId, mode);
       if (mode === 'draw' || mode === 'text') this.dragBegan.add(ev.pointerId);
@@ -303,7 +320,7 @@ export class InputController {
           const fromStart = hypot2(pos.x - info.startPos.x, pos.y - info.startPos.y);
           if (fromStart >= this.dragThresholdPx) this.dragBegan.add(ev.pointerId);
         }
-        if (this.dragBegan.has(ev.pointerId) && (dx || dy)) {
+        if (this.dragBegan.has(ev.pointerId) && (dx || dy) && info.button === 0) {
           this.camera.panByScreen(dx, dy);
           this.events.onChange?.();
         }
@@ -340,7 +357,7 @@ export class InputController {
 
     this.recomputePinchState();
 
-    if (!wasPinching && !this.pinch && !didDrag && info) {
+    if (!wasPinching && !this.pinch && !didDrag && info && info.button === 0) {
       const pos = this.getLocalPos(ev);
       this.events.onTap?.(pos, {
         pointerType: info.type,

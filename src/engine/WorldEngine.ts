@@ -534,6 +534,8 @@ type ActiveNodeGesture =
       nodeId: string;
       startWorld: Vec2;
       startRect: Rect;
+      dragMode: 'single' | 'subtree';
+      subtreeStartRects?: Record<string, Rect>;
     }
   | {
       kind: 'resize';
@@ -730,6 +732,7 @@ export class WorldEngine {
   private spawnEditNodeByDrawEnabled = false;
   private spawnInkNodeByDrawEnabled = false;
   private mouseClickRecenterEnabled = true;
+  private rightClickHeaderDragSubtreeEnabled = true;
   private replySpawnKind: 'text' | 'ink' = 'text';
   private pdfAnnotationPlacement: PdfAnnotationPlacement | null = null;
   private textAnnotationPlacement: TextAnnotationPlacement | null = null;
@@ -2040,6 +2043,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
   setMouseClickRecenterEnabled(enabled: boolean): void {
     this.mouseClickRecenterEnabled = Boolean(enabled);
+  }
+
+  setRightClickHeaderDragSubtreeEnabled(enabled: boolean): void {
+    this.rightClickHeaderDragSubtreeEnabled = Boolean(enabled);
   }
 
   setAllowEditingAllTextNodes(enabled: boolean): void {
@@ -8312,7 +8319,53 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return null;
   }
 
-  private handlePointerDown(p: Vec2, info: { pointerType: string; pointerId: number }): PointerCaptureMode | null {
+  private isWorldInNodeHeader(nodeRect: Rect, world: Vec2): boolean {
+    const headerBottom = Math.min(nodeRect.y + nodeRect.h, nodeRect.y + TEXT_NODE_HEADER_H_PX);
+    return (
+      world.x >= nodeRect.x &&
+      world.x <= nodeRect.x + nodeRect.w &&
+      world.y >= nodeRect.y &&
+      world.y <= headerBottom
+    );
+  }
+
+  private captureSubtreeStartRects(rootNodeId: string): Record<string, Rect> {
+    const rootId = typeof rootNodeId === 'string' ? rootNodeId : String(rootNodeId ?? '');
+    if (!rootId) return {};
+
+    const nodeById = new Map<string, WorldNode>();
+    const childrenById = new Map<string, string[]>();
+    for (const node of this.nodes) {
+      nodeById.set(node.id, node);
+      childrenById.set(node.id, []);
+    }
+    for (const node of this.nodes) {
+      const parentId = node.parentId;
+      if (!parentId) continue;
+      const children = childrenById.get(parentId);
+      if (children) children.push(node.id);
+    }
+
+    const out: Record<string, Rect> = {};
+    const queue: string[] = [rootId];
+    const seen = new Set<string>();
+    while (queue.length > 0) {
+      const nodeId = queue.shift()!;
+      if (seen.has(nodeId)) continue;
+      seen.add(nodeId);
+      const node = nodeById.get(nodeId);
+      if (!node) continue;
+      out[nodeId] = { ...node.rect };
+      const children = childrenById.get(nodeId) ?? [];
+      for (const childId of children) queue.push(childId);
+    }
+    return out;
+  }
+
+  private handlePointerDown(
+    p: Vec2,
+    info: { pointerType: string; pointerId: number; button: number },
+  ): PointerCaptureMode | null {
     // Only capture when starting a custom interaction. Otherwise let InputController pan the camera.
     if (this.activeGesture) return null;
 
@@ -8739,6 +8792,39 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       return 'node';
     }
 
+    const isRightMouseHeaderDrag = info.pointerType === 'mouse' && info.button === 2;
+    if (isRightMouseHeaderDrag) {
+      const inHeader = this.isWorldInNodeHeader(hit.rect, world);
+      if (!inHeader) return null;
+
+      const selectionChanged = this.selectedNodeId !== hit.id;
+      this.selectedNodeId = hit.id;
+      this.bringNodeToFront(hit.id);
+      this.requestRender();
+      if (selectionChanged) this.emitUiState();
+
+      const startRect: Rect = { ...hit.rect };
+      let dragMode: 'single' | 'subtree' = this.rightClickHeaderDragSubtreeEnabled ? 'subtree' : 'single';
+      let subtreeStartRects: Record<string, Rect> | undefined;
+      if (dragMode === 'subtree') {
+        const captured = this.captureSubtreeStartRects(hit.id);
+        if (captured[hit.id]) subtreeStartRects = captured;
+        else dragMode = 'single';
+      }
+
+      this.activeGesture = {
+        kind: 'drag',
+        pointerId: info.pointerId,
+        nodeId: hit.id,
+        startWorld: world,
+        startRect,
+        dragMode,
+        ...(subtreeStartRects ? { subtreeStartRects } : {}),
+      };
+      this.suppressTapPointerIds.add(info.pointerId);
+      return 'node';
+    }
+
     const selectionChanged = this.selectedNodeId !== hit.id;
     this.selectedNodeId = hit.id;
     this.bringNodeToFront(hit.id);
@@ -8911,6 +8997,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         nodeId: hit.id,
         startWorld: world,
         startRect,
+        dragMode: 'single',
       };
     }
 
@@ -9189,6 +9276,21 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const dy = world.y - g.startWorld.y;
 
     if (g.kind === 'drag') {
+      if (g.dragMode === 'subtree' && g.subtreeStartRects) {
+        for (const target of this.nodes) {
+          const startRect = g.subtreeStartRects[target.id];
+          if (!startRect) continue;
+          target.rect = {
+            x: startRect.x + dx,
+            y: startRect.y + dy,
+            w: startRect.w,
+            h: startRect.h,
+          };
+        }
+        this.requestRender();
+        return;
+      }
+
       node.rect = {
         x: g.startRect.x + dx,
         y: g.startRect.y + dy,

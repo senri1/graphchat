@@ -101,6 +101,8 @@ type Props = {
   onChangeWheelInputPreference: (next: WheelInputPreference) => void;
   mouseClickRecenterEnabled: boolean;
   onToggleMouseClickRecenterEnabled: () => void;
+  rightClickHeaderDragSubtreeEnabled: boolean;
+  onToggleRightClickHeaderDragSubtreeEnabled: () => void;
   sendAllEnabled: boolean;
   onToggleSendAllEnabled: () => void;
   sendAllModelIds: string[];
@@ -1244,6 +1246,25 @@ export default function SettingsModal(props: Props) {
                         onClick={props.onToggleMouseClickRecenterEnabled}
                       >
                         {props.mouseClickRecenterEnabled ? 'On' : 'Off'}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="settingsRow">
+                    <div className="settingsRow__text">
+                      <div className="settingsRow__title">Right-click header drag moves subtree</div>
+                      <div className="settingsRow__desc">
+                        When on, right-click dragging a node header moves that node and all descendants together.
+                      </div>
+                    </div>
+                    <div className="settingsRow__actions">
+                      <button
+                        className={`settingsToggle ${props.rightClickHeaderDragSubtreeEnabled ? 'settingsToggle--on' : ''}`}
+                        type="button"
+                        aria-pressed={props.rightClickHeaderDragSubtreeEnabled}
+                        onClick={props.onToggleRightClickHeaderDragSubtreeEnabled}
+                      >
+                        {props.rightClickHeaderDragSubtreeEnabled ? 'On' : 'Off'}
                       </button>
                     </div>
                   </div>

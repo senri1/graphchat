@@ -372,6 +372,7 @@ const DEFAULT_SPAWN_EDIT_NODE_BY_DRAW = false;
 const DEFAULT_SPAWN_INK_NODE_BY_DRAW = false;
 const DEFAULT_WHEEL_INPUT_PREFERENCE: WheelInputPreference = 'auto';
 const DEFAULT_MOUSE_CLICK_RECENTER_ENABLED = true;
+const DEFAULT_RIGHT_CLICK_HEADER_DRAG_SUBTREE_ENABLED = true;
 const EDIT_NODE_SEND_MODEL_MENU_WIDTH = 160;
 const DEFAULT_GLASS_NODES_ENABLED = true;
 const DEFAULT_GLASS_BLUR_BACKEND: GlassBlurBackend = 'webgl';
@@ -1555,6 +1556,10 @@ export default function App() {
   const wheelInputPreferenceRef = useRef<WheelInputPreference>(wheelInputPreference);
   const [mouseClickRecenterEnabled, setMouseClickRecenterEnabled] = useState<boolean>(DEFAULT_MOUSE_CLICK_RECENTER_ENABLED);
   const mouseClickRecenterEnabledRef = useRef<boolean>(mouseClickRecenterEnabled);
+  const [rightClickHeaderDragSubtreeEnabled, setRightClickHeaderDragSubtreeEnabled] = useState<boolean>(
+    DEFAULT_RIGHT_CLICK_HEADER_DRAG_SUBTREE_ENABLED,
+  );
+  const rightClickHeaderDragSubtreeEnabledRef = useRef<boolean>(rightClickHeaderDragSubtreeEnabled);
   const [inkSendCropEnabled, setInkSendCropEnabled] = useState(DEFAULT_INK_SEND_CROP_ENABLED);
   const inkSendCropEnabledRef = useRef<boolean>(inkSendCropEnabled);
   const [inkSendCropPaddingPx, setInkSendCropPaddingPx] = useState<number>(24);
@@ -1823,6 +1828,11 @@ export default function App() {
     mouseClickRecenterEnabledRef.current = mouseClickRecenterEnabled;
     engineRef.current?.setMouseClickRecenterEnabled(mouseClickRecenterEnabled);
   }, [mouseClickRecenterEnabled]);
+
+  useEffect(() => {
+    rightClickHeaderDragSubtreeEnabledRef.current = rightClickHeaderDragSubtreeEnabled;
+    engineRef.current?.setRightClickHeaderDragSubtreeEnabled(rightClickHeaderDragSubtreeEnabled);
+  }, [rightClickHeaderDragSubtreeEnabled]);
 
   useEffect(() => {
     inkSendCropEnabledRef.current = inkSendCropEnabled;
@@ -4227,6 +4237,7 @@ export default function App() {
     engine.setSpawnInkNodeByDrawEnabled(spawnInkNodeByDrawRef.current);
     engine.setWheelInputPreference(wheelInputPreferenceRef.current);
     engine.setMouseClickRecenterEnabled(mouseClickRecenterEnabledRef.current);
+    engine.setRightClickHeaderDragSubtreeEnabled(rightClickHeaderDragSubtreeEnabledRef.current);
     engine.setReplySpawnKind(replySpawnKindRef.current);
     lastEngineInteractingRef.current = null;
     engine.onDebug = (next) => {
@@ -4850,6 +4861,7 @@ export default function App() {
       engine.setSpawnInkNodeByDrawEnabled(spawnInkNodeByDrawRef.current);
       engine.setWheelInputPreference(wheelInputPreferenceRef.current);
       engine.setMouseClickRecenterEnabled(mouseClickRecenterEnabledRef.current);
+      engine.setRightClickHeaderDragSubtreeEnabled(rightClickHeaderDragSubtreeEnabledRef.current);
       engine.setReplySpawnKind(replySpawnKindRef.current);
       engine.cancelEditing();
       const nextState = chatStatesRef.current.get(resolvedActive) ?? createEmptyChatState();
@@ -9001,6 +9013,13 @@ export default function App() {
             engineRef.current?.setMouseClickRecenterEnabled(next);
             schedulePersistSoon();
           }}
+          rightClickHeaderDragSubtreeEnabled={rightClickHeaderDragSubtreeEnabled}
+          onToggleRightClickHeaderDragSubtreeEnabled={() => {
+            const next = !rightClickHeaderDragSubtreeEnabledRef.current;
+            rightClickHeaderDragSubtreeEnabledRef.current = next;
+            setRightClickHeaderDragSubtreeEnabled(next);
+            engineRef.current?.setRightClickHeaderDragSubtreeEnabled(next);
+          }}
           sendAllEnabled={sendAllEnabled}
           onToggleSendAllEnabled={() => {
             const next = !sendAllEnabledRef.current;
@@ -9252,6 +9271,8 @@ export default function App() {
             setWheelInputPreference(DEFAULT_WHEEL_INPUT_PREFERENCE);
             mouseClickRecenterEnabledRef.current = DEFAULT_MOUSE_CLICK_RECENTER_ENABLED;
             setMouseClickRecenterEnabled(DEFAULT_MOUSE_CLICK_RECENTER_ENABLED);
+            rightClickHeaderDragSubtreeEnabledRef.current = DEFAULT_RIGHT_CLICK_HEADER_DRAG_SUBTREE_ENABLED;
+            setRightClickHeaderDragSubtreeEnabled(DEFAULT_RIGHT_CLICK_HEADER_DRAG_SUBTREE_ENABLED);
             inkSendCropEnabledRef.current = DEFAULT_INK_SEND_CROP_ENABLED;
             setInkSendCropEnabled(DEFAULT_INK_SEND_CROP_ENABLED);
             inkSendCropPaddingPxRef.current = 24;
@@ -9338,6 +9359,7 @@ export default function App() {
               engine.setSpawnInkNodeByDrawEnabled(DEFAULT_SPAWN_INK_NODE_BY_DRAW);
               engine.setWheelInputPreference(DEFAULT_WHEEL_INPUT_PREFERENCE);
               engine.setMouseClickRecenterEnabled(DEFAULT_MOUSE_CLICK_RECENTER_ENABLED);
+              engine.setRightClickHeaderDragSubtreeEnabled(DEFAULT_RIGHT_CLICK_HEADER_DRAG_SUBTREE_ENABLED);
               engine.setNodeTextFontFamily(fontFamilyCss(DEFAULT_NODE_FONT_FAMILY));
               engine.setNodeTextFontSizePx(DEFAULT_NODE_FONT_SIZE_PX);
               setUi(engine.getUiState());
