@@ -25,6 +25,17 @@ export const OPENAI_LATEX_TOOL_NAMES = {
 
 export type OpenAILatexToolName = (typeof OPENAI_LATEX_TOOL_NAMES)[keyof typeof OPENAI_LATEX_TOOL_NAMES];
 
+export const OPENAI_GRAPH_TOOL_NAMES = {
+  listNodes: 'graph_list_nodes',
+  readNode: 'graph_read_node',
+  searchNodes: 'graph_search_nodes',
+  writeNode: 'graph_write_node',
+  replaceInNode: 'graph_replace_in_node',
+  createNode: 'graph_create_node',
+} as const;
+
+export type OpenAIGraphToolName = (typeof OPENAI_GRAPH_TOOL_NAMES)[keyof typeof OPENAI_GRAPH_TOOL_NAMES];
+
 export type OpenAILatexToolContext = {
   latexNodeId: string;
   projectRoot: string;
@@ -412,6 +423,297 @@ function buildOpenAILatexToolDefinitions(): any[] {
   ];
 }
 
+function buildOpenAIGraphToolDefinitions(): any[] {
+  return [
+    {
+      type: 'function',
+      name: OPENAI_GRAPH_TOOL_NAMES.listNodes,
+      description:
+        'List graph/chat nodes as compact digests with tree structure metadata. Use this first to discover relevant nodes, then request additional pages with cursor if needed.',
+      strict: true,
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          root_id: {
+            type: ['string', 'null'],
+            description: 'Optional node id. When set, only list that node and its descendants.',
+          },
+          cursor: {
+            type: ['string', 'null'],
+            description: 'Pagination cursor from a previous graph_list_nodes call.',
+          },
+          limit: {
+            type: ['integer', 'null'],
+            minimum: 1,
+            maximum: 2000,
+            description: 'Maximum nodes to return in this page.',
+          },
+          max_bytes: {
+            type: ['integer', 'null'],
+            minimum: 1024,
+            maximum: 200000,
+            description: 'Soft cap for serialized response size in UTF-8 bytes.',
+          },
+          summary_chars: {
+            type: ['integer', 'null'],
+            minimum: 48,
+            maximum: 4000,
+            description: 'Optional per-node summary character target; omitted means dynamic auto-sizing.',
+          },
+          include_metadata: {
+            type: ['string', 'null'],
+            enum: ['none', 'compact'],
+            description: 'Metadata verbosity. "none" returns only structural essentials.',
+          },
+        },
+        required: ['root_id', 'cursor', 'limit', 'max_bytes', 'summary_chars', 'include_metadata'],
+      },
+    },
+    {
+      type: 'function',
+      name: OPENAI_GRAPH_TOOL_NAMES.readNode,
+      description:
+        'Read one graph node in detail. For text nodes this can return full content (or a line range); for non-text nodes it returns structured details.',
+      strict: true,
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          node_id: {
+            type: 'string',
+            description: 'Required target node id.',
+          },
+          max_bytes: {
+            type: ['integer', 'null'],
+            minimum: 1024,
+            maximum: 2000000,
+            description: 'Max UTF-8 bytes for returned content.',
+          },
+          start_line: {
+            type: ['integer', 'null'],
+            minimum: 1,
+            maximum: 10000000,
+            description: 'Optional 1-based start line for text nodes.',
+          },
+          end_line: {
+            type: ['integer', 'null'],
+            minimum: 1,
+            maximum: 10000000,
+            description: 'Optional 1-based end line for text nodes.',
+          },
+          include_metadata: {
+            type: ['string', 'null'],
+            enum: ['none', 'compact'],
+            description: 'Metadata verbosity. "none" returns only essentials.',
+          },
+        },
+        required: ['node_id', 'max_bytes', 'start_line', 'end_line', 'include_metadata'],
+      },
+    },
+    {
+      type: 'function',
+      name: OPENAI_GRAPH_TOOL_NAMES.searchNodes,
+      description:
+        'Search graph nodes by lexical query over titles, text content, and node summaries. Use cursor for pagination and read nodes for details.',
+      strict: true,
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          query: {
+            type: 'string',
+            description: 'Search query text.',
+          },
+          root_id: {
+            type: ['string', 'null'],
+            description: 'Optional node id scope. When set, only search that node and descendants.',
+          },
+          kinds: {
+            type: ['array', 'null'],
+            items: { type: 'string', enum: ['text', 'ink', 'pdf'] },
+            minItems: 1,
+            maxItems: 3,
+            description: 'Optional node kind filter.',
+          },
+          cursor: {
+            type: ['string', 'null'],
+            description: 'Pagination cursor from a previous graph_search_nodes call.',
+          },
+          limit: {
+            type: ['integer', 'null'],
+            minimum: 1,
+            maximum: 2000,
+            description: 'Maximum result rows to return.',
+          },
+          max_bytes: {
+            type: ['integer', 'null'],
+            minimum: 1024,
+            maximum: 200000,
+            description: 'Soft cap for serialized response size in UTF-8 bytes.',
+          },
+          summary_chars: {
+            type: ['integer', 'null'],
+            minimum: 48,
+            maximum: 4000,
+            description: 'Optional per-node summary character target; omitted means dynamic auto-sizing.',
+          },
+          include_metadata: {
+            type: ['string', 'null'],
+            enum: ['none', 'compact'],
+            description: 'Metadata verbosity. "none" returns only structural essentials.',
+          },
+        },
+        required: ['query', 'root_id', 'kinds', 'cursor', 'limit', 'max_bytes', 'summary_chars', 'include_metadata'],
+      },
+    },
+    {
+      type: 'function',
+      name: OPENAI_GRAPH_TOOL_NAMES.writeNode,
+      description:
+        'Replace the full content of a text node. Requires expected_version from graph_read_node (or v from graph_list_nodes) to prevent stale writes.',
+      strict: true,
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          node_id: {
+            type: 'string',
+            description: 'Target text node id.',
+          },
+          content: {
+            type: 'string',
+            description: 'New full text content.',
+          },
+          expected_version: {
+            type: 'string',
+            description: 'Required version hash from graph_read_node or graph_list_nodes.v.',
+          },
+          include_metadata: {
+            type: ['string', 'null'],
+            enum: ['none', 'compact'],
+            description: 'Metadata verbosity in the success response.',
+          },
+        },
+        required: ['node_id', 'content', 'expected_version', 'include_metadata'],
+      },
+    },
+    {
+      type: 'function',
+      name: OPENAI_GRAPH_TOOL_NAMES.replaceInNode,
+      description:
+        'Apply literal in-place replacements to a text node, with optional line ranges and dry-run support. Requires expected_version for concurrency safety.',
+      strict: true,
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          node_id: {
+            type: 'string',
+            description: 'Target text node id.',
+          },
+          replacements: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 200,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                old_text: { type: 'string', description: 'Exact literal text to match.' },
+                new_text: { type: 'string', description: 'Replacement text.' },
+                replace_all: { type: ['boolean', 'null'], description: 'If true, replace every match in scope.' },
+                start_line: {
+                  type: ['integer', 'null'],
+                  minimum: 1,
+                  maximum: 10000000,
+                  description: 'Optional 1-based start line scope.',
+                },
+                end_line: {
+                  type: ['integer', 'null'],
+                  minimum: 1,
+                  maximum: 10000000,
+                  description: 'Optional 1-based end line scope.',
+                },
+              },
+              required: ['old_text', 'new_text', 'replace_all', 'start_line', 'end_line'],
+            },
+          },
+          expected_version: {
+            type: 'string',
+            description: 'Required version hash from graph_read_node or graph_list_nodes.v.',
+          },
+          dry_run: { type: ['boolean', 'null'], description: 'If true, report changes without writing.' },
+          max_total_replacements: {
+            type: ['integer', 'null'],
+            minimum: 1,
+            maximum: 200000,
+            description: 'Hard cap on total applied replacements.',
+          },
+          include_metadata: {
+            type: ['string', 'null'],
+            enum: ['none', 'compact'],
+            description: 'Metadata verbosity in the success response.',
+          },
+        },
+        required: [
+          'node_id',
+          'replacements',
+          'expected_version',
+          'dry_run',
+          'max_total_replacements',
+          'include_metadata',
+        ],
+      },
+    },
+    {
+      type: 'function',
+      name: OPENAI_GRAPH_TOOL_NAMES.createNode,
+      description: 'Create a new text node in the current graph, optionally parented to an existing node.',
+      strict: true,
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          kind: {
+            type: ['string', 'null'],
+            enum: ['text'],
+            description: 'Node kind. Currently only "text" is supported.',
+          },
+          parent_id: {
+            type: ['string', 'null'],
+            description: 'Optional parent node id.',
+          },
+          title: {
+            type: ['string', 'null'],
+            description: 'Optional title.',
+          },
+          content: {
+            type: ['string', 'null'],
+            description: 'Optional initial content.',
+          },
+          author: {
+            type: ['string', 'null'],
+            enum: ['user', 'assistant'],
+            description: 'Optional author role; defaults to user.',
+          },
+          text_format: {
+            type: ['string', 'null'],
+            enum: ['markdown', 'latex'],
+            description: 'Optional text format; defaults to markdown.',
+          },
+          include_metadata: {
+            type: ['string', 'null'],
+            enum: ['none', 'compact'],
+            description: 'Metadata verbosity in the success response.',
+          },
+        },
+        required: ['kind', 'parent_id', 'title', 'content', 'author', 'text_format', 'include_metadata'],
+      },
+    },
+  ];
+}
+
 function buildOpenAILatexToolInstruction(context: OpenAILatexToolContext): string {
   const hints: string[] = [];
   if (context.activeFile) hints.push(`Active file hint: ${context.activeFile}`);
@@ -429,6 +731,15 @@ function buildOpenAILatexToolInstruction(context: OpenAILatexToolContext): strin
   return header;
 }
 
+function buildOpenAIGraphToolInstruction(): string {
+  return [
+    'You can inspect and modify the current chat graph via graph_list_nodes, graph_search_nodes, graph_read_node, graph_write_node, graph_replace_in_node, and graph_create_node.',
+    'When context is uncertain, use graph_search_nodes or graph_list_nodes first, then use graph_read_node for detailed inspection.',
+    'Before graph_write_node or graph_replace_in_node, read the node first and pass expected_version to avoid conflicts.',
+    'Do not assume omitted nodes are irrelevant when the response is truncated.',
+  ].join('\n');
+}
+
 export async function buildOpenAIResponseRequest(args: {
   nodes: ChatNode[];
   leafUserNodeId: string;
@@ -439,11 +750,13 @@ export async function buildOpenAIResponseRequest(args: {
   const apiModel = info?.apiModel || modelId;
   const input = await buildOpenAIInputFromChatNodes(args.nodes, args.leafUserNodeId, { inkExport: args.settings.inkExport });
   const latexToolContext = resolveOpenAILatexToolContext({ nodes: args.nodes, leafUserNodeId: args.leafUserNodeId });
+  const includeGraphTools = !Boolean(args.settings.background);
 
   const resolvedSystemInstruction = resolveSystemInstruction(args.settings.systemInstruction);
-  const instructions = latexToolContext
-    ? `${resolvedSystemInstruction}\n\n${buildOpenAILatexToolInstruction(latexToolContext)}`
-    : resolvedSystemInstruction;
+  const instructionsParts = [resolvedSystemInstruction];
+  if (includeGraphTools) instructionsParts.push(buildOpenAIGraphToolInstruction());
+  if (latexToolContext) instructionsParts.push(buildOpenAILatexToolInstruction(latexToolContext));
+  const instructions = instructionsParts.filter((part) => part.trim()).join('\n\n');
 
   const body: any = {
     model: apiModel,
@@ -459,10 +772,11 @@ export async function buildOpenAIResponseRequest(args: {
 
   const tools: any[] = [];
   if (args.settings.webSearchEnabled && info?.parameters.webSearch) tools.push({ type: 'web_search' });
+  if (includeGraphTools) tools.push(...buildOpenAIGraphToolDefinitions());
   if (latexToolContext) {
     tools.push(...buildOpenAILatexToolDefinitions());
-    body.parallel_tool_calls = false;
   }
+  if (tools.some((tool) => tool?.type === 'function')) body.parallel_tool_calls = false;
   if (tools.length > 0) {
     body.tools = tools;
     body.tool_choice = 'auto';

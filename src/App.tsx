@@ -58,6 +58,7 @@ import type { ChatAttachment, ChatNode, InkStroke, ThinkingSummaryChunk } from '
 import { normalizeBackgroundLibrary, type BackgroundLibraryItem } from './model/backgrounds';
 import {
   buildOpenAIResponseRequest,
+  OPENAI_GRAPH_TOOL_NAMES,
   OPENAI_LATEX_TOOL_NAMES,
   resolveOpenAILatexToolContext,
   type OpenAIChatSettings,
@@ -757,8 +758,26 @@ const OPENAI_LATEX_LIST_MAX_LIMIT = 5000;
 const OPENAI_LATEX_READ_MAX_BYTES = 2_000_000;
 const OPENAI_LATEX_REPLACE_DEFAULT_MAX_TOTAL = 200;
 const OPENAI_LATEX_LIST_CURSOR_PREFIX = 'offset:';
+const OPENAI_GRAPH_LIST_DEFAULT_LIMIT = 120;
+const OPENAI_GRAPH_LIST_MAX_LIMIT = 2000;
+const OPENAI_GRAPH_LIST_DEFAULT_MAX_BYTES = 24_000;
+const OPENAI_GRAPH_LIST_MAX_BYTES = 200_000;
+const OPENAI_GRAPH_LIST_CURSOR_PREFIX = 'graph_offset:';
+const OPENAI_GRAPH_READ_DEFAULT_MAX_BYTES = 120_000;
+const OPENAI_GRAPH_READ_MAX_BYTES = 2_000_000;
+const OPENAI_GRAPH_SEARCH_DEFAULT_LIMIT = 120;
+const OPENAI_GRAPH_SEARCH_MAX_LIMIT = 2000;
+const OPENAI_GRAPH_SEARCH_DEFAULT_MAX_BYTES = 24_000;
+const OPENAI_GRAPH_SEARCH_MAX_BYTES = 200_000;
+const OPENAI_GRAPH_SEARCH_CURSOR_PREFIX = 'graph_search_offset:';
+const OPENAI_GRAPH_REPLACE_DEFAULT_MAX_TOTAL = 200;
 
 const OPENAI_LATEX_TOOL_NAME_SET = new Set<string>(Object.values(OPENAI_LATEX_TOOL_NAMES));
+const OPENAI_GRAPH_TOOL_NAME_SET = new Set<string>(Object.values(OPENAI_GRAPH_TOOL_NAMES));
+const OPENAI_INTERNAL_TOOL_NAME_SET = new Set<string>([
+  ...OPENAI_LATEX_TOOL_NAME_SET,
+  ...OPENAI_GRAPH_TOOL_NAME_SET,
+]);
 
 type OpenAIFunctionCall = {
   callId: string;
@@ -769,6 +788,27 @@ type OpenAIFunctionCall = {
 type OpenAIFunctionCallOutput = {
   callId: string;
   output: Record<string, unknown>;
+};
+
+type OpenAIGraphMutationHandlers = {
+  writeTextNodeContent?: (args: {
+    nodeId: string;
+    content: string;
+    expectedVersion: string;
+  }) => Promise<
+    | { ok: true; node: Extract<ChatNode, { kind: 'text' }> }
+    | { ok: false; errorCode: string; error: string; extra?: Record<string, unknown> }
+  >;
+  createTextNode?: (args: {
+    parentId: string | null;
+    title: string;
+    content: string;
+    author: 'user' | 'assistant';
+    textFormat: 'markdown' | 'latex';
+  }) => Promise<
+    | { ok: true; node: Extract<ChatNode, { kind: 'text' }> }
+    | { ok: false; errorCode: string; error: string; extra?: Record<string, unknown> }
+  >;
 };
 
 function buildOpenAIToolError(
@@ -971,6 +1011,1017 @@ function buildOpenAIListCursor(offset: number): string {
   return `${OPENAI_LATEX_LIST_CURSOR_PREFIX}${safe}`;
 }
 
+function parseOpenAIGraphListCursor(raw: unknown): number {
+  const s = typeof raw === 'string' ? raw.trim() : '';
+  if (!s.startsWith(OPENAI_GRAPH_LIST_CURSOR_PREFIX)) return 0;
+  const n = Number(s.slice(OPENAI_GRAPH_LIST_CURSOR_PREFIX.length));
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.floor(n);
+}
+
+function buildOpenAIGraphListCursor(offset: number): string {
+  const safe = Math.max(0, Math.floor(offset));
+  return `${OPENAI_GRAPH_LIST_CURSOR_PREFIX}${safe}`;
+}
+
+function parseOpenAIGraphSearchCursor(raw: unknown): number {
+  const s = typeof raw === 'string' ? raw.trim() : '';
+  if (!s.startsWith(OPENAI_GRAPH_SEARCH_CURSOR_PREFIX)) return 0;
+  const n = Number(s.slice(OPENAI_GRAPH_SEARCH_CURSOR_PREFIX.length));
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.floor(n);
+}
+
+function buildOpenAIGraphSearchCursor(offset: number): string {
+  const safe = Math.max(0, Math.floor(offset));
+  return `${OPENAI_GRAPH_SEARCH_CURSOR_PREFIX}${safe}`;
+}
+
+function parseOpenAIGraphIncludeMetadata(raw: unknown): 'none' | 'compact' {
+  const normalized = trimOpenAIString(raw).toLowerCase();
+  return normalized === 'none' ? 'none' : 'compact';
+}
+
+function parseOpenAIGraphTextAuthor(raw: unknown): 'user' | 'assistant' {
+  const normalized = trimOpenAIString(raw).toLowerCase();
+  return normalized === 'assistant' ? 'assistant' : 'user';
+}
+
+function parseOpenAIGraphTextFormat(raw: unknown): 'markdown' | 'latex' {
+  const normalized = trimOpenAIString(raw).toLowerCase();
+  return normalized === 'latex' ? 'latex' : 'markdown';
+}
+
+function trimOpenAIString(raw: unknown): string {
+  return typeof raw === 'string' ? raw.trim() : '';
+}
+
+function normalizeOpenAISummaryText(raw: string): string {
+  return String(raw ?? '')
+    .replace(/\r?\n+/g, '\n')
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+}
+
+function clipOpenAIChars(text: string, maxChars: number): string {
+  const safeMax = Math.max(1, Math.floor(maxChars));
+  if (text.length <= safeMax) return text;
+  if (safeMax <= 1) return '…';
+  return `${text.slice(0, safeMax - 1).trimEnd()}…`;
+}
+
+function firstOpenAISentence(text: string): string {
+  const normalized = normalizeOpenAISummaryText(text);
+  if (!normalized) return '';
+  const match = normalized.match(/^(.{1,400}?[.!?])(?:\s|$)/);
+  if (match && match[1]) return match[1].trim();
+  return normalized;
+}
+
+function findOpenAISalientTextLine(text: string): string {
+  const lines = String(text ?? '')
+    .split(/\r?\n/g)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return '';
+  const signal = lines.find((line) => /(todo|fixme|decision|decide|action|next|blocked|plan)/i.test(line));
+  return (signal ?? lines[0] ?? '').trim();
+}
+
+function tokenizeOpenAIGraphSearchQuery(raw: string): string[] {
+  const normalized = normalizeOpenAISummaryText(raw).toLowerCase();
+  if (!normalized) return [];
+  const tokens = normalized.split(/[^a-z0-9]+/g).filter((part) => part.length >= 2);
+  if (tokens.length > 0) return Array.from(new Set(tokens));
+  return [normalized];
+}
+
+function countOpenAISubstringMatches(haystack: string, needle: string): number {
+  if (!needle) return 0;
+  let count = 0;
+  let offset = 0;
+  while (offset <= haystack.length) {
+    const idx = haystack.indexOf(needle, offset);
+    if (idx === -1) break;
+    count += 1;
+    offset = idx + needle.length;
+  }
+  return count;
+}
+
+function buildOpenAIGraphSearchCorpus(node: ChatNode): { title: string; body: string } {
+  const title = normalizeOpenAISummaryText(trimOpenAIString((node as any)?.title)).toLowerCase();
+  if (node.kind === 'text') {
+    const body = normalizeOpenAISummaryText(String(node.content ?? '')).toLowerCase();
+    return { title, body };
+  }
+  if (node.kind === 'pdf') {
+    const fileName = normalizeOpenAISummaryText(trimOpenAIString((node as any)?.fileName)).toLowerCase();
+    const status = normalizeOpenAISummaryText(trimOpenAIString((node as any)?.status)).toLowerCase();
+    const error = normalizeOpenAISummaryText(trimOpenAIString((node as any)?.error)).toLowerCase();
+    return { title, body: [fileName, status, error].filter(Boolean).join(' ') };
+  }
+  const replyTo = normalizeOpenAISummaryText(trimOpenAIString((node as any)?.userPreface?.replyTo)).toLowerCase();
+  const contextsRaw = Array.isArray((node as any)?.userPreface?.contexts) ? ((node as any).userPreface.contexts as any[]) : [];
+  const contexts = contextsRaw
+    .map((value) => normalizeOpenAISummaryText(trimOpenAIString(value)).toLowerCase())
+    .filter(Boolean);
+  return { title, body: [replyTo, ...contexts].filter(Boolean).join(' ') };
+}
+
+function scoreOpenAIGraphNodeQuery(args: {
+  node: ChatNode;
+  query: string;
+  queryTokens: string[];
+}): number {
+  const query = normalizeOpenAISummaryText(args.query).toLowerCase();
+  if (!query) return 0;
+  const { title, body } = buildOpenAIGraphSearchCorpus(args.node);
+
+  let score = 0;
+  if (title.includes(query)) score += 48;
+  if (body.includes(query)) score += 32;
+
+  for (const token of args.queryTokens) {
+    if (!token) continue;
+    const titleCount = countOpenAISubstringMatches(title, token);
+    const bodyCount = countOpenAISubstringMatches(body, token);
+    if (titleCount > 0) score += 16 + Math.min(8, titleCount);
+    if (bodyCount > 0) score += 8 + Math.min(8, bodyCount);
+  }
+
+  return score;
+}
+
+function computeOpenAIGraphNodeDepth(nodeId: string, byId: Map<string, ChatNode>): number {
+  let depth = 0;
+  let current = byId.get(nodeId) ?? null;
+  const visited = new Set<string>();
+  while (current) {
+    const parentId = trimOpenAIString((current as any)?.parentId);
+    if (!parentId) break;
+    if (visited.has(parentId)) break;
+    const parent = byId.get(parentId) ?? null;
+    if (!parent) break;
+    depth += 1;
+    visited.add(parentId);
+    current = parent;
+  }
+  return depth;
+}
+
+function attachmentKindsForGraphNode(node: ChatNode): string[] {
+  if (node.kind === 'pdf') {
+    const hasStorage = typeof (node as any)?.storageKey === 'string' && String((node as any).storageKey).trim();
+    return hasStorage ? ['pdf'] : [];
+  }
+  if (node.kind !== 'text' && node.kind !== 'ink') return [];
+  const atts = Array.isArray((node as any)?.attachments) ? ((node as any).attachments as any[]) : [];
+  const kinds = new Set<string>();
+  for (const att of atts) {
+    const kind = trimOpenAIString((att as any)?.kind);
+    if (kind) kinds.add(kind);
+  }
+  return Array.from(kinds.values()).sort();
+}
+
+function graphNodeVersionHash(node: ChatNode): string {
+  if (node.kind === 'text') return openAIFallbackHash(String(node.content ?? ''));
+  if (node.kind === 'pdf') {
+    const fileName = trimOpenAIString((node as any)?.fileName);
+    const pageCount = Number((node as any)?.pageCount);
+    const status = trimOpenAIString((node as any)?.status);
+    const storageKey = trimOpenAIString((node as any)?.storageKey);
+    return openAIFallbackHash(`${fileName}|${Number.isFinite(pageCount) ? pageCount : 0}|${status}|${storageKey}`);
+  }
+  const strokes = Array.isArray((node as any)?.strokes) ? ((node as any).strokes as any[]) : [];
+  let pointCount = 0;
+  for (const stroke of strokes) {
+    const points = Array.isArray((stroke as any)?.points) ? ((stroke as any).points as any[]) : [];
+    pointCount += points.length;
+  }
+  return openAIFallbackHash(`${strokes.length}|${pointCount}`);
+}
+
+function buildOpenAITextNodeSummary(args: {
+  node: Extract<ChatNode, { kind: 'text' }>;
+  summaryChars: number;
+  dynamicSummaryChars: number;
+  fullTextCap: number;
+}): { summary: string; mode: 'full' | 'summary'; charCount: number } {
+  const content = typeof args.node.content === 'string' ? args.node.content : '';
+  const normalized = normalizeOpenAISummaryText(content);
+  const charCount = content.length;
+  if (!normalized) return { summary: '(empty text node)', mode: 'summary', charCount };
+
+  const canUseFullText =
+    normalized.length <= args.fullTextCap &&
+    normalized.length <= args.dynamicSummaryChars &&
+    normalized.length <= Math.max(args.summaryChars * 2, 120);
+  if (canUseFullText) {
+    return {
+      summary: clipOpenAIChars(normalized, Math.max(args.summaryChars, normalized.length)),
+      mode: 'full',
+      charCount,
+    };
+  }
+
+  const sentence = firstOpenAISentence(normalized);
+  const salient = normalizeOpenAISummaryText(findOpenAISalientTextLine(content));
+  let summary = sentence || normalized;
+  if (salient && !summary.toLowerCase().includes(salient.toLowerCase())) {
+    summary = `${summary} ${salient}`;
+  }
+  summary = clipOpenAIChars(normalizeOpenAISummaryText(summary), args.summaryChars);
+  return { summary: summary || clipOpenAIChars(normalized, args.summaryChars), mode: 'summary', charCount };
+}
+
+function buildOpenAIPdfNodeSummary(node: Extract<ChatNode, { kind: 'pdf' }>, summaryChars: number): string {
+  const name = trimOpenAIString((node as any)?.fileName) || trimOpenAIString((node as any)?.title) || node.id;
+  const pageCountRaw = Number((node as any)?.pageCount);
+  const status = trimOpenAIString((node as any)?.status);
+  const pageCount = Number.isFinite(pageCountRaw) && pageCountRaw > 0 ? `${Math.floor(pageCountRaw)} page(s)` : 'page count unknown';
+  const base = status && status !== 'ready' ? `PDF ${name} (${pageCount}, status: ${status}).` : `PDF ${name} (${pageCount}).`;
+  return clipOpenAIChars(base, summaryChars);
+}
+
+function buildOpenAIInkNodeSummary(node: Extract<ChatNode, { kind: 'ink' }>, summaryChars: number): string {
+  const strokes = Array.isArray((node as any)?.strokes) ? ((node as any).strokes as any[]) : [];
+  let points = 0;
+  for (const stroke of strokes) {
+    const pts = Array.isArray((stroke as any)?.points) ? ((stroke as any).points as any[]) : [];
+    points += pts.length;
+  }
+  const replyTo = trimOpenAIString((node as any)?.userPreface?.replyTo);
+  const contexts = Array.isArray((node as any)?.userPreface?.contexts) ? ((node as any).userPreface.contexts as any[]) : [];
+  const ctxCount = contexts.filter((value) => trimOpenAIString(value)).length;
+  const pieces = [`Ink node with ${strokes.length} stroke(s) and ${points} point(s).`];
+  if (replyTo) pieces.push(`Reply context present.`);
+  if (ctxCount > 0) pieces.push(`${ctxCount} context snippet(s).`);
+  return clipOpenAIChars(pieces.join(' '), summaryChars);
+}
+
+function collectOpenAIGraphTraversal(args: {
+  nodes: ChatNode[];
+  rootId: string | null;
+}): {
+  orderedIds: string[];
+  depthById: Map<string, number>;
+  byId: Map<string, ChatNode>;
+  missingRoot: boolean;
+} {
+  const byId = new Map<string, ChatNode>();
+  const orderById = new Map<string, number>();
+  for (let i = 0; i < args.nodes.length; i += 1) {
+    const n = args.nodes[i];
+    byId.set(n.id, n);
+    orderById.set(n.id, i);
+  }
+
+  const children = new Map<string, string[]>();
+  const roots: string[] = [];
+  for (const n of args.nodes) {
+    const parent = trimOpenAIString((n as any)?.parentId);
+    if (parent && parent !== n.id && byId.has(parent)) {
+      const arr = children.get(parent) ?? [];
+      arr.push(n.id);
+      children.set(parent, arr);
+      continue;
+    }
+    roots.push(n.id);
+  }
+
+  const sortByIndex = (a: string, b: string) => (orderById.get(a) ?? 0) - (orderById.get(b) ?? 0);
+  roots.sort(sortByIndex);
+  for (const [parent, ids] of Array.from(children.entries())) {
+    ids.sort(sortByIndex);
+    children.set(parent, ids);
+  }
+
+  const orderedIds: string[] = [];
+  const depthById = new Map<string, number>();
+  const visited = new Set<string>();
+  const walk = (id: string, depth: number) => {
+    if (!id || visited.has(id)) return;
+    if (!byId.has(id)) return;
+    visited.add(id);
+    orderedIds.push(id);
+    depthById.set(id, Math.max(0, depth));
+    const kids = children.get(id) ?? [];
+    for (const childId of kids) walk(childId, depth + 1);
+  };
+
+  if (args.rootId) {
+    if (!byId.has(args.rootId)) {
+      return { orderedIds: [], depthById, byId, missingRoot: true };
+    }
+    walk(args.rootId, 0);
+  } else {
+    for (const rootId of roots) walk(rootId, 0);
+    const leftovers = args.nodes.map((n) => n.id).filter((id) => !visited.has(id)).sort(sortByIndex);
+    for (const id of leftovers) walk(id, 0);
+  }
+
+  return { orderedIds, depthById, byId, missingRoot: false };
+}
+
+type OpenAIGraphDigestRow = {
+  id: string;
+  p: string | null;
+  d: number;
+  k: ChatNode['kind'];
+  s: string;
+  v: string;
+  sm?: 'full' | 'summary';
+  t?: string;
+  a?: string | null;
+  cc?: number;
+  ac?: number;
+  ak?: string[];
+};
+
+type OpenAIGraphSearchRow = OpenAIGraphDigestRow & {
+  sc: number;
+};
+
+function buildOpenAIGraphDigestRow(args: {
+  node: ChatNode;
+  depth: number;
+  includeMetadata: 'none' | 'compact';
+  summaryChars: number;
+  dynamicSummaryChars: number;
+  fullTextCap: number;
+}): OpenAIGraphDigestRow {
+  const parent = trimOpenAIString((args.node as any)?.parentId) || null;
+  const title = trimOpenAIString((args.node as any)?.title);
+  const attachmentKinds = attachmentKindsForGraphNode(args.node);
+  const attachmentCount =
+    args.node.kind === 'text' || args.node.kind === 'ink'
+      ? Array.isArray((args.node as any)?.attachments)
+        ? ((args.node as any).attachments as any[]).length
+        : 0
+      : attachmentKinds.length;
+
+  let summary = '';
+  let summaryMode: 'full' | 'summary' = 'summary';
+  let charCount = 0;
+  let author: string | null = null;
+  if (args.node.kind === 'text') {
+    author = trimOpenAIString((args.node as any)?.author) || null;
+    const built = buildOpenAITextNodeSummary({
+      node: args.node,
+      summaryChars: args.summaryChars,
+      dynamicSummaryChars: args.dynamicSummaryChars,
+      fullTextCap: args.fullTextCap,
+    });
+    summary = built.summary;
+    summaryMode = built.mode;
+    charCount = built.charCount;
+  } else if (args.node.kind === 'pdf') {
+    summary = buildOpenAIPdfNodeSummary(args.node, args.summaryChars);
+  } else {
+    summary = buildOpenAIInkNodeSummary(args.node, args.summaryChars);
+  }
+
+  const row: OpenAIGraphDigestRow = {
+    id: args.node.id,
+    p: parent,
+    d: Math.max(0, Math.floor(args.depth)),
+    k: args.node.kind,
+    s: summary,
+    v: graphNodeVersionHash(args.node),
+  };
+  if (args.includeMetadata === 'none') return row;
+
+  row.sm = summaryMode;
+  row.t = title || undefined;
+  row.a = author;
+  row.cc = charCount;
+  row.ac = Math.max(0, Math.floor(attachmentCount));
+  row.ak = attachmentKinds;
+  return row;
+}
+
+function buildOpenAIGraphNodeDescriptor(args: {
+  node: ChatNode;
+  nodes: ChatNode[];
+  includeMetadata: 'none' | 'compact';
+}): Record<string, unknown> {
+  const byId = new Map<string, ChatNode>();
+  for (const node of args.nodes ?? []) byId.set(node.id, node);
+  const depth = computeOpenAIGraphNodeDepth(args.node.id, byId);
+  const digest = buildOpenAIGraphDigestRow({
+    node: args.node,
+    depth,
+    includeMetadata: args.includeMetadata,
+    summaryChars: 320,
+    dynamicSummaryChars: 320,
+    fullTextCap: 960,
+  });
+  return {
+    id: digest.id,
+    p: digest.p,
+    d: digest.d,
+    k: digest.k,
+    v: digest.v,
+    ...(args.includeMetadata === 'compact'
+      ? {
+          t: digest.t,
+          a: digest.a,
+          cc: digest.cc,
+          ac: digest.ac,
+          ak: digest.ak,
+          s: digest.s,
+          sm: digest.sm,
+        }
+      : {}),
+  };
+}
+
+async function executeOpenAIGraphListNodesTool(args: {
+  toolArgs: Record<string, unknown>;
+  nodes: ChatNode[];
+}): Promise<Record<string, unknown>> {
+  const rootId = trimOpenAIString(args.toolArgs.root_id) || null;
+  const includeMetadata = parseOpenAIGraphIncludeMetadata(args.toolArgs.include_metadata);
+
+  const limitParsed = parseOpenAIOptionalPositiveInteger(args.toolArgs.limit, 'limit', OPENAI_GRAPH_LIST_MAX_LIMIT);
+  if (!limitParsed.ok) return buildOpenAIToolError('INVALID_ARGUMENT', limitParsed.error);
+  const limit = limitParsed.value ?? OPENAI_GRAPH_LIST_DEFAULT_LIMIT;
+
+  const maxBytesParsed = parseOpenAIOptionalPositiveInteger(args.toolArgs.max_bytes, 'max_bytes', OPENAI_GRAPH_LIST_MAX_BYTES);
+  if (!maxBytesParsed.ok) return buildOpenAIToolError('INVALID_ARGUMENT', maxBytesParsed.error);
+  const maxBytes = Math.max(1024, maxBytesParsed.value ?? OPENAI_GRAPH_LIST_DEFAULT_MAX_BYTES);
+
+  const summaryCharsParsed = parseOpenAIOptionalPositiveInteger(args.toolArgs.summary_chars, 'summary_chars', 4000);
+  if (!summaryCharsParsed.ok) return buildOpenAIToolError('INVALID_ARGUMENT', summaryCharsParsed.error);
+
+  const traversal = collectOpenAIGraphTraversal({ nodes: args.nodes ?? [], rootId });
+  if (traversal.missingRoot) {
+    return buildOpenAIToolError('NOT_FOUND', `root_id not found: ${rootId}`, { root_id: rootId });
+  }
+
+  const offset = parseOpenAIGraphListCursor(args.toolArgs.cursor);
+  const start = Math.max(0, Math.min(offset, traversal.orderedIds.length));
+  const remaining = Math.max(0, traversal.orderedIds.length - start);
+  const summaryBudgetBytes = Math.max(2048, Math.floor(maxBytes * 0.65));
+  const dynamicSummaryChars = Math.max(96, Math.min(1200, Math.floor(summaryBudgetBytes / Math.max(1, remaining))));
+  const summaryChars = Math.max(48, summaryCharsParsed.value ?? dynamicSummaryChars);
+  const fullTextCap = Math.min(1200, Math.max(240, dynamicSummaryChars * 2));
+
+  const rows: OpenAIGraphDigestRow[] = [];
+  let cursor = start;
+  let bytesUsed = 0;
+  while (cursor < traversal.orderedIds.length && rows.length < limit) {
+    const nodeId = traversal.orderedIds[cursor];
+    const node = traversal.byId.get(nodeId);
+    if (!node) {
+      cursor += 1;
+      continue;
+    }
+    const row = buildOpenAIGraphDigestRow({
+      node,
+      depth: traversal.depthById.get(nodeId) ?? 0,
+      includeMetadata,
+      summaryChars,
+      dynamicSummaryChars,
+      fullTextCap,
+    });
+
+    const candidateNodes = [...rows, row];
+    const candidateHasMore = cursor + 1 < traversal.orderedIds.length;
+    const candidate = {
+      ok: true,
+      root_id: rootId,
+      nodes: candidateNodes,
+      next_cursor: candidateHasMore ? buildOpenAIGraphListCursor(cursor + 1) : null,
+      has_more: candidateHasMore,
+      returned: candidateNodes.length,
+      truncated: false,
+      bytes_used: 0,
+    };
+    const candidateBytes = getOpenAIUtf8ByteLength(JSON.stringify(candidate));
+    if (candidateBytes > maxBytes) break;
+    rows.push(row);
+    bytesUsed = candidateBytes;
+    cursor += 1;
+  }
+
+  const hasMore = cursor < traversal.orderedIds.length;
+  let response: Record<string, unknown> = {
+    ok: true,
+    root_id: rootId,
+    nodes: rows,
+    next_cursor: hasMore ? buildOpenAIGraphListCursor(cursor) : null,
+    has_more: hasMore,
+    returned: rows.length,
+    truncated: hasMore,
+    bytes_used: bytesUsed,
+  };
+  let finalBytes = getOpenAIUtf8ByteLength(JSON.stringify(response));
+  response.bytes_used = finalBytes;
+  finalBytes = getOpenAIUtf8ByteLength(JSON.stringify(response));
+  response.bytes_used = finalBytes;
+  return response;
+}
+
+async function executeOpenAIGraphReadNodeTool(args: {
+  toolArgs: Record<string, unknown>;
+  nodes: ChatNode[];
+}): Promise<Record<string, unknown>> {
+  const nodeId = trimOpenAIString(args.toolArgs.node_id);
+  if (!nodeId) return buildOpenAIToolError('INVALID_ARGUMENT', 'node_id is required.');
+
+  const includeMetadata = parseOpenAIGraphIncludeMetadata(args.toolArgs.include_metadata);
+  const maxBytesParsed = parseOpenAIOptionalPositiveInteger(args.toolArgs.max_bytes, 'max_bytes', OPENAI_GRAPH_READ_MAX_BYTES);
+  if (!maxBytesParsed.ok) return buildOpenAIToolError('INVALID_ARGUMENT', maxBytesParsed.error);
+  const maxBytes = Math.max(1024, maxBytesParsed.value ?? OPENAI_GRAPH_READ_DEFAULT_MAX_BYTES);
+
+  const startLineParsed = parseOpenAIOptionalPositiveInteger(args.toolArgs.start_line, 'start_line', 10_000_000);
+  if (!startLineParsed.ok) return buildOpenAIToolError('INVALID_ARGUMENT', startLineParsed.error);
+  const endLineParsed = parseOpenAIOptionalPositiveInteger(args.toolArgs.end_line, 'end_line', 10_000_000);
+  if (!endLineParsed.ok) return buildOpenAIToolError('INVALID_ARGUMENT', endLineParsed.error);
+
+  const byId = new Map<string, ChatNode>();
+  for (const node of args.nodes ?? []) byId.set(node.id, node);
+  const node = byId.get(nodeId);
+  if (!node) return buildOpenAIToolError('NOT_FOUND', `node_id not found: ${nodeId}`, { node_id: nodeId });
+
+  const version = graphNodeVersionHash(node);
+  const baseNode: Record<string, unknown> = {
+    id: node.id,
+    p: trimOpenAIString((node as any)?.parentId) || null,
+    d: computeOpenAIGraphNodeDepth(node.id, byId),
+    k: node.kind,
+    v: version,
+  };
+  if (includeMetadata === 'compact') {
+    baseNode.t = trimOpenAIString((node as any)?.title) || undefined;
+    baseNode.ak = attachmentKindsForGraphNode(node);
+    baseNode.ac =
+      node.kind === 'text' || node.kind === 'ink'
+        ? Array.isArray((node as any)?.attachments)
+          ? ((node as any).attachments as any[]).length
+          : 0
+        : attachmentKindsForGraphNode(node).length;
+  }
+
+  const lineRangeRequested = startLineParsed.value !== undefined || endLineParsed.value !== undefined;
+  if (lineRangeRequested && node.kind !== 'text') {
+    return buildOpenAIToolError('INVALID_ARGUMENT', 'start_line/end_line are only supported for text nodes.', {
+      node_id: nodeId,
+      node_kind: node.kind,
+    });
+  }
+
+  if (node.kind === 'text') {
+    const fullContent = typeof node.content === 'string' ? node.content : '';
+    const sizeBytes = getOpenAIUtf8ByteLength(fullContent);
+    const charCount = fullContent.length;
+
+    let selected = fullContent;
+    if (lineRangeRequested) {
+      const scoped = resolveOpenAILineRangeOffsets({
+        content: fullContent,
+        startLine: startLineParsed.value,
+        endLine: endLineParsed.value,
+      });
+      if (!scoped.ok) return buildOpenAIToolError('INVALID_ARGUMENT', scoped.error);
+      selected = fullContent.slice(scoped.startOffset, scoped.endOffsetExclusive);
+    }
+    const selectedSizeBytes = getOpenAIUtf8ByteLength(selected);
+    const truncated = truncateOpenAITextByUtf8Bytes(selected, maxBytes);
+
+    if (includeMetadata === 'compact') {
+      baseNode.a = trimOpenAIString((node as any)?.author) || null;
+      baseNode.cc = charCount;
+      baseNode.sm = 'full';
+    }
+
+    return {
+      ok: true,
+      node: baseNode,
+      content: truncated.text,
+      encoding: 'utf-8',
+      version,
+      size_bytes: sizeBytes,
+      selected_size_bytes: selectedSizeBytes,
+      truncated: truncated.truncated,
+      line_range: lineRangeRequested
+        ? {
+            start_line: startLineParsed.value ?? 1,
+            end_line: endLineParsed.value ?? null,
+          }
+        : null,
+    };
+  }
+
+  if (node.kind === 'pdf') {
+    const fileName = trimOpenAIString((node as any)?.fileName) || null;
+    const pageCount = Number((node as any)?.pageCount);
+    const pageCountSafe = Number.isFinite(pageCount) && pageCount > 0 ? Math.floor(pageCount) : 0;
+    const status = trimOpenAIString((node as any)?.status) || 'unknown';
+    const error = trimOpenAIString((node as any)?.error) || null;
+    const hasStorage = Boolean(trimOpenAIString((node as any)?.storageKey));
+    return {
+      ok: true,
+      node: baseNode,
+      content: null,
+      version,
+      summary: buildOpenAIPdfNodeSummary(node, 400),
+      details: {
+        file_name: fileName,
+        page_count: pageCountSafe,
+        status,
+        error,
+        has_storage: hasStorage,
+      },
+    };
+  }
+
+  const strokes = Array.isArray((node as any)?.strokes) ? ((node as any).strokes as any[]) : [];
+  let points = 0;
+  for (const stroke of strokes) {
+    const strokePoints = Array.isArray((stroke as any)?.points) ? ((stroke as any).points as any[]) : [];
+    points += strokePoints.length;
+  }
+  const replyTo = trimOpenAIString((node as any)?.userPreface?.replyTo) || null;
+  const contexts = Array.isArray((node as any)?.userPreface?.contexts) ? ((node as any).userPreface.contexts as any[]) : [];
+  const contextCount = contexts.filter((value) => trimOpenAIString(value)).length;
+
+  return {
+    ok: true,
+    node: baseNode,
+    content: null,
+    version,
+    summary: buildOpenAIInkNodeSummary(node, 400),
+    details: {
+      stroke_count: strokes.length,
+      point_count: points,
+      reply_to: replyTo,
+      context_count: contextCount,
+    },
+  };
+}
+
+async function executeOpenAIGraphSearchNodesTool(args: {
+  toolArgs: Record<string, unknown>;
+  nodes: ChatNode[];
+}): Promise<Record<string, unknown>> {
+  const query = trimOpenAIString(args.toolArgs.query);
+  if (!query) return buildOpenAIToolError('INVALID_ARGUMENT', 'query is required.');
+
+  const rootId = trimOpenAIString(args.toolArgs.root_id) || null;
+  const includeMetadata = parseOpenAIGraphIncludeMetadata(args.toolArgs.include_metadata);
+
+  const limitParsed = parseOpenAIOptionalPositiveInteger(args.toolArgs.limit, 'limit', OPENAI_GRAPH_SEARCH_MAX_LIMIT);
+  if (!limitParsed.ok) return buildOpenAIToolError('INVALID_ARGUMENT', limitParsed.error);
+  const limit = limitParsed.value ?? OPENAI_GRAPH_SEARCH_DEFAULT_LIMIT;
+
+  const maxBytesParsed = parseOpenAIOptionalPositiveInteger(args.toolArgs.max_bytes, 'max_bytes', OPENAI_GRAPH_SEARCH_MAX_BYTES);
+  if (!maxBytesParsed.ok) return buildOpenAIToolError('INVALID_ARGUMENT', maxBytesParsed.error);
+  const maxBytes = Math.max(1024, maxBytesParsed.value ?? OPENAI_GRAPH_SEARCH_DEFAULT_MAX_BYTES);
+
+  const summaryCharsParsed = parseOpenAIOptionalPositiveInteger(args.toolArgs.summary_chars, 'summary_chars', 4000);
+  if (!summaryCharsParsed.ok) return buildOpenAIToolError('INVALID_ARGUMENT', summaryCharsParsed.error);
+
+  const rawKinds = Array.isArray(args.toolArgs.kinds) ? (args.toolArgs.kinds as unknown[]) : [];
+  const allowedKinds = new Set<ChatNode['kind']>(['text', 'ink', 'pdf']);
+  const kindFilter = new Set<ChatNode['kind']>();
+  for (const raw of rawKinds) {
+    const kind = trimOpenAIString(raw).toLowerCase();
+    if (!kind) continue;
+    if (!allowedKinds.has(kind as ChatNode['kind'])) {
+      return buildOpenAIToolError('INVALID_ARGUMENT', `Unsupported node kind in kinds: ${kind}`);
+    }
+    kindFilter.add(kind as ChatNode['kind']);
+  }
+
+  const traversal = collectOpenAIGraphTraversal({ nodes: args.nodes ?? [], rootId });
+  if (traversal.missingRoot) {
+    return buildOpenAIToolError('NOT_FOUND', `root_id not found: ${rootId}`, { root_id: rootId });
+  }
+
+  const queryTokens = tokenizeOpenAIGraphSearchQuery(query);
+  const scored: Array<{ id: string; score: number; order: number }> = [];
+  for (let i = 0; i < traversal.orderedIds.length; i += 1) {
+    const nodeId = traversal.orderedIds[i];
+    const node = traversal.byId.get(nodeId);
+    if (!node) continue;
+    if (kindFilter.size > 0 && !kindFilter.has(node.kind)) continue;
+    const score = scoreOpenAIGraphNodeQuery({ node, query, queryTokens });
+    if (score < 1) continue;
+    scored.push({ id: nodeId, score, order: i });
+  }
+  scored.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return a.order - b.order;
+  });
+
+  const offset = parseOpenAIGraphSearchCursor(args.toolArgs.cursor);
+  const start = Math.max(0, Math.min(offset, scored.length));
+  const remaining = Math.max(0, scored.length - start);
+  const summaryBudgetBytes = Math.max(2048, Math.floor(maxBytes * 0.65));
+  const dynamicSummaryChars = Math.max(96, Math.min(1200, Math.floor(summaryBudgetBytes / Math.max(1, remaining))));
+  const summaryChars = Math.max(48, summaryCharsParsed.value ?? dynamicSummaryChars);
+  const fullTextCap = Math.min(1200, Math.max(240, dynamicSummaryChars * 2));
+
+  const rows: OpenAIGraphSearchRow[] = [];
+  let cursor = start;
+  let bytesUsed = 0;
+  while (cursor < scored.length && rows.length < limit) {
+    const hit = scored[cursor];
+    const node = traversal.byId.get(hit.id);
+    if (!node) {
+      cursor += 1;
+      continue;
+    }
+    const digest = buildOpenAIGraphDigestRow({
+      node,
+      depth: traversal.depthById.get(hit.id) ?? 0,
+      includeMetadata,
+      summaryChars,
+      dynamicSummaryChars,
+      fullTextCap,
+    });
+    const row: OpenAIGraphSearchRow = { ...digest, sc: hit.score };
+
+    const candidateNodes = [...rows, row];
+    const candidateHasMore = cursor + 1 < scored.length;
+    const candidate = {
+      ok: true,
+      query,
+      root_id: rootId,
+      kinds: kindFilter.size > 0 ? Array.from(kindFilter.values()) : null,
+      nodes: candidateNodes,
+      next_cursor: candidateHasMore ? buildOpenAIGraphSearchCursor(cursor + 1) : null,
+      has_more: candidateHasMore,
+      returned: candidateNodes.length,
+      total_matches: scored.length,
+      truncated: false,
+      bytes_used: 0,
+    };
+    const candidateBytes = getOpenAIUtf8ByteLength(JSON.stringify(candidate));
+    if (candidateBytes > maxBytes) break;
+    rows.push(row);
+    bytesUsed = candidateBytes;
+    cursor += 1;
+  }
+
+  const hasMore = cursor < scored.length;
+  let response: Record<string, unknown> = {
+    ok: true,
+    query,
+    root_id: rootId,
+    kinds: kindFilter.size > 0 ? Array.from(kindFilter.values()) : null,
+    nodes: rows,
+    next_cursor: hasMore ? buildOpenAIGraphSearchCursor(cursor) : null,
+    has_more: hasMore,
+    returned: rows.length,
+    total_matches: scored.length,
+    truncated: hasMore,
+    bytes_used: bytesUsed,
+  };
+  let finalBytes = getOpenAIUtf8ByteLength(JSON.stringify(response));
+  response.bytes_used = finalBytes;
+  finalBytes = getOpenAIUtf8ByteLength(JSON.stringify(response));
+  response.bytes_used = finalBytes;
+  return response;
+}
+
+async function executeOpenAIGraphWriteNodeTool(args: {
+  toolArgs: Record<string, unknown>;
+  nodes: ChatNode[];
+  mutationHandlers?: OpenAIGraphMutationHandlers;
+}): Promise<Record<string, unknown>> {
+  const nodeId = trimOpenAIString(args.toolArgs.node_id);
+  if (!nodeId) return buildOpenAIToolError('INVALID_ARGUMENT', 'node_id is required.');
+  const includeMetadata = parseOpenAIGraphIncludeMetadata(args.toolArgs.include_metadata);
+  const content = typeof args.toolArgs.content === 'string' ? args.toolArgs.content : String(args.toolArgs.content ?? '');
+  const expectedVersion =
+    typeof args.toolArgs.expected_version === 'string' ? args.toolArgs.expected_version.trim() : '';
+  if (!expectedVersion) {
+    return buildOpenAIToolError('EXPECTED_VERSION_REQUIRED', 'expected_version is required for graph_write_node.');
+  }
+
+  const node = (args.nodes ?? []).find((item) => item.id === nodeId) ?? null;
+  if (!node) return buildOpenAIToolError('NOT_FOUND', `node_id not found: ${nodeId}`, { node_id: nodeId });
+  if (node.kind !== 'text') {
+    return buildOpenAIToolError('NOT_EDITABLE', 'Only text nodes can be modified via graph_write_node.', {
+      node_id: nodeId,
+      node_kind: node.kind,
+    });
+  }
+
+  const currentVersion = graphNodeVersionHash(node);
+  if (expectedVersion !== currentVersion) {
+    return buildOpenAIToolError('VERSION_CONFLICT', 'Node changed since it was last read.', {
+      node_id: nodeId,
+      expected_version: expectedVersion,
+      current_version: currentVersion,
+    });
+  }
+
+  const commit = args.mutationHandlers?.writeTextNodeContent;
+  if (!commit) return buildOpenAIToolError('TOOL_EXECUTION_FAILED', 'Graph mutation handlers are unavailable.');
+
+  const committed = await commit({ nodeId, content, expectedVersion });
+  if (!committed.ok) {
+    return buildOpenAIToolError(committed.errorCode, committed.error, committed.extra);
+  }
+
+  const updatedNode = committed.node;
+  const version = graphNodeVersionHash(updatedNode);
+  return {
+    ok: true,
+    node: buildOpenAIGraphNodeDescriptor({
+      node: updatedNode,
+      nodes: args.nodes,
+      includeMetadata,
+    }),
+    bytes_written: getOpenAIUtf8ByteLength(typeof updatedNode.content === 'string' ? updatedNode.content : ''),
+    version,
+  };
+}
+
+async function executeOpenAIGraphReplaceInNodeTool(args: {
+  toolArgs: Record<string, unknown>;
+  nodes: ChatNode[];
+  mutationHandlers?: OpenAIGraphMutationHandlers;
+}): Promise<Record<string, unknown>> {
+  const nodeId = trimOpenAIString(args.toolArgs.node_id);
+  if (!nodeId) return buildOpenAIToolError('INVALID_ARGUMENT', 'node_id is required.');
+  const includeMetadata = parseOpenAIGraphIncludeMetadata(args.toolArgs.include_metadata);
+  const replacements = Array.isArray(args.toolArgs.replacements) ? (args.toolArgs.replacements as unknown[]) : [];
+  if (replacements.length === 0) {
+    return buildOpenAIToolError('INVALID_ARGUMENT', 'replacements must include at least one item.');
+  }
+
+  const expectedVersion =
+    typeof args.toolArgs.expected_version === 'string' ? args.toolArgs.expected_version.trim() : '';
+  if (!expectedVersion) {
+    return buildOpenAIToolError(
+      'EXPECTED_VERSION_REQUIRED',
+      'expected_version is required for graph_replace_in_node.',
+    );
+  }
+  const dryRun = typeof args.toolArgs.dry_run === 'boolean' ? args.toolArgs.dry_run : false;
+  const maxTotalParsed = parseOpenAIOptionalPositiveInteger(
+    args.toolArgs.max_total_replacements,
+    'max_total_replacements',
+    200_000,
+  );
+  if (!maxTotalParsed.ok) return buildOpenAIToolError('INVALID_ARGUMENT', maxTotalParsed.error);
+  const maxTotalReplacements = maxTotalParsed.value ?? OPENAI_GRAPH_REPLACE_DEFAULT_MAX_TOTAL;
+
+  const node = (args.nodes ?? []).find((item) => item.id === nodeId) ?? null;
+  if (!node) return buildOpenAIToolError('NOT_FOUND', `node_id not found: ${nodeId}`, { node_id: nodeId });
+  if (node.kind !== 'text') {
+    return buildOpenAIToolError('NOT_EDITABLE', 'Only text nodes can be modified via graph_replace_in_node.', {
+      node_id: nodeId,
+      node_kind: node.kind,
+    });
+  }
+
+  const originalContent = typeof node.content === 'string' ? node.content : '';
+  const initialVersion = graphNodeVersionHash(node);
+  if (expectedVersion !== initialVersion) {
+    return buildOpenAIToolError('VERSION_CONFLICT', 'Node changed since it was last read.', {
+      node_id: nodeId,
+      expected_version: expectedVersion,
+      current_version: initialVersion,
+    });
+  }
+
+  let nextContent = originalContent;
+  let totalReplacements = 0;
+  const applied: Array<{ index: number; count: number }> = [];
+
+  for (let i = 0; i < replacements.length; i += 1) {
+    const item = replacements[i];
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      return buildOpenAIToolError('INVALID_ARGUMENT', `replacements[${i}] must be an object.`);
+    }
+    const rep = item as Record<string, unknown>;
+    const oldText = typeof rep.old_text === 'string' ? rep.old_text : '';
+    const newText = typeof rep.new_text === 'string' ? rep.new_text : String(rep.new_text ?? '');
+    if (!oldText) return buildOpenAIToolError('INVALID_ARGUMENT', `replacements[${i}].old_text must be non-empty.`);
+    const replaceAll = typeof rep.replace_all === 'boolean' ? rep.replace_all : false;
+
+    const startLineParsed = parseOpenAIOptionalPositiveInteger(rep.start_line, `replacements[${i}].start_line`, 10_000_000);
+    if (!startLineParsed.ok) return buildOpenAIToolError('INVALID_ARGUMENT', startLineParsed.error);
+    const endLineParsed = parseOpenAIOptionalPositiveInteger(rep.end_line, `replacements[${i}].end_line`, 10_000_000);
+    if (!endLineParsed.ok) return buildOpenAIToolError('INVALID_ARGUMENT', endLineParsed.error);
+
+    const replaced = applyOpenAILiteralReplacement({
+      content: nextContent,
+      oldText,
+      newText,
+      replaceAll,
+      startLine: startLineParsed.value,
+      endLine: endLineParsed.value,
+    });
+    if (!replaced.ok) {
+      return buildOpenAIToolError(replaced.errorCode, replaced.error, { replacement_index: i });
+    }
+
+    totalReplacements += replaced.count;
+    if (totalReplacements > maxTotalReplacements) {
+      return buildOpenAIToolError('MAX_REPLACEMENTS_EXCEEDED', `Replacement cap exceeded (${maxTotalReplacements}).`, {
+        replacement_index: i,
+        total_replacements: totalReplacements,
+      });
+    }
+    nextContent = replaced.content;
+    applied.push({ index: i, count: replaced.count });
+  }
+
+  if (totalReplacements < 1) {
+    return buildOpenAIToolError('NO_MATCH', 'No replacements were applied.');
+  }
+
+  if (dryRun) {
+    return {
+      ok: true,
+      node: buildOpenAIGraphNodeDescriptor({ node, nodes: args.nodes, includeMetadata }),
+      dry_run: true,
+      applied,
+      total_replacements: totalReplacements,
+      version: initialVersion,
+    };
+  }
+
+  const commit = args.mutationHandlers?.writeTextNodeContent;
+  if (!commit) return buildOpenAIToolError('TOOL_EXECUTION_FAILED', 'Graph mutation handlers are unavailable.');
+
+  const committed = await commit({ nodeId, content: nextContent, expectedVersion });
+  if (!committed.ok) {
+    return buildOpenAIToolError(committed.errorCode, committed.error, committed.extra);
+  }
+  const updatedNode = committed.node;
+  const version = graphNodeVersionHash(updatedNode);
+  return {
+    ok: true,
+    node: buildOpenAIGraphNodeDescriptor({ node: updatedNode, nodes: args.nodes, includeMetadata }),
+    dry_run: false,
+    applied,
+    total_replacements: totalReplacements,
+    bytes_written: getOpenAIUtf8ByteLength(typeof updatedNode.content === 'string' ? updatedNode.content : ''),
+    version,
+  };
+}
+
+async function executeOpenAIGraphCreateNodeTool(args: {
+  toolArgs: Record<string, unknown>;
+  nodes: ChatNode[];
+  mutationHandlers?: OpenAIGraphMutationHandlers;
+}): Promise<Record<string, unknown>> {
+  const kind = trimOpenAIString(args.toolArgs.kind).toLowerCase() || 'text';
+  if (kind !== 'text') {
+    return buildOpenAIToolError('NOT_SUPPORTED', 'Only kind="text" is currently supported for graph_create_node.', {
+      kind,
+    });
+  }
+  const includeMetadata = parseOpenAIGraphIncludeMetadata(args.toolArgs.include_metadata);
+  const parentId = trimOpenAIString(args.toolArgs.parent_id) || null;
+  if (parentId && !(args.nodes ?? []).some((node) => node.id === parentId)) {
+    return buildOpenAIToolError('NOT_FOUND', `parent_id not found: ${parentId}`, { parent_id: parentId });
+  }
+  const author = parseOpenAIGraphTextAuthor(args.toolArgs.author);
+  const textFormat = parseOpenAIGraphTextFormat(args.toolArgs.text_format);
+  const titleRaw = trimOpenAIString(args.toolArgs.title);
+  const defaultTitle = textFormat === 'latex' ? 'LaTeX' : author === 'assistant' ? 'Assistant note' : 'Note';
+  const title = titleRaw || defaultTitle;
+  const content = typeof args.toolArgs.content === 'string' ? args.toolArgs.content : String(args.toolArgs.content ?? '');
+
+  const create = args.mutationHandlers?.createTextNode;
+  if (!create) return buildOpenAIToolError('TOOL_EXECUTION_FAILED', 'Graph mutation handlers are unavailable.');
+
+  const created = await create({
+    parentId,
+    title,
+    content,
+    author,
+    textFormat,
+  });
+  if (!created.ok) {
+    return buildOpenAIToolError(created.errorCode, created.error, created.extra);
+  }
+  const node = created.node;
+  const nodesForDescriptor = (args.nodes ?? []).some((item) => item.id === node.id)
+    ? args.nodes
+    : [...(args.nodes ?? []), node];
+  return {
+    ok: true,
+    node: buildOpenAIGraphNodeDescriptor({
+      node,
+      nodes: nodesForDescriptor,
+      includeMetadata,
+    }),
+    version: graphNodeVersionHash(node),
+  };
+}
+
 function mapOpenAILatexProjectErrorCode(message: string): string {
   const msg = message.toLowerCase();
   if (msg.includes('not found') || msg.includes('no such file') || msg.includes('enoent')) return 'NOT_FOUND';
@@ -996,6 +2047,16 @@ function parseOpenAIFunctionCallArguments(argumentsJson: string): Record<string,
   } catch {
     return null;
   }
+}
+
+function requestIncludesOpenAIInternalTools(request: Record<string, unknown>): boolean {
+  const tools = Array.isArray((request as any)?.tools) ? ((request as any).tools as any[]) : [];
+  return tools.some((tool) => {
+    if (!tool || typeof tool !== 'object') return false;
+    if (tool.type !== 'function') return false;
+    const name = typeof tool.name === 'string' ? tool.name.trim() : '';
+    return OPENAI_INTERNAL_TOOL_NAME_SET.has(name);
+  });
 }
 
 function requestIncludesOpenAILatexTools(request: Record<string, unknown>): boolean {
@@ -1366,6 +2427,48 @@ async function executeOpenAILatexReplaceFileTool(args: {
     bytes_written: getOpenAIUtf8ByteLength(nextContent),
     version: nextVersion,
   };
+}
+
+async function executeOpenAIGraphFunctionCall(args: {
+  call: OpenAIFunctionCall;
+  nodes: ChatNode[];
+  mutationHandlers?: OpenAIGraphMutationHandlers;
+}): Promise<Record<string, unknown>> {
+  const parsedArgs = parseOpenAIFunctionCallArguments(args.call.argumentsJson);
+  if (!parsedArgs) return buildOpenAIToolError('INVALID_ARGUMENT', 'Tool arguments must be a JSON object.');
+
+  if (args.call.name === OPENAI_GRAPH_TOOL_NAMES.listNodes) {
+    return await executeOpenAIGraphListNodesTool({ toolArgs: parsedArgs, nodes: args.nodes });
+  }
+  if (args.call.name === OPENAI_GRAPH_TOOL_NAMES.readNode) {
+    return await executeOpenAIGraphReadNodeTool({ toolArgs: parsedArgs, nodes: args.nodes });
+  }
+  if (args.call.name === OPENAI_GRAPH_TOOL_NAMES.searchNodes) {
+    return await executeOpenAIGraphSearchNodesTool({ toolArgs: parsedArgs, nodes: args.nodes });
+  }
+  if (args.call.name === OPENAI_GRAPH_TOOL_NAMES.writeNode) {
+    return await executeOpenAIGraphWriteNodeTool({
+      toolArgs: parsedArgs,
+      nodes: args.nodes,
+      mutationHandlers: args.mutationHandlers,
+    });
+  }
+  if (args.call.name === OPENAI_GRAPH_TOOL_NAMES.replaceInNode) {
+    return await executeOpenAIGraphReplaceInNodeTool({
+      toolArgs: parsedArgs,
+      nodes: args.nodes,
+      mutationHandlers: args.mutationHandlers,
+    });
+  }
+  if (args.call.name === OPENAI_GRAPH_TOOL_NAMES.createNode) {
+    return await executeOpenAIGraphCreateNodeTool({
+      toolArgs: parsedArgs,
+      nodes: args.nodes,
+      mutationHandlers: args.mutationHandlers,
+    });
+  }
+
+  return buildOpenAIToolError('UNKNOWN_TOOL', `Unsupported tool: ${args.call.name}`);
 }
 
 async function executeOpenAILatexFunctionCall(args: {
@@ -2493,6 +3596,126 @@ export default function App() {
     Object.assign(node, patch);
   };
 
+  const writeGraphTextNodeContent = async (args: {
+    chatId: string;
+    nodeId: string;
+    content: string;
+    expectedVersion: string;
+  }): Promise<
+    | { ok: true; node: Extract<ChatNode, { kind: 'text' }> }
+    | { ok: false; errorCode: string; error: string; extra?: Record<string, unknown> }
+  > => {
+    const state = chatStatesRef.current.get(args.chatId);
+    if (!state) {
+      return { ok: false, errorCode: 'NOT_FOUND', error: `chat not found: ${args.chatId}`, extra: { chat_id: args.chatId } };
+    }
+    const node = state.nodes.find((item): item is Extract<ChatNode, { kind: 'text' }> => item.kind === 'text' && item.id === args.nodeId);
+    if (!node) {
+      return { ok: false, errorCode: 'NOT_FOUND', error: `node_id not found: ${args.nodeId}`, extra: { node_id: args.nodeId } };
+    }
+
+    const currentVersion = graphNodeVersionHash(node);
+    if (args.expectedVersion !== currentVersion) {
+      return {
+        ok: false,
+        errorCode: 'VERSION_CONFLICT',
+        error: 'Node changed before write.',
+        extra: {
+          node_id: args.nodeId,
+          expected_version: args.expectedVersion,
+          current_version: currentVersion,
+        },
+      };
+    }
+
+    const nextContent = typeof args.content === 'string' ? args.content : String(args.content ?? '');
+    node.content = nextContent;
+
+    if (activeChatIdRef.current === args.chatId) {
+      try {
+        engineRef.current?.setTextNodeContent(args.nodeId, nextContent, { streaming: false });
+      } catch {
+        // ignore
+      }
+    }
+
+    schedulePersistSoon();
+    return { ok: true, node };
+  };
+
+  const createGraphTextNode = async (args: {
+    chatId: string;
+    parentId: string | null;
+    title: string;
+    content: string;
+    author: 'user' | 'assistant';
+    textFormat: 'markdown' | 'latex';
+  }): Promise<
+    | { ok: true; node: Extract<ChatNode, { kind: 'text' }> }
+    | { ok: false; errorCode: string; error: string; extra?: Record<string, unknown> }
+  > => {
+    const state = chatStatesRef.current.get(args.chatId);
+    if (!state) {
+      return { ok: false, errorCode: 'NOT_FOUND', error: `chat not found: ${args.chatId}`, extra: { chat_id: args.chatId } };
+    }
+
+    const parent = args.parentId ? state.nodes.find((item) => item.id === args.parentId) ?? null : null;
+    if (args.parentId && !parent) {
+      return {
+        ok: false,
+        errorCode: 'NOT_FOUND',
+        error: `parent_id not found: ${args.parentId}`,
+        extra: { parent_id: args.parentId },
+      };
+    }
+
+    const width = 460;
+    const height = 240;
+    const fallbackAnchor = state.nodes.length > 0 ? state.nodes[state.nodes.length - 1] : null;
+    const anchor = parent ?? fallbackAnchor;
+    const rect = anchor
+      ? {
+          x: Number(anchor.rect?.x ?? 0) + 34,
+          y: Number(anchor.rect?.y ?? 0) + Number(anchor.rect?.h ?? 0) + 26,
+          w: width,
+          h: height,
+        }
+      : { x: 0, y: 0, w: width, h: height };
+
+    const node: Extract<ChatNode, { kind: 'text' }> = {
+      kind: 'text',
+      id: genId('n'),
+      title: args.title,
+      parentId: parent ? parent.id : null,
+      rect,
+      author: args.author,
+      content: args.content,
+      textFormat: args.textFormat,
+      latexCompileError: null,
+      latexCompiledAt: null,
+      latexCompileLog: null,
+      latexProjectRoot: null,
+      latexMainFile: null,
+      latexActiveFile: null,
+      isEditNode: true,
+      llmError: null,
+    };
+
+    state.nodes.push(node);
+    chatStatesRef.current.set(args.chatId, state);
+
+    if (activeChatIdRef.current === args.chatId) {
+      try {
+        engineRef.current?.loadChatState(state);
+      } catch {
+        // ignore
+      }
+    }
+
+    schedulePersistSoon();
+    return { ok: true, node };
+  };
+
   const flushJobToStateAndEngine = (job: GenerationJob) => {
     if (job.closed) return;
     const next = job.fullText;
@@ -2700,6 +3923,7 @@ export default function App() {
     void (async () => {
       let request: Record<string, unknown>;
       const nodesForRequest = args.nodesOverride ?? state?.nodes ?? [];
+      let graphNodesForTools = nodesForRequest;
       try {
         request = await buildOpenAIResponseRequest({
           nodes: nodesForRequest,
@@ -2713,13 +3937,14 @@ export default function App() {
       }
 	      if (job.closed || job.abortController.signal.aborted) return;
 
+	      const hasInternalTools = requestIncludesOpenAIInternalTools(request);
 	      const hasLatexTools = requestIncludesOpenAILatexTools(request);
 	      const latexToolContext = hasLatexTools
 	        ? resolveOpenAILatexToolContext({ nodes: nodesForRequest, leafUserNodeId: args.userNodeId })
 	        : null;
-	      const latexToolLoopEnabled = hasLatexTools && Boolean(latexToolContext);
+	      const internalToolLoopEnabled = hasInternalTools && (!hasLatexTools || Boolean(latexToolContext));
 	      const streamingEnabled = typeof settings.stream === 'boolean' ? settings.stream : true;
-	      const backgroundEnabled = Boolean(settings.background) && !latexToolLoopEnabled;
+	      const backgroundEnabled = Boolean(settings.background) && !internalToolLoopEnabled;
 	      job.background = backgroundEnabled;
 	      const sentRequest = backgroundEnabled
 	        ? { ...(request ?? {}), background: true, ...(streamingEnabled ? { stream: true } : {}) }
@@ -2850,7 +4075,7 @@ export default function App() {
 	        return { ok: false as const, text: job.fullText, error: 'Canceled', cancelled: true };
 	      };
 
-	      const runOpenAILatexToolLoop = async () => {
+	      const runOpenAIInternalToolLoop = async () => {
 	        let currentRequest: Record<string, unknown> = { ...(sentRequest ?? {}) };
 	        let useStreaming = Boolean((currentRequest as any)?.stream === true);
 	        let lastResponse: unknown = undefined;
@@ -2906,7 +4131,37 @@ export default function App() {
 	                response: r.response,
 	              };
 	            }
-	            const output = await executeOpenAILatexFunctionCall({ call, context: latexToolContext });
+	            const isGraphToolCall = OPENAI_GRAPH_TOOL_NAME_SET.has(call.name);
+	            const output = isGraphToolCall
+	              ? await executeOpenAIGraphFunctionCall({
+	                  call,
+	                  nodes: graphNodesForTools,
+	                  mutationHandlers: {
+	                    writeTextNodeContent: async ({ nodeId, content, expectedVersion }) =>
+	                      await writeGraphTextNodeContent({
+	                        chatId,
+	                        nodeId,
+	                        content,
+	                        expectedVersion,
+	                      }),
+	                    createTextNode: async ({ parentId, title, content, author, textFormat }) =>
+	                      await createGraphTextNode({
+	                        chatId,
+	                        parentId,
+	                        title,
+	                        content,
+	                        author,
+	                        textFormat,
+	                      }),
+	                  },
+	                })
+	              : await executeOpenAILatexFunctionCall({ call, context: latexToolContext });
+	            if (isGraphToolCall) {
+	              const stateForGraph = chatStatesRef.current.get(chatId);
+	              if (stateForGraph && Array.isArray(stateForGraph.nodes)) {
+	                graphNodesForTools = stateForGraph.nodes;
+	              }
+	            }
 	            outputs.push({ callId: call.callId, output });
 	          }
 	          if (outputs.length === 0) return r;
@@ -2927,8 +4182,8 @@ export default function App() {
 	        };
 	      };
 
-		      const res = latexToolLoopEnabled
-	        ? await runOpenAILatexToolLoop()
+		      const res = internalToolLoopEnabled
+	        ? await runOpenAIInternalToolLoop()
 	        : backgroundEnabled
 		        ? await (async () => {
 		            const startNonStreamingBackground = async () => {
