@@ -59,6 +59,7 @@ export type ModelUserSettings = {
   includeInComposer: boolean;
   streaming: boolean;
   background: boolean;
+  replayToolOutputs: boolean;
   verbosity: TextVerbosity;
   reasoningSummary: ReasoningSummarySetting;
   maxTokens?: number;
@@ -84,6 +85,7 @@ export function defaultModelUserSettings(model: ModelInfo): ModelUserSettings {
     includeInComposer: true,
     streaming: model.parameters.streaming ? streamingDefault : false,
     background: model.parameters.background ? backgroundDefault : false,
+    replayToolOutputs: true,
     verbosity: verbosityDefault,
     reasoningSummary: reasoningSummaryDefault,
     ...(model.provider === 'anthropic'
@@ -104,6 +106,8 @@ export function normalizeModelUserSettings(model: ModelInfo, raw: unknown): Mode
 
   const streaming = typeof obj.streaming === 'boolean' ? obj.streaming : defaults.streaming;
   const background = typeof obj.background === 'boolean' ? obj.background : defaults.background;
+  const replayToolOutputs =
+    typeof obj.replayToolOutputs === 'boolean' ? obj.replayToolOutputs : defaults.replayToolOutputs;
 
   const verbosityRaw = typeof obj.verbosity === 'string' ? obj.verbosity : defaults.verbosity;
   const verbosity: TextVerbosity =
@@ -139,6 +143,7 @@ export function normalizeModelUserSettings(model: ModelInfo, raw: unknown): Mode
     includeInComposer,
     streaming: model.parameters.streaming ? streaming : false,
     background: model.parameters.background ? background : false,
+    replayToolOutputs,
     verbosity,
     reasoningSummary: model.effort ? reasoningSummary : 'off',
     ...(model.provider === 'anthropic'

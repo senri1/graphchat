@@ -10,10 +10,43 @@ export type OpenAIChatSettings = {
   verbosity?: TextVerbosity;
   webSearchEnabled?: boolean;
   reasoningSummary?: 'auto' | 'detailed' | 'off';
+  replayToolOutputs?: boolean;
   stream?: boolean;
   background?: boolean;
   systemInstruction?: string;
   inkExport?: InkExportOptions;
+};
+
+export const OPENAI_TOOL_LOOP_TRACE_KEY = '__gc_openai_tool_loop_trace';
+
+export type OpenAIToolLoopTraceFunctionCall = {
+  callId: string;
+  name: string;
+  argumentsJson: string;
+  status?: string;
+};
+
+export type OpenAIToolLoopTraceToolOutput = {
+  callId: string;
+  name: string;
+  argumentsJson: string;
+  output: unknown;
+};
+
+export type OpenAIToolLoopTraceRound = {
+  round: number;
+  request?: unknown;
+  response?: unknown;
+  responseId?: string;
+  functionCalls?: OpenAIToolLoopTraceFunctionCall[];
+  toolOutputs?: OpenAIToolLoopTraceToolOutput[];
+  continuationRequest?: unknown;
+  error?: string;
+};
+
+export type OpenAIToolLoopTrace = {
+  version: 1;
+  rounds: OpenAIToolLoopTraceRound[];
 };
 
 export const OPENAI_LATEX_TOOL_NAMES = {
@@ -47,6 +80,98 @@ const INK_NODE_IMAGE_PREFACE =
   'The contents of this message are in the provided image.';
 
 const LATEX_FILE_KINDS = ['tex', 'bib', 'style', 'class', 'asset', 'other'] as const;
+
+function serializeToolOutput(output: unknown): string {
+  if (typeof output === 'string') return output;
+  try {
+    return JSON.stringify(output);
+  } catch {
+    return String(output ?? '');
+  }
+}
+
+function summarizeToolOutput(output: unknown): string {
+  if (output == null) return '';
+  if (typeof output === 'string') {
+    const trimmed = output.trim();
+    return trimmed.length <= 180 ? trimmed : `${trimmed.slice(0, 180)}...`;
+  }
+
+  if (typeof output === 'object') {
+    const anyOutput = output as any;
+    const error = typeof anyOutput?.error === 'string' ? anyOutput.error.trim() : '';
+    if (error) return error.length <= 180 ? error : `${error.slice(0, 180)}...`;
+
+    if (Array.isArray(anyOutput?.nodes)) return `nodes=${anyOutput.nodes.length}`;
+    if (Array.isArray(anyOutput?.items)) return `items=${anyOutput.items.length}`;
+    if (Array.isArray(anyOutput?.results)) return `results=${anyOutput.results.length}`;
+    if (typeof anyOutput?.ok === 'boolean') return anyOutput.ok ? 'ok' : 'failed';
+  }
+
+  const text = serializeToolOutput(output).trim();
+  return text.length <= 180 ? text : `${text.slice(0, 180)}...`;
+}
+
+function buildRedactedToolOutputPayload(args: {
+  callId: string;
+  toolName: string;
+  output: unknown;
+}): string {
+  const raw = serializeToolOutput(args.output);
+  return JSON.stringify({
+    redacted: true,
+    reason: 'tool_output_replay_disabled',
+    call_id: args.callId,
+    tool: args.toolName,
+    original_bytes: raw.length,
+    summary: summarizeToolOutput(args.output),
+  });
+}
+
+function extractOpenAIToolLoopTrace(raw: unknown): OpenAIToolLoopTrace | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const trace = (raw as any)[OPENAI_TOOL_LOOP_TRACE_KEY];
+  if (!trace || typeof trace !== 'object') return null;
+  const rounds = Array.isArray((trace as any).rounds) ? ((trace as any).rounds as OpenAIToolLoopTraceRound[]) : [];
+  if (rounds.length === 0) return null;
+  return {
+    version: 1,
+    rounds,
+  };
+}
+
+function buildReplayInputFromToolLoopTrace(args: {
+  trace: OpenAIToolLoopTrace;
+  replayToolOutputs: boolean;
+}): any[] {
+  const out: any[] = [];
+  for (const round of args.trace.rounds) {
+    const responseOutput = Array.isArray((round as any)?.response?.output)
+      ? (((round as any).response.output as unknown[]) ?? [])
+      : [];
+    if (responseOutput.length) out.push(...responseOutput);
+
+    const toolOutputs = Array.isArray(round?.toolOutputs) ? round.toolOutputs : [];
+    for (const toolOutput of toolOutputs) {
+      const callId = typeof toolOutput?.callId === 'string' ? toolOutput.callId.trim() : '';
+      if (!callId) continue;
+      const toolName = typeof toolOutput?.name === 'string' ? toolOutput.name.trim() : '';
+      const output = args.replayToolOutputs
+        ? serializeToolOutput(toolOutput.output)
+        : buildRedactedToolOutputPayload({
+            callId,
+            toolName: toolName || 'unknown_tool',
+            output: toolOutput.output,
+          });
+      out.push({
+        type: 'function_call_output',
+        call_id: callId,
+        output,
+      });
+    }
+  }
+  return out;
+}
 
 async function attachmentToOpenAIContent(att: any): Promise<any | null> {
   if (!att) return null;
@@ -142,7 +267,7 @@ function buildInkTurnText(node: Extract<ChatNode, { kind: 'ink' }>): string {
 async function buildOpenAIInputFromChatNodes(
   nodes: ChatNode[],
   leafUserNodeId: string,
-  opts?: { inkExport?: InkExportOptions },
+  opts?: { inkExport?: InkExportOptions; replayToolOutputs?: boolean },
 ): Promise<any[]> {
   const byId = new Map<string, ChatNode>();
   for (const n of nodes) byId.set(n.id, n);
@@ -259,6 +384,18 @@ async function buildOpenAIInputFromChatNodes(
           }
         }
         if (!raw && (n as any).apiResponse !== undefined) raw = (n as any).apiResponse;
+
+        const trace = extractOpenAIToolLoopTrace(raw);
+        if (trace) {
+          const replayItems = buildReplayInputFromToolLoopTrace({
+            trace,
+            replayToolOutputs: opts?.replayToolOutputs !== false,
+          });
+          if (replayItems.length) {
+            input.push(...replayItems);
+            continue;
+          }
+        }
 
         if (raw && Array.isArray(raw.output)) {
           input.push(...raw.output);
@@ -748,7 +885,10 @@ export async function buildOpenAIResponseRequest(args: {
   const modelId = args.settings.modelId || DEFAULT_MODEL_ID;
   const info = getModelInfo(modelId);
   const apiModel = info?.apiModel || modelId;
-  const input = await buildOpenAIInputFromChatNodes(args.nodes, args.leafUserNodeId, { inkExport: args.settings.inkExport });
+  const input = await buildOpenAIInputFromChatNodes(args.nodes, args.leafUserNodeId, {
+    inkExport: args.settings.inkExport,
+    replayToolOutputs: args.settings.replayToolOutputs,
+  });
   const latexToolContext = resolveOpenAILatexToolContext({ nodes: args.nodes, leafUserNodeId: args.leafUserNodeId });
   const includeGraphTools = !Boolean(args.settings.background);
 

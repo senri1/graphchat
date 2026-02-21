@@ -933,6 +933,7 @@ export default function SettingsModal(props: Props) {
 	                        const supportsBackground = Boolean(model.parameters?.background);
 	                        const supportsVerbosity = typeof model.defaults?.verbosity === 'string';
 	                        const supportsSummary = model.provider === 'openai' && Boolean(model.effort);
+                        const supportsReplayToolOutputs = model.provider === 'openai';
 	                        const includeInComposer = typeof s?.includeInComposer === 'boolean' ? s.includeInComposer : true;
 	                        const streaming =
 	                          typeof s?.streaming === 'boolean'
@@ -959,6 +960,7 @@ export default function SettingsModal(props: Props) {
 	                          const raw = typeof s?.reasoningSummary === 'string' ? s.reasoningSummary : model.reasoningSummary ? 'auto' : 'off';
 	                          return raw === 'auto' || raw === 'detailed' || raw === 'off' ? raw : model.reasoningSummary ? 'auto' : 'off';
 	                        })();
+                        const replayToolOutputs = typeof s?.replayToolOutputs === 'boolean' ? s.replayToolOutputs : true;
 	                        const supportsMaxTokens = model.provider === 'anthropic';
 	                        const maxTokens = (() => {
 	                          if (!supportsMaxTokens) return 0;
@@ -1125,8 +1127,8 @@ export default function SettingsModal(props: Props) {
                                 </div>
                               </div>
 
-                              {supportsSummary ? (
-                                <div className="settingsRow">
+	                              {supportsSummary ? (
+	                                <div className="settingsRow">
                                   <div className="settingsRow__text">
                                     <div className="settingsRow__title">Thinking summary</div>
                                     <div className="settingsRow__desc">Request a reasoning summary alongside the answer.</div>
@@ -1157,12 +1159,31 @@ export default function SettingsModal(props: Props) {
                                       Off
                                     </button>
                                   </div>
+	                                </div>
+	                              ) : null}
+
+                              {supportsReplayToolOutputs ? (
+                                <div className="settingsRow">
+                                  <div className="settingsRow__text">
+                                    <div className="settingsRow__title">Replay tool outputs</div>
+                                    <div className="settingsRow__desc">Include prior tool results in future turns. When off, only redacted stubs are replayed.</div>
+                                  </div>
+                                  <div className="settingsRow__actions">
+                                    <button
+                                      className={`settingsToggle ${replayToolOutputs ? 'settingsToggle--on' : ''}`}
+                                      type="button"
+                                      aria-pressed={replayToolOutputs}
+                                      onClick={() => props.onUpdateModelUserSettings(model.id, { replayToolOutputs: !replayToolOutputs })}
+                                    >
+                                      {replayToolOutputs ? 'On' : 'Off'}
+                                    </button>
+                                  </div>
                                 </div>
                               ) : null}
-                            </div>
-                          </details>
-                        );
-                      })}
+	                            </div>
+	                          </details>
+	                        );
+	                      })}
                     </div>
                   </details>
                 ))}

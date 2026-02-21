@@ -58,10 +58,14 @@ import type { ChatAttachment, ChatNode, InkStroke, ThinkingSummaryChunk } from '
 import { normalizeBackgroundLibrary, type BackgroundLibraryItem } from './model/backgrounds';
 import {
   buildOpenAIResponseRequest,
+  OPENAI_TOOL_LOOP_TRACE_KEY,
   OPENAI_GRAPH_TOOL_NAMES,
   OPENAI_LATEX_TOOL_NAMES,
   resolveOpenAILatexToolContext,
   type OpenAIChatSettings,
+  type OpenAIToolLoopTrace,
+  type OpenAIToolLoopTraceFunctionCall,
+  type OpenAIToolLoopTraceToolOutput,
   type OpenAILatexToolContext,
 } from './llm/openai';
 import { buildGeminiContext, type GeminiChatSettings } from './llm/gemini';
@@ -2109,6 +2113,40 @@ function extractOpenAIFunctionCalls(raw: unknown): OpenAIFunctionCall[] {
   return out;
 }
 
+function attachOpenAIToolLoopTraceToResponse(args: {
+  response: unknown;
+  rounds: Array<{
+    round: number;
+    request?: unknown;
+    response?: unknown;
+    responseId?: string;
+    functionCalls?: OpenAIToolLoopTraceFunctionCall[];
+    toolOutputs?: OpenAIToolLoopTraceToolOutput[];
+    continuationRequest?: unknown;
+    error?: string;
+  }>;
+}): unknown {
+  if (!args.response || typeof args.response !== 'object') return args.response;
+  if (!Array.isArray(args.rounds) || args.rounds.length === 0) return args.response;
+  const trace: OpenAIToolLoopTrace = {
+    version: 1,
+    rounds: args.rounds.map((round) => ({
+      round: Number.isFinite(Number(round.round)) ? Math.max(1, Math.floor(Number(round.round))) : 1,
+      ...(round.request !== undefined ? { request: round.request } : {}),
+      ...(round.response !== undefined ? { response: round.response } : {}),
+      ...(typeof round.responseId === 'string' && round.responseId.trim() ? { responseId: round.responseId.trim() } : {}),
+      ...(Array.isArray(round.functionCalls) && round.functionCalls.length ? { functionCalls: round.functionCalls } : {}),
+      ...(Array.isArray(round.toolOutputs) && round.toolOutputs.length ? { toolOutputs: round.toolOutputs } : {}),
+      ...(round.continuationRequest !== undefined ? { continuationRequest: round.continuationRequest } : {}),
+      ...(typeof round.error === 'string' && round.error.trim() ? { error: round.error.trim() } : {}),
+    })),
+  };
+  return {
+    ...(args.response as Record<string, unknown>),
+    [OPENAI_TOOL_LOOP_TRACE_KEY]: trace,
+  };
+}
+
 function buildOpenAIFunctionCallContinuationRequest(args: {
   baseRequest: Record<string, unknown>;
   responseId: string;
@@ -4075,6 +4113,8 @@ export default function App() {
 	        return { ok: false as const, text: job.fullText, error: 'Canceled', cancelled: true };
 	      };
 
+      const openAIToolLoopRounds: OpenAIToolLoopTrace['rounds'] = [];
+
 	      const runOpenAIInternalToolLoop = async () => {
 	        let currentRequest: Record<string, unknown> = { ...(sentRequest ?? {}) };
 	        let useStreaming = Boolean((currentRequest as any)?.stream === true);
@@ -4083,6 +4123,10 @@ export default function App() {
 	        const repeatedCallFingerprintCount = new Map<string, number>();
 
 	        for (let round = 0; round < OPENAI_TOOL_LOOP_MAX_ROUNDS; round += 1) {
+            const roundTrace: OpenAIToolLoopTrace['rounds'][number] = {
+              round: round + 1,
+              request: currentRequest,
+            };
 	          const r = useStreaming
 	            ? await streamOpenAIResponse({
 	                apiKey,
@@ -4097,18 +4141,40 @@ export default function App() {
 	              });
 
 	          if (job.closed || job.abortController.signal.aborted) {
+              roundTrace.response = r.response;
+              roundTrace.error = 'Canceled';
+              openAIToolLoopRounds.push(roundTrace);
 	            return { ok: false as const, text: job.fullText, error: 'Canceled', cancelled: true, response: r.response };
 	          }
 	          lastResponse = r.response;
-	          if (!r.ok) return r;
+            roundTrace.response = r.response;
+	          if (!r.ok) {
+              roundTrace.error = typeof r.error === 'string' ? r.error : 'Request failed';
+              openAIToolLoopRounds.push(roundTrace);
+              return r;
+            }
 
 	          const calls = extractOpenAIFunctionCalls(r.response);
-	          if (calls.length === 0) return r;
+            roundTrace.functionCalls = calls.map((call) => ({
+              callId: call.callId,
+              name: call.name,
+              argumentsJson: call.argumentsJson,
+              status: 'completed',
+            }));
+	          if (calls.length === 0) {
+              openAIToolLoopRounds.push(roundTrace);
+              return r;
+            }
 	          const pendingCalls = calls.filter((call) => !executedCallIds.has(call.callId));
-	          if (pendingCalls.length === 0) return r;
+	          if (pendingCalls.length === 0) {
+              openAIToolLoopRounds.push(roundTrace);
+              return r;
+            }
 
 	          const responseId = extractOpenAIResponseId(r.response);
 	          if (!responseId) {
+              roundTrace.error = 'Tool call response is missing a response id.';
+              openAIToolLoopRounds.push(roundTrace);
 	            return {
 	              ok: false as const,
 	              text: typeof r.text === 'string' ? r.text : job.fullText,
@@ -4116,14 +4182,18 @@ export default function App() {
 	              response: r.response,
 	            };
 	          }
+            roundTrace.responseId = responseId;
 
 	          const outputs: OpenAIFunctionCallOutput[] = [];
+            const roundToolOutputs: OpenAIToolLoopTraceToolOutput[] = [];
 	          for (const call of pendingCalls) {
 	            executedCallIds.add(call.callId);
 	            const fingerprint = `${call.name}\n${call.argumentsJson.trim()}`;
 	            const repeatCount = (repeatedCallFingerprintCount.get(fingerprint) ?? 0) + 1;
 	            repeatedCallFingerprintCount.set(fingerprint, repeatCount);
 	            if (repeatCount > OPENAI_TOOL_CALL_REPEAT_LIMIT) {
+                roundTrace.error = `Model repeated the same tool call too many times (${OPENAI_TOOL_CALL_REPEAT_LIMIT}).`;
+                openAIToolLoopRounds.push(roundTrace);
 	              return {
 	                ok: false as const,
 	                text: typeof r.text === 'string' ? r.text : job.fullText,
@@ -4163,17 +4233,36 @@ export default function App() {
 	              }
 	            }
 	            outputs.push({ callId: call.callId, output });
+              roundToolOutputs.push({
+                callId: call.callId,
+                name: call.name,
+                argumentsJson: call.argumentsJson,
+                output,
+              });
 	          }
-	          if (outputs.length === 0) return r;
+            roundTrace.toolOutputs = roundToolOutputs;
+	          if (outputs.length === 0) {
+              openAIToolLoopRounds.push(roundTrace);
+              return r;
+            }
 
 	          currentRequest = buildOpenAIFunctionCallContinuationRequest({
 	            baseRequest: request,
 	            responseId,
 	            outputs,
 	          });
+            roundTrace.continuationRequest = currentRequest;
+            openAIToolLoopRounds.push(roundTrace);
 	          useStreaming = false;
 	        }
 
+          if (lastResponse && typeof lastResponse === 'object') {
+            openAIToolLoopRounds.push({
+              round: OPENAI_TOOL_LOOP_MAX_ROUNDS + 1,
+              response: lastResponse,
+              error: `Exceeded tool call limit (${OPENAI_TOOL_LOOP_MAX_ROUNDS}).`,
+            });
+          }
 	        return {
 	          ok: false as const,
 	          text: job.fullText,
@@ -4416,16 +4505,23 @@ export default function App() {
 	              signal: job.abortController.signal,
 	            });
 
-      if (!generationJobsByAssistantIdRef.current.has(job.assistantNodeId)) return;
-      const usedWebSearch =
-        Array.isArray((request as any)?.tools) && (request as any).tools.some((tool: any) => tool && tool.type === 'web_search');
-      const effort = (request as any)?.reasoning?.effort;
-      const verbosity = (request as any)?.text?.verbosity;
-      const baseCanonicalMeta = extractCanonicalMeta(res.response, { usedWebSearch, effort, verbosity });
-      const canonicalMessage = extractCanonicalMessage(
-        res.response,
-        typeof res.text === 'string' ? res.text : job.fullText,
-      );
+	      if (!generationJobsByAssistantIdRef.current.has(job.assistantNodeId)) return;
+        const responseWithTrace =
+          internalToolLoopEnabled && openAIToolLoopRounds.length > 0
+            ? attachOpenAIToolLoopTraceToResponse({
+                response: res.response,
+                rounds: openAIToolLoopRounds,
+              })
+            : res.response;
+	      const usedWebSearch =
+	        Array.isArray((request as any)?.tools) && (request as any).tools.some((tool: any) => tool && tool.type === 'web_search');
+	      const effort = (request as any)?.reasoning?.effort;
+	      const verbosity = (request as any)?.text?.verbosity;
+	      const baseCanonicalMeta = extractCanonicalMeta(responseWithTrace, { usedWebSearch, effort, verbosity });
+	      const canonicalMessage = extractCanonicalMessage(
+	        responseWithTrace,
+	        typeof res.text === 'string' ? res.text : job.fullText,
+	      );
       const finalText = (typeof res.text === 'string' ? res.text : '') || canonicalMessage?.text || job.fullText || '';
       const streamed = job.thinkingSummary ?? [];
       const canonicalMeta = (() => {
@@ -4438,14 +4534,14 @@ export default function App() {
             .map((c) => ({ type: 'summary_text' as const, text: c?.text ?? '' })),
         };
       })();
-      const storedResponse = res.response !== undefined ? cloneRawPayloadForDisplay(res.response) : undefined;
-      let responseKey: string | undefined = undefined;
-      if (res.response !== undefined) {
-        try {
-          const key = `${chatId}/${job.assistantNodeId}/res`;
-          await putPayload({ key, json: res.response });
-          responseKey = key;
-        } catch {
+	      const storedResponse = responseWithTrace !== undefined ? cloneRawPayloadForDisplay(responseWithTrace) : undefined;
+	      let responseKey: string | undefined = undefined;
+	      if (responseWithTrace !== undefined) {
+	        try {
+	          const key = `${chatId}/${job.assistantNodeId}/res`;
+	          await putPayload({ key, json: responseWithTrace });
+	          responseKey = key;
+	        } catch {
           // ignore
         }
       }
@@ -7940,6 +8036,7 @@ export default function App() {
         verbosity: modelSettings?.verbosity,
         webSearchEnabled: composerWebSearch,
         reasoningSummary: modelSettings?.reasoningSummary,
+        replayToolOutputs: modelSettings?.replayToolOutputs,
         stream: modelSettings?.streaming,
         background: modelSettings?.background,
         systemInstruction,
@@ -8210,6 +8307,7 @@ export default function App() {
         verbosity: modelSettings?.verbosity,
         webSearchEnabled: composerWebSearch,
         reasoningSummary: modelSettings?.reasoningSummary,
+        replayToolOutputs: modelSettings?.replayToolOutputs,
         stream: modelSettings?.streaming,
         background: modelSettings?.background,
         systemInstruction,
@@ -8423,6 +8521,7 @@ export default function App() {
           verbosity: modelSettings?.verbosity,
           webSearchEnabled: composerWebSearch,
           reasoningSummary: modelSettings?.reasoningSummary,
+          replayToolOutputs: modelSettings?.replayToolOutputs,
           stream: modelSettings?.streaming,
           background: modelSettings?.background,
           systemInstruction,
@@ -8632,6 +8731,7 @@ export default function App() {
         verbosity: modelSettings?.verbosity,
         webSearchEnabled: composerWebSearch,
         reasoningSummary: modelSettings?.reasoningSummary,
+        replayToolOutputs: modelSettings?.replayToolOutputs,
         stream: modelSettings?.streaming,
         background: modelSettings?.background,
         systemInstruction,
