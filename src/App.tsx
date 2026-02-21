@@ -755,7 +755,7 @@ function findChatNameAndFolderPath(
   return walk(root, []);
 }
 
-const OPENAI_TOOL_LOOP_MAX_ROUNDS = 24;
+const OPENAI_TOOL_LOOP_MAX_ROUNDS = Number.POSITIVE_INFINITY;
 const OPENAI_TOOL_CALL_REPEAT_LIMIT = 4;
 const OPENAI_LATEX_LIST_DEFAULT_LIMIT = 500;
 const OPENAI_LATEX_LIST_MAX_LIMIT = 5000;
