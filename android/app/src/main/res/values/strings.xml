@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">GraphChatV1</string>
+    <string name="title_activity_main">GraphChatV1</string>
+    <string name="package_name">com.graphchatv1.mobile</string>
+    <string name="custom_url_scheme">com.graphchatv1.mobile</string>
+</resources>

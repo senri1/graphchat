@@ -67,6 +67,45 @@ npm run electron:dev
 
 In desktop mode, LaTeX nodes use local compilation via Electron IPC + `latexmk` and render PDF in the node editor.
 
+## Running on Android (APK)
+
+### Prerequisite software
+
+- Android Studio (with Android SDK and command-line tools)
+- Java Runtime / JDK (required by Gradle)
+- `adb` (from Android SDK platform-tools)
+
+### One-time setup
+
+```bash
+cd graphchatv1
+npm install
+npm run android:add
+```
+
+### Build and open Android project
+
+```bash
+cd graphchatv1
+npm run android:sync
+npm run android:open
+```
+
+### Build a debug APK and install via USB
+
+```bash
+cd graphchatv1
+npm run android:build:debug
+npm run android:install:debug
+```
+
+Notes:
+
+- `android:sync` rebuilds web assets and copies them into the Android project.
+- Android native builds persist app data in app-private filesystem storage via Capacitor Filesystem.
+- Vite dev proxy routes (`/api/openai/*`, `/api/anthropic/*`) do not exist inside an APK.
+- Electron-only features (for example local LaTeX compile and Electron filesystem actions) are desktop-only.
+
 ## First things to try
 
 - Drag to pan
@@ -135,4 +174,3 @@ Notes:
 - Packaging requires network access on first run so `electron-builder` can fetch Electron binaries
 - `release:verify` scans `dist/` + `release/` for secret-like tokens and local absolute paths
 - `release:collect` stages only `.dmg` / `.exe` installers into `release/public`
-

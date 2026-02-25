@@ -83,6 +83,7 @@ import { base64ToBlob, readFileAsDataUrl, splitDataUrl } from './utils/files';
 import type { ArchiveV1, ArchiveV2 } from './utils/archive';
 import { deleteAttachment, deleteAttachments, getAttachment, listAttachmentKeys, putAttachment } from './storage/attachments';
 import { clearAllStores } from './storage/db';
+import { getElectronStorageApi } from './storage/electron';
 import {
   deleteChatMetaRecord,
   deleteChatStorageFolder,
@@ -7128,16 +7129,23 @@ export default function App() {
       typeof (window as any)?.gcElectron?.storageDeleteLocalSyncBackup === 'function',
   );
   const canManageGoogleDriveSync = Boolean(
-    typeof window !== 'undefined' &&
-      typeof (window as any)?.gcElectron?.storageGoogleDriveSyncInfo === 'function' &&
-      typeof (window as any)?.gcElectron?.storageGoogleDriveSyncLink === 'function' &&
-      typeof (window as any)?.gcElectron?.storageGoogleDriveSyncUnlink === 'function' &&
-      typeof (window as any)?.gcElectron?.storageGoogleDriveSyncPush === 'function' &&
-      typeof (window as any)?.gcElectron?.storageGoogleDriveSyncPull === 'function',
+    (() => {
+      const api = getElectronStorageApi();
+      return Boolean(
+        api &&
+          typeof api.storageGoogleDriveSyncInfo === 'function' &&
+          typeof api.storageGoogleDriveSyncLink === 'function' &&
+          typeof api.storageGoogleDriveSyncUnlink === 'function' &&
+          typeof api.storageGoogleDriveSyncPush === 'function' &&
+          typeof api.storageGoogleDriveSyncPull === 'function',
+      );
+    })(),
   );
   const canOpenGoogleDriveFolder = Boolean(
-    typeof window !== 'undefined' &&
-      typeof (window as any)?.gcElectron?.storageGoogleDriveSyncOpenFolder === 'function',
+    (() => {
+      const api = getElectronStorageApi();
+      return Boolean(api && typeof api.storageGoogleDriveSyncOpenFolder === 'function');
+    })(),
   );
 
   const refreshStorageDataDirInfo = () => {
@@ -7199,14 +7207,15 @@ export default function App() {
   };
 
   const refreshGoogleDriveSyncInfo = () => {
-    const api = (window as any)?.gcElectron;
-    if (!api || typeof api.storageGoogleDriveSyncInfo !== 'function') {
+    const api = getElectronStorageApi();
+    const getInfo = api?.storageGoogleDriveSyncInfo;
+    if (typeof getInfo !== 'function') {
       setGoogleDriveSyncInfo(null);
       return;
     }
     void (async () => {
       try {
-        const res = await api.storageGoogleDriveSyncInfo();
+        const res = await getInfo();
         if (!res?.ok) return;
         const nextInfo = googleDriveSyncInfoFromApiResult(res);
         setGoogleDriveSyncInfo(nextInfo);
@@ -7223,7 +7232,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    const api = (window as any)?.gcElectron;
+    const api = getElectronStorageApi();
     if (!api || typeof api.storageGoogleDriveSyncOnProgress !== 'function') return;
 
     const unsubscribe = api.storageGoogleDriveSyncOnProgress((payload: any) => {
@@ -7248,6 +7257,31 @@ export default function App() {
     refreshCloudSyncInfo();
     refreshLocalSyncBackupInfo();
     refreshGoogleDriveSyncInfo();
+  }, [settingsOpen, settingsPanel]);
+
+  useEffect(() => {
+    const refreshOnResume = () => {
+      if (!settingsOpen || settingsPanel !== 'data') return;
+      refreshGoogleDriveSyncInfo();
+    };
+    const onVisibilityChange = () => {
+      if (typeof document === 'undefined' || document.visibilityState !== 'visible') return;
+      refreshOnResume();
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener('focus', refreshOnResume);
+    }
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisibilityChange);
+    }
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('focus', refreshOnResume);
+      }
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisibilityChange);
+      }
+    };
   }, [settingsOpen, settingsPanel]);
 
   const openStorageFolder = () => {
@@ -7523,9 +7557,10 @@ export default function App() {
   };
 
   const linkGoogleDriveSync = () => {
-    const api = (window as any)?.gcElectron;
-    if (!api || typeof api.storageGoogleDriveSyncLink !== 'function') {
-      showToast('Google Drive direct sync is only available in Electron desktop mode.', 'info');
+    const api = getElectronStorageApi();
+    const link = api?.storageGoogleDriveSyncLink;
+    if (typeof link !== 'function') {
+      showToast('Google Drive direct sync is unavailable in this mode.', 'info');
       return;
     }
 
@@ -7540,7 +7575,7 @@ export default function App() {
         const clientSecret = String(googleDriveClientSecretDraft ?? '').trim();
         const req: { clientId: string; clientSecret?: string } = { clientId };
         if (clientSecret) req.clientSecret = clientSecret;
-        const res = await api.storageGoogleDriveSyncLink(req);
+        const res = await link(req);
         if (!res?.ok) {
           showToast(`Google Drive link failed: ${String(res?.error ?? 'unknown error')}`, 'error', 5200);
           refreshGoogleDriveSyncInfo();
@@ -7550,7 +7585,11 @@ export default function App() {
         setGoogleDriveSyncInfo(nextInfo);
         if (nextInfo?.clientId) setGoogleDriveClientIdDraft(nextInfo.clientId);
         refreshGoogleDriveSyncInfo();
-        showToast('Google Drive linked.', 'success');
+        if (nextInfo?.linked) {
+          showToast('Google Drive linked.', 'success');
+        } else {
+          showToast('Continue Google sign-in to finish linking.', 'info');
+        }
       } catch (err: any) {
         showToast(`Google Drive link failed: ${err?.message || String(err)}`, 'error', 5200);
         refreshGoogleDriveSyncInfo();
@@ -7559,15 +7598,16 @@ export default function App() {
   };
 
   const unlinkGoogleDriveSync = () => {
-    const api = (window as any)?.gcElectron;
-    if (!api || typeof api.storageGoogleDriveSyncUnlink !== 'function') {
-      showToast('Google Drive direct sync is only available in Electron desktop mode.', 'info');
+    const api = getElectronStorageApi();
+    const unlink = api?.storageGoogleDriveSyncUnlink;
+    if (typeof unlink !== 'function') {
+      showToast('Google Drive direct sync is unavailable in this mode.', 'info');
       return;
     }
     if (!window.confirm('Unlink Google Drive on this device? This does not delete snapshots already in Drive.')) return;
     void (async () => {
       try {
-        const res = await api.storageGoogleDriveSyncUnlink();
+        const res = await unlink();
         if (!res?.ok) {
           showToast(`Failed to unlink Google Drive: ${String(res?.error ?? 'unknown error')}`, 'error');
           return;
@@ -7581,14 +7621,15 @@ export default function App() {
   };
 
   const openGoogleDriveFolder = () => {
-    const api = (window as any)?.gcElectron;
-    if (!api || typeof api.storageGoogleDriveSyncOpenFolder !== 'function') {
-      showToast('Open Google Drive folder is only available in Electron desktop mode.', 'info');
+    const api = getElectronStorageApi();
+    const openFolder = api?.storageGoogleDriveSyncOpenFolder;
+    if (typeof openFolder !== 'function') {
+      showToast('Open Google Drive folder is unavailable in this mode.', 'info');
       return;
     }
     void (async () => {
       try {
-        const res = await api.storageGoogleDriveSyncOpenFolder();
+        const res = await openFolder();
         if (!res?.ok) {
           showToast(`Failed to open Google Drive folder: ${String(res?.error ?? 'unknown error')}`, 'error');
         }
@@ -7599,9 +7640,10 @@ export default function App() {
   };
 
   const pushToGoogleDriveSync = () => {
-    const api = (window as any)?.gcElectron;
-    if (!api || typeof api.storageGoogleDriveSyncPush !== 'function') {
-      showToast('Google Drive direct sync is only available in Electron desktop mode.', 'info');
+    const api = getElectronStorageApi();
+    const push = api?.storageGoogleDriveSyncPush;
+    if (typeof push !== 'function') {
+      showToast('Google Drive direct sync is unavailable in this mode.', 'info');
       return;
     }
     if (googleDriveSyncRunRef.current) {
@@ -7628,7 +7670,7 @@ export default function App() {
     void (async () => {
       try {
         await flushPendingPersistenceForCloudSync();
-        const res = await api.storageGoogleDriveSyncPush();
+        const res = await push();
         if (!res?.ok) {
           showToast(`Google Drive push failed: ${String(res?.error ?? 'unknown error')}`, 'error', 5200);
           setGoogleDriveSyncRun(null);
@@ -7646,9 +7688,10 @@ export default function App() {
   };
 
   const pullFromGoogleDriveSync = () => {
-    const api = (window as any)?.gcElectron;
-    if (!api || typeof api.storageGoogleDriveSyncPull !== 'function') {
-      showToast('Google Drive direct sync is only available in Electron desktop mode.', 'info');
+    const api = getElectronStorageApi();
+    const pull = api?.storageGoogleDriveSyncPull;
+    if (typeof pull !== 'function') {
+      showToast('Google Drive direct sync is unavailable in this mode.', 'info');
       return;
     }
     if (googleDriveSyncRunRef.current) {
@@ -7684,7 +7727,7 @@ export default function App() {
           cancelJob(assistantNodeId);
         }
         await flushPendingPersistenceForCloudSync();
-        const res = await api.storageGoogleDriveSyncPull();
+        const res = await pull();
         if (!res?.ok) {
           showToast(`Google Drive pull failed: ${String(res?.error ?? 'unknown error')}`, 'error', 5200);
           refreshLocalSyncBackupInfo();

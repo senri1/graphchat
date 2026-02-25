@@ -1783,7 +1783,7 @@ export default function SettingsModal(props: Props) {
                       <div className="settingsRow__desc">
                         Link Google Drive directly (OAuth), then push from one device and pull on another.
                       </div>
-                      <div className="settingsRow__desc">Google OAuth client ID (Desktop app type)</div>
+                      <div className="settingsRow__desc">Google OAuth client ID (must allow `http://localhost` redirect URI)</div>
                       <div className="settingsRow__actions settingsRow__actions--grow">
                         <input
                           className="settingsTextInput settingsTextInput--apiKey"
@@ -1811,6 +1811,9 @@ export default function SettingsModal(props: Props) {
                       </div>
                       <div className="settingsRow__desc">
                         Status: {props.googleDriveLinked ? 'Linked' : 'Not linked'}
+                      </div>
+                      <div className="settingsRow__desc">
+                        Android note: complete sign-in in browser, then choose GraphChatV1 when prompted to open the callback.
                       </div>
                       {props.googleDriveClientId ? (
                         <div className="settingsRow__desc">

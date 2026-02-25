@@ -1,3 +1,5 @@
+import { getCapacitorStorageApi } from './capacitor';
+
 export type ElectronStorageApi = {
   storageGetWorkspaceSnapshot?: () => Promise<{ ok: boolean; snapshot?: unknown | null; error?: string }>;
   storagePutWorkspaceSnapshot?: (req: { snapshot: unknown }) => Promise<{ ok: boolean; error?: string }>;
@@ -262,5 +264,7 @@ function hasFsStorageApi(api: ElectronStorageApi | null | undefined): boolean {
 export function getElectronStorageApi(): ElectronStorageApi | null {
   if (typeof window === 'undefined') return null;
   const api = (window as unknown as { gcElectron?: ElectronStorageApi | null }).gcElectron;
-  return hasFsStorageApi(api) ? (api as ElectronStorageApi) : null;
+  if (hasFsStorageApi(api)) return api as ElectronStorageApi;
+  const capacitorApi = getCapacitorStorageApi();
+  return hasFsStorageApi(capacitorApi) ? capacitorApi : null;
 }
