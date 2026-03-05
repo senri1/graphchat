@@ -2624,6 +2624,7 @@ export default function App() {
   } | null>(null);
   const persistTimerRef = useRef<number | null>(null);
   const persistInFlightRef = useRef<Promise<void> | null>(null);
+  const persistPendingRef = useRef(false);
   const hydratingPdfChatsRef = useRef<Set<string>>(new Set());
   const attachmentsGcDirtyRef = useRef(false);
   const attachmentsGcRunningRef = useRef(false);
@@ -3224,6 +3225,9 @@ export default function App() {
   const schedulePersistSoon = useMemo(() => {
     const persist = () => {
       if (!bootedRef.current) return;
+      if (!persistPendingRef.current) return;
+      if (lastEngineInteractingRef.current === true) return;
+      persistPendingRef.current = false;
       const root = treeRootRef.current;
       const active = activeChatIdRef.current;
       const focused = focusedFolderIdRef.current;
@@ -3360,6 +3364,7 @@ export default function App() {
 
     return () => {
       if (!bootedRef.current) return;
+      persistPendingRef.current = true;
       if (persistTimerRef.current != null) return;
       persistTimerRef.current = window.setTimeout(() => {
         persistTimerRef.current = null;
@@ -5593,7 +5598,7 @@ export default function App() {
     lastEngineInteractingRef.current = null;
     engine.onDebug = (next) => {
       const nextInteracting = Boolean(next?.interacting);
-      if (lastEngineInteractingRef.current === true && !nextInteracting && bootedRef.current) {
+      if (lastEngineInteractingRef.current === true && !nextInteracting && bootedRef.current && persistPendingRef.current) {
         schedulePersistSoon();
       }
       lastEngineInteractingRef.current = nextInteracting;

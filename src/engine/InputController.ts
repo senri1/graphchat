@@ -316,15 +316,20 @@ export class InputController {
         }
       } else if (this.pointers.size === 1) {
         const hasDrag = this.dragBegan.has(ev.pointerId);
+        let panDx = dx;
+        let panDy = dy;
         if (!hasDrag) {
           const fromStart = hypot2(pos.x - info.startPos.x, pos.y - info.startPos.y);
           if (fromStart >= this.dragThresholdPx) {
             this.dragBegan.add(ev.pointerId);
             if (info.button === 0) this.setInteracting(true);
+            // Preserve the motion consumed while crossing the threshold so panning starts immediately.
+            panDx = pos.x - info.startPos.x;
+            panDy = pos.y - info.startPos.y;
           }
         }
-        if (this.dragBegan.has(ev.pointerId) && (dx || dy) && info.button === 0) {
-          this.camera.panByScreen(dx, dy);
+        if (this.dragBegan.has(ev.pointerId) && (panDx || panDy) && info.button === 0) {
+          this.camera.panByScreen(panDx, panDy);
           this.events.onChange?.();
         }
       }
