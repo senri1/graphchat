@@ -283,7 +283,7 @@ export class InputController {
       } catch { }
     }
 
-    this.setInteracting(true);
+    if (mode) this.setInteracting(true);
     this.recomputePinchState();
     ev.preventDefault();
   };
@@ -318,7 +318,10 @@ export class InputController {
         const hasDrag = this.dragBegan.has(ev.pointerId);
         if (!hasDrag) {
           const fromStart = hypot2(pos.x - info.startPos.x, pos.y - info.startPos.y);
-          if (fromStart >= this.dragThresholdPx) this.dragBegan.add(ev.pointerId);
+          if (fromStart >= this.dragThresholdPx) {
+            this.dragBegan.add(ev.pointerId);
+            if (info.button === 0) this.setInteracting(true);
+          }
         }
         if (this.dragBegan.has(ev.pointerId) && (dx || dy) && info.button === 0) {
           this.camera.panByScreen(dx, dy);
@@ -404,6 +407,7 @@ export class InputController {
       startZoom: this.camera.zoom,
       worldAnchor: this.camera.screenToWorld(center),
     };
+    this.setInteracting(true);
   }
 
   private updatePinch(): void {
