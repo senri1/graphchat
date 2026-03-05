@@ -361,6 +361,36 @@ type InkInputHudState = {
   selectionRangeCount: number;
 };
 
+type AndroidPerfHudState = {
+  fps: number;
+  avgFrameMs: number;
+  p95FrameMs: number;
+  slowFramePct: number;
+  interacting: boolean;
+  dpr: number;
+  zoom: number;
+  stageBackgroundMs: number;
+  stageGlassMs: number;
+  stageEdgesMs: number;
+  stageUpdatesMs: number;
+  stageNodesMs: number;
+  stageOverlaysMs: number;
+  topHotspot: string;
+};
+
+function isAndroidWebViewRuntime(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = String(navigator.userAgent ?? '').toLowerCase();
+  return ua.includes('android') && /\bwv\b/.test(ua);
+}
+
+const IS_ANDROID_WEBVIEW_RUNTIME = isAndroidWebViewRuntime();
+// Android WebView can stutter badly with large backdrop-filter kernels during canvas gestures.
+const ANDROID_WEBVIEW_UI_GLASS_BLUR_MAX_PX = 8;
+const ANDROID_WEBVIEW_UI_GLASS_SATURATE_MAX_PCT = 130;
+const ANDROID_PERF_HUD_SLOW_FRAME_MS = 16.7;
+const ANDROID_PERF_HUD_SAMPLE_WINDOW_MS = 2500;
+
 const DEFAULT_COMPOSER_FONT_FAMILY: FontFamilyKey = 'font-sans';
 const DEFAULT_COMPOSER_FONT_SIZE_PX = 14;
 
@@ -420,6 +450,14 @@ function parseBoolParam(params: URLSearchParams, key: string, fallback: boolean)
   if (raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on') return true;
   if (raw === '0' || raw === 'false' || raw === 'no' || raw === 'off') return false;
   return fallback;
+}
+
+function percentile(values: number[], p: number): number {
+  if (!values.length) return 0;
+  const sorted = values.slice().sort((a, b) => a - b);
+  const clamped = Math.max(0, Math.min(1, Number.isFinite(p) ? p : 0.95));
+  const idx = Math.max(0, Math.min(sorted.length - 1, Math.round((sorted.length - 1) * clamped)));
+  return sorted[idx] ?? 0;
 }
 
 function normalizeSendAllModelIds(value: unknown, allModelIds: string[]): string[] {
@@ -2571,7 +2609,16 @@ export default function App() {
   });
   const [inkHud, setInkHud] = useState<InkInputHudState | null>(null);
   const [debug, setDebug] = useState<WorldEngineDebug | null>(null);
+  const [androidPerfHud, setAndroidPerfHud] = useState<AndroidPerfHudState | null>(null);
+  const [androidPerfHudVisible, setAndroidPerfHudVisible] = useState<boolean>(() => {
+    if (!IS_ANDROID_WEBVIEW_RUNTIME) return false;
+    const params = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
+    return parseBoolParam(params, 'perfHud', true);
+  });
+  const androidPerfHudVisibleRef = useRef<boolean>(androidPerfHudVisible);
+  const androidPerfSamplesRef = useRef<Array<{ at: number; frameMs: number }>>([]);
   const debugBridgeEnabledRef = useRef<boolean>(DEFAULT_DEBUG_HUD_VISIBLE);
+  const debugStateEnabledRef = useRef<boolean>(DEFAULT_DEBUG_HUD_VISIBLE);
   const lastEngineInteractingRef = useRef<boolean | null>(null);
   const [engineReady, setEngineReady] = useState(false);
   const engineReadyRef = useRef(false);
@@ -2751,6 +2798,13 @@ export default function App() {
   }, [googleDriveSyncRun]);
 
   useEffect(() => {
+    androidPerfHudVisibleRef.current = androidPerfHudVisible;
+    if (androidPerfHudVisible) return;
+    androidPerfSamplesRef.current = [];
+    setAndroidPerfHud(null);
+  }, [androidPerfHudVisible]);
+
+  useEffect(() => {
     if (!googleDrivePullLockActive) return;
     const active = document.activeElement as HTMLElement | null;
     if (active && typeof active.blur === 'function') active.blur();
@@ -2787,6 +2841,66 @@ export default function App() {
   const sidebarFontFamilyRef = useRef<FontFamilyKey>(sidebarFontFamily);
   const sidebarFontSizePxRef = useRef<number>(sidebarFontSizePx);
   const backgroundLoadSeqRef = useRef(0);
+  const updateAndroidPerfHudFromDebug = (next: WorldEngineDebug | null | undefined): void => {
+    const perf = next?.framePerf;
+    if (!perf) return;
+
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const samples = androidPerfSamplesRef.current;
+    samples.push({ at: now, frameMs: perf.frameMs });
+
+    const cutoff = now - ANDROID_PERF_HUD_SAMPLE_WINDOW_MS;
+    while (samples.length > 0 && samples[0] && samples[0]!.at < cutoff) samples.shift();
+    while (samples.length > 160) samples.shift();
+
+    const frameMsList = samples.map((s) => s.frameMs).filter((v) => Number.isFinite(v) && v >= 0);
+    const frameMsSum = frameMsList.reduce((acc, v) => acc + v, 0);
+    const avgFrameMs = frameMsList.length ? frameMsSum / frameMsList.length : perf.frameMs;
+    const p95FrameMs = frameMsList.length ? percentile(frameMsList, 0.95) : perf.frameMs;
+    const slowFrames = frameMsList.filter((v) => v > ANDROID_PERF_HUD_SLOW_FRAME_MS).length;
+    const slowFramePct = frameMsList.length ? (slowFrames / frameMsList.length) * 100 : 0;
+
+    const fps = (() => {
+      if (samples.length < 2) return 0;
+      const first = samples[0]!;
+      const last = samples[samples.length - 1]!;
+      const spanMs = Math.max(1, last.at - first.at);
+      return ((samples.length - 1) * 1000) / spanMs;
+    })();
+
+    const stageUpdatesMs =
+      perf.updateFullTextNodeRastersMs +
+      perf.updateTextRastersMs +
+      perf.updateInkPrefaceRastersMs +
+      perf.updatePdfRastersMs;
+
+    const stageBuckets = [
+      { label: 'nodes', value: perf.drawNodesMs },
+      { label: 'overlays', value: perf.overlaysMs },
+      { label: 'updates', value: stageUpdatesMs },
+      { label: 'edges', value: perf.edgesMs },
+      { label: 'glass', value: perf.glassMs },
+      { label: 'background', value: perf.backgroundMs },
+    ].sort((a, b) => b.value - a.value);
+    const hotspot = stageBuckets[0] ?? { label: 'n/a', value: 0 };
+
+    setAndroidPerfHud({
+      fps,
+      avgFrameMs,
+      p95FrameMs,
+      slowFramePct,
+      interacting: Boolean(next?.interacting),
+      dpr: Number(next?.dpr) || 1,
+      zoom: Number(next?.zoom) || 1,
+      stageBackgroundMs: perf.backgroundMs,
+      stageGlassMs: perf.glassMs,
+      stageEdgesMs: perf.edgesMs,
+      stageUpdatesMs,
+      stageNodesMs: perf.drawNodesMs,
+      stageOverlaysMs: perf.overlaysMs,
+      topHotspot: `${hotspot.label} ${hotspot.value.toFixed(1)}ms`,
+    });
+  };
   const allModels = useMemo(() => listModels(), [listModels]);
   const allModelIds = useMemo(
     () => allModels.map((m) => String(m.id ?? '').trim()).filter(Boolean),
@@ -3034,8 +3148,14 @@ export default function App() {
       glassNodesBlurBackend === 'canvas' ? glassNodesSaturatePctCanvas : glassNodesSaturatePctWebgl;
     const uiBlurCssPx = glassNodesBlurBackend === 'webgl' ? uiGlassBlurCssPxWebgl : activeBlurCssPx;
     const uiSaturatePct = glassNodesBlurBackend === 'webgl' ? uiGlassSaturatePctWebgl : activeSaturatePct;
-    root.style.setProperty('--ui-glass-blur', `${Math.round(uiBlurCssPx)}px`);
-    root.style.setProperty('--ui-glass-saturate', `${Math.round(uiSaturatePct)}%`);
+    const effectiveUiBlurCssPx = IS_ANDROID_WEBVIEW_RUNTIME
+      ? Math.min(uiBlurCssPx, ANDROID_WEBVIEW_UI_GLASS_BLUR_MAX_PX)
+      : uiBlurCssPx;
+    const effectiveUiSaturatePct = IS_ANDROID_WEBVIEW_RUNTIME
+      ? Math.min(uiSaturatePct, ANDROID_WEBVIEW_UI_GLASS_SATURATE_MAX_PCT)
+      : uiSaturatePct;
+    root.style.setProperty('--ui-glass-blur', `${Math.round(effectiveUiBlurCssPx)}px`);
+    root.style.setProperty('--ui-glass-saturate', `${Math.round(effectiveUiSaturatePct)}%`);
     const t = Math.max(0, Math.min(1, glassNodesUnderlayAlpha));
     const uiMinAlpha = 0.12;
     const uiMaxAlpha = 0.6;
@@ -3374,22 +3494,27 @@ export default function App() {
     // keep the debug bridge off unless HUD/menus need React-driven repositioning.
     const shouldReceiveDebugFrames =
       debugHudVisible ||
+      androidPerfHudVisible ||
       nodeMenuId != null ||
       editNodeSendMenuId != null ||
       replySpawnMenuId != null;
+    const shouldUpdateDebugState =
+      debugHudVisible || nodeMenuId != null || editNodeSendMenuId != null || replySpawnMenuId != null;
 
     const wasEnabled = debugBridgeEnabledRef.current;
     debugBridgeEnabledRef.current = shouldReceiveDebugFrames;
+    debugStateEnabledRef.current = shouldUpdateDebugState;
 
-    if (!shouldReceiveDebugFrames) {
+    if (!shouldReceiveDebugFrames || !shouldUpdateDebugState) {
       setDebug(null);
-      return;
     }
+
+    if (!shouldReceiveDebugFrames) return;
 
     if (!wasEnabled) {
       engineRef.current?.requestRender();
     }
-  }, [debugHudVisible, nodeMenuId, editNodeSendMenuId, replySpawnMenuId]);
+  }, [debugHudVisible, androidPerfHudVisible, nodeMenuId, editNodeSendMenuId, replySpawnMenuId]);
 
   const applyVisualSettings = (chatId: string) => {
     const engine = engineRef.current;
@@ -5598,7 +5723,8 @@ export default function App() {
         schedulePersistSoon();
       }
       lastEngineInteractingRef.current = nextInteracting;
-      if (debugBridgeEnabledRef.current) setDebug(next);
+      if (debugStateEnabledRef.current) setDebug(next);
+      if (androidPerfHudVisibleRef.current) updateAndroidPerfHudFromDebug(next);
     };
     engine.onUiState = (next) => {
       setUi(next);
@@ -10842,6 +10968,49 @@ export default function App() {
                 ) : null}
               </>
             ) : null}
+          </div>
+        ) : null}
+        {androidPerfHudVisible ? (
+          <div
+            className="perfHud"
+            onPointerDown={(e) => e.stopPropagation()}
+            onPointerMove={(e) => e.stopPropagation()}
+            onPointerUp={(e) => e.stopPropagation()}
+            onWheel={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="perfHud__close"
+              aria-label="Hide Android performance HUD"
+              title="Hide Android performance HUD"
+              onClick={() => setAndroidPerfHudVisible(false)}
+            >
+              ×
+            </button>
+            <div className="perfHud__title">Android Perf</div>
+            {androidPerfHud ? (
+              <>
+                <div className="perfHud__line">
+                  fps {androidPerfHud.fps.toFixed(1)} • avg {androidPerfHud.avgFrameMs.toFixed(1)}ms • p95{' '}
+                  {androidPerfHud.p95FrameMs.toFixed(1)}ms
+                </div>
+                <div className="perfHud__line">
+                  slow&gt;16.7ms {androidPerfHud.slowFramePct.toFixed(0)}% • {androidPerfHud.interacting ? 'interacting' : 'idle'} •
+                  dpr {androidPerfHud.dpr.toFixed(2)} • z {androidPerfHud.zoom.toFixed(2)}
+                </div>
+                <div className="perfHud__line">
+                  bg {androidPerfHud.stageBackgroundMs.toFixed(1)} • glass {androidPerfHud.stageGlassMs.toFixed(1)} • edges{' '}
+                  {androidPerfHud.stageEdgesMs.toFixed(1)}
+                </div>
+                <div className="perfHud__line">
+                  updates {androidPerfHud.stageUpdatesMs.toFixed(1)} • nodes {androidPerfHud.stageNodesMs.toFixed(1)} • overlays{' '}
+                  {androidPerfHud.stageOverlaysMs.toFixed(1)}
+                </div>
+                <div className="perfHud__line perfHud__line--muted">hot {androidPerfHud.topHotspot}</div>
+              </>
+            ) : (
+              <div className="perfHud__line perfHud__line--muted">collecting frame samples…</div>
+            )}
           </div>
         ) : null}
       </div>

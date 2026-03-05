@@ -643,6 +643,61 @@ body {
   -webkit-backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturate));
 }
 
+.perfHud {
+  position: absolute;
+  left: 10px;
+  bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  z-index: 31;
+  width: min(360px, calc(100vw - 20px));
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(8, 10, 14, 0.86);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.38);
+  color: rgba(255, 255, 255, 0.94);
+  font-size: 11px;
+  line-height: 1.35;
+  user-select: none;
+  pointer-events: auto;
+  touch-action: manipulation;
+}
+
+.perfHud__title {
+  font-size: 11px;
+  font-weight: 700;
+  margin: 0 18px 4px 0;
+  letter-spacing: 0.02em;
+}
+
+.perfHud__line {
+  opacity: 0.9;
+}
+
+.perfHud__line--muted {
+  opacity: 0.72;
+}
+
+.perfHud__close {
+  position: absolute;
+  top: 4px;
+  right: 5px;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.perfHud__close:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.96);
+}
+
 .controls {
   position: absolute;
   right: 10px;

@@ -729,6 +729,7 @@ export class WorldEngine {
   private externalHeaderPlacementPreview: { nodeId: string; endpointWorld: Vec2 } | null = null;
   private suppressTapPointerIds = new Set<number>();
   private readonly touchUi: boolean;
+  private readonly androidWebView: boolean;
   private spawnEditNodeByDrawEnabled = false;
   private spawnInkNodeByDrawEnabled = false;
   private mouseClickRecenterEnabled = true;
@@ -1080,6 +1081,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const nav = typeof navigator !== 'undefined' ? navigator : null;
     const ua = (nav?.userAgent ?? '').toLowerCase();
     const isAndroid = ua.includes('android');
+    this.androidWebView = isAndroid && /\bwv\b/.test(ua);
     const ctx = this.canvas.getContext('2d', { alpha: false, desynchronized: !isAndroid });
     if (!ctx) throw new Error('Missing 2D canvas context');
     this.ctx = ctx;
@@ -4121,7 +4123,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   resize(cssW: number, cssH: number, dpr?: number): void {
     const w = Math.max(1, Math.round(cssW));
     const h = Math.max(1, Math.round(cssH));
-    const nextDpr = clamp(dpr ?? (typeof devicePixelRatio === 'number' ? devicePixelRatio : 1), 1, 3);
+    const dprCap = this.androidWebView ? 2 : 3;
+    const nextDpr = clamp(dpr ?? (typeof devicePixelRatio === 'number' ? devicePixelRatio : 1), 1, dprCap);
 
     const changed = w !== this.cssW || h !== this.cssH || nextDpr !== this.dpr;
     this.cssW = w;
@@ -10311,6 +10314,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
   private drawNodeGlassUnderlays(): void {
     if (!this.glassNodesEnabled) return;
+    if (this.androidWebView && this.interacting) return;
     const cache = this.ensureBackgroundCache();
     if (!cache) return;
 
