@@ -302,6 +302,10 @@ export class TextLod2Overlay {
   private prevOverflowY: string | null = null;
   private lockScrollTop: number | null = null;
   private lockScrollLeft: number | null = null;
+  private scrollCommitTimer: number | null = null;
+  private pendingScrollNodeId: string | null = null;
+  private pendingScrollTop = 0;
+  private pendingScrollLeft = 0;
 
   onRequestCloseSelection?: () => void;
   onRequestAction?: (action: TextLod2Action) => void;
@@ -325,7 +329,7 @@ export class TextLod2Overlay {
     client?: { x: number; y: number },
     trigger?: AnnotatePointerTrigger | null,
   ) => void;
-  onScroll?: (nodeId: string, scrollTop: number, scrollLeft: number) => void;
+  onScrollCommit?: (nodeId: string, scrollTop: number, scrollLeft: number) => void;
 
   setBaseTextStyle(style: { fontFamily?: string; fontSizePx?: number; lineHeight?: number; color?: string }): void {
     try {
@@ -568,6 +572,57 @@ export class TextLod2Overlay {
     if (handled) e.preventDefault();
   };
 
+  private readonly onRootPointerUpOrCancel = () => {
+    this.flushPendingScrollCommit();
+  };
+
+  private clearScrollCommitTimer(): void {
+    if (this.scrollCommitTimer == null) return;
+    try {
+      window.clearTimeout(this.scrollCommitTimer);
+    } catch {
+      // ignore
+    }
+    this.scrollCommitTimer = null;
+  }
+
+  private recordPendingScroll(nodeId?: string | null): void {
+    const targetNodeId = typeof nodeId === 'string' && nodeId ? nodeId : this.visibleNodeId;
+    if (!targetNodeId) return;
+    this.pendingScrollNodeId = targetNodeId;
+    this.pendingScrollTop = Math.max(0, Number(this.content.scrollTop) || 0);
+    this.pendingScrollLeft = Math.max(0, Number(this.content.scrollLeft) || 0);
+  }
+
+  // Scroll is rendered natively by the overlay, so only commit it back once scrolling settles.
+  private scheduleScrollCommit(delayMs = 160): void {
+    this.recordPendingScroll();
+    if (!this.pendingScrollNodeId) return;
+    this.clearScrollCommitTimer();
+    this.scrollCommitTimer = window.setTimeout(() => {
+      this.scrollCommitTimer = null;
+      this.flushPendingScrollCommit();
+    }, delayMs);
+  }
+
+  private flushPendingScrollCommit(): void {
+    const nodeId = this.pendingScrollNodeId;
+    if (!nodeId) return;
+
+    this.clearScrollCommitTimer();
+    const scrollTop = Math.max(0, Number(this.pendingScrollTop) || 0);
+    const scrollLeft = Math.max(0, Number(this.pendingScrollLeft) || 0);
+    this.pendingScrollNodeId = null;
+    this.pendingScrollTop = 0;
+    this.pendingScrollLeft = 0;
+
+    try {
+      this.onScrollCommit?.(nodeId, scrollTop, scrollLeft);
+    } catch {
+      // ignore
+    }
+  }
+
   private readonly onContentScroll = () => {
     if (this.suppressScrollCallback) return;
     if (this.forwardedPenPointerId != null && (this.lockScrollTop != null || this.lockScrollLeft != null)) {
@@ -591,13 +646,7 @@ export class TextLod2Overlay {
       }
       return;
     }
-    const nodeId = this.visibleNodeId;
-    if (!nodeId) return;
-    try {
-      this.onScroll?.(nodeId, this.content.scrollTop || 0, this.content.scrollLeft || 0);
-    } catch {
-      // ignore
-    }
+    this.scheduleScrollCommit();
   };
 
   private finishNativeSelection = () => {
@@ -787,6 +836,8 @@ export class TextLod2Overlay {
     root.addEventListener('pointerdown', this.onRootPointerDown);
     root.addEventListener('click', this.onRootClick);
     root.addEventListener('dblclick', this.onRootDoubleClick);
+    root.addEventListener('pointerup', this.onRootPointerUpOrCancel);
+    root.addEventListener('pointercancel', this.onRootPointerUpOrCancel);
 
     const menu = document.createElement('div');
     menu.className = 'gc-selectionMenu';
@@ -957,9 +1008,19 @@ export class TextLod2Overlay {
   }
 
   dispose(): void {
+    this.clearScrollCommitTimer();
+    this.pendingScrollNodeId = null;
+    this.pendingScrollTop = 0;
+    this.pendingScrollLeft = 0;
     try {
       document.removeEventListener('pointerdown', this.onDocPointerDownCapture, true);
       window.removeEventListener('keydown', this.onKeyDown);
+    } catch {
+      // ignore
+    }
+    try {
+      this.root.removeEventListener('pointerup', this.onRootPointerUpOrCancel as any);
+      this.root.removeEventListener('pointercancel', this.onRootPointerUpOrCancel as any);
     } catch {
       // ignore
     }
@@ -1027,6 +1088,8 @@ export class TextLod2Overlay {
     const nodeChanged = prevNodeId !== opts.nodeId;
     const hashChanged = prevHash !== opts.contentHash;
 
+    if (nodeChanged) this.flushPendingScrollCommit();
+
     this.visibleNodeId = opts.nodeId;
     this.mode = opts.mode;
     this.interactive = Boolean(opts.interactive);
@@ -1072,7 +1135,7 @@ export class TextLod2Overlay {
 
     if (
       this.forwardedPenPointerId == null &&
-      (nodeChanged || hashChanged) &&
+      nodeChanged &&
       (Number.isFinite(opts.scrollTop as number) || Number.isFinite(opts.scrollLeft as number))
     ) {
       const desiredTop = Number.isFinite(opts.scrollTop as number) ? Math.max(0, Number(opts.scrollTop) || 0) : null;
@@ -1095,6 +1158,7 @@ export class TextLod2Overlay {
   }
 
   hide(): void {
+    this.flushPendingScrollCommit();
     this.visibleNodeId = null;
     this.mode = null;
     this.contentHash = null;

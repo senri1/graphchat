@@ -6634,7 +6634,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         }
       },
     });
-    overlay.onScroll = (nodeId, scrollTop, scrollLeft) => {
+    overlay.onScrollCommit = (nodeId, scrollTop, scrollLeft) => {
       const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === nodeId) ?? null;
       if (!node) return;
       if (node.id === this.editingNodeId) return;
