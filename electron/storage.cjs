@@ -556,6 +556,12 @@ async function pushStorageToCloud(app, opts = {}) {
     throw new Error(`Cloud has existing revision ${remoteRevision}. Pull first on this device before pushing.`);
   }
 
+  try {
+    await performStorageSnapshotMaintenance(app);
+  } catch {
+    // continue with the push even if maintenance fails
+  }
+
   const revision = makeCloudRevisionId();
   const snapshotPath = cloudSnapshotArtifactPath(cloudDir, revision);
   const tmpSnapshotPath = `${snapshotPath}.tmp-${process.pid}-${Date.now()}`;
@@ -770,6 +776,10 @@ async function createGoogleDriveSnapshotArtifact(args) {
   if (!revision) throw new Error('Revision is missing.');
 
   const onProgress = typeof args?.onProgress === 'function' ? args.onProgress : null;
+  const packagePhaseIndexRaw = Number(args?.packagePhaseIndex);
+  const packagePhaseCountRaw = Number(args?.packagePhaseCount);
+  const packagePhaseIndex = Number.isFinite(packagePhaseIndexRaw) && packagePhaseIndexRaw > 0 ? Math.floor(packagePhaseIndexRaw) : 2;
+  const packagePhaseCount = Number.isFinite(packagePhaseCountRaw) && packagePhaseCountRaw > 0 ? Math.floor(packagePhaseCountRaw) : 5;
   const emit = (payload) => safeProgressReport(onProgress, payload);
 
   const entries = [];
@@ -830,8 +840,8 @@ async function createGoogleDriveSnapshotArtifact(args) {
       emit({
         done: false,
         stage: 'package',
-        phaseIndex: 2,
-        phaseCount: 5,
+        phaseIndex: packagePhaseIndex,
+        phaseCount: packagePhaseCount,
         message: `Packing snapshot... (${writtenFiles}/${entries.length})`,
         indeterminate: false,
         completed: writtenFiles,
@@ -954,6 +964,7 @@ async function collectLocalFilesRecursively(rootDir) {
     for (const entry of entries) {
       const name = String(entry.name ?? '');
       if (!name || name === '.' || name === '..') continue;
+      if (isAtomicTempArtifactName(name)) continue;
       const relPath = relDir ? path.posix.join(relDir, name) : name;
       if (entry.isDirectory()) {
         stack.push(relPath);
@@ -1597,7 +1608,7 @@ async function pushStorageToGoogleDrive(app, opts = {}) {
   emitProgress({
     stage: 'prepare',
     phaseIndex: 1,
-    phaseCount: 5,
+    phaseCount: 6,
     message: 'Checking Google Drive status...',
   });
 
@@ -1621,7 +1632,20 @@ async function pushStorageToGoogleDrive(app, opts = {}) {
   emitProgress({
     stage: 'prepare',
     phaseIndex: 1,
-    phaseCount: 5,
+    phaseCount: 6,
+    message: 'Cleaning local storage...',
+  });
+
+  try {
+    await performStorageSnapshotMaintenance(app);
+  } catch {
+    // continue with the push even if maintenance fails
+  }
+
+  emitProgress({
+    stage: 'prepare',
+    phaseIndex: 2,
+    phaseCount: 6,
     message: 'Scanning local files...',
   });
 
@@ -1631,8 +1655,8 @@ async function pushStorageToGoogleDrive(app, opts = {}) {
   safeProgressReport(reportProgress, {
     done: false,
     stage: 'package',
-    phaseIndex: 2,
-    phaseCount: 5,
+    phaseIndex: 3,
+    phaseCount: 6,
     message: `Packing snapshot... (0/${localFiles.length})`,
     indeterminate: localFiles.length === 0,
     completed: 0,
@@ -1644,6 +1668,8 @@ async function pushStorageToGoogleDrive(app, opts = {}) {
     files: localFiles,
     revision,
     onProgress: reportProgress,
+    packagePhaseIndex: 3,
+    packagePhaseCount: 6,
   });
   const artifactPath = artifact.artifactPath;
 
@@ -1651,8 +1677,8 @@ async function pushStorageToGoogleDrive(app, opts = {}) {
     safeProgressReport(reportProgress, {
       done: false,
       stage: 'upload',
-      phaseIndex: 3,
-      phaseCount: 5,
+      phaseIndex: 4,
+      phaseCount: 6,
       message: 'Uploading snapshot artifact...',
       indeterminate: false,
       completed: 0,
@@ -1674,8 +1700,8 @@ async function pushStorageToGoogleDrive(app, opts = {}) {
 
   emitProgress({
     stage: 'finalize',
-    phaseIndex: 4,
-    phaseCount: 5,
+    phaseIndex: 5,
+    phaseCount: 6,
     message: 'Updating remote revision head...',
   });
 
@@ -1690,8 +1716,8 @@ async function pushStorageToGoogleDrive(app, opts = {}) {
 
   emitProgress({
     stage: 'finalize',
-    phaseIndex: 5,
-    phaseCount: 5,
+    phaseIndex: 6,
+    phaseCount: 6,
     message: 'Pruning older remote snapshots...',
   });
   try {
@@ -1705,8 +1731,8 @@ async function pushStorageToGoogleDrive(app, opts = {}) {
 
   emitProgress({
     stage: 'finalize',
-    phaseIndex: 5,
-    phaseCount: 5,
+    phaseIndex: 6,
+    phaseCount: 6,
     message: 'Finalizing local sync state...',
   });
 
@@ -1885,6 +1911,294 @@ async function isDirectoryEmpty(absPath) {
   }
 }
 
+async function ensurePayloadRecordExists(app, key, payload) {
+  const trimmedKey = asTrimmedString(key);
+  if (!trimmedKey) return false;
+  const payloadFile = payloadPathForKey(app, trimmedKey);
+  if (await fileExists(payloadFile)) return true;
+  await writeJsonAtomic(payloadFile, {
+    key: trimmedKey,
+    json: payload,
+    createdAt: Date.now(),
+  });
+  return true;
+}
+
+async function compactPersistedChatStateForSync(app, chatId, state) {
+  const trimmedChatId = asTrimmedString(chatId);
+  const nodes = Array.isArray(state?.nodes) ? state.nodes : null;
+  const referencedPayloadKeys = new Set();
+  if (!nodes) return { changed: false, referencedPayloadKeys };
+
+  let changed = false;
+  for (const node of nodes) {
+    if (!node || typeof node !== 'object') continue;
+    const nodeId = asTrimmedString(node.id);
+    const kind = asTrimmedString(node.kind);
+
+    if (kind === 'text') {
+      const author = asTrimmedString(node.author);
+
+      if (author === 'user') {
+        const explicitKey = asTrimmedString(node.apiRequestKey);
+        const derivedKey = !explicitKey && trimmedChatId && nodeId ? `${trimmedChatId}/${nodeId}/req` : '';
+        const key = explicitKey || derivedKey;
+        const hasInlinePayload = Object.prototype.hasOwnProperty.call(node, 'apiRequest') && node.apiRequest !== undefined;
+        if (key) referencedPayloadKeys.add(key);
+        if (key && hasInlinePayload) {
+          try {
+            if (await ensurePayloadRecordExists(app, key, node.apiRequest)) {
+              if (explicitKey !== key) {
+                node.apiRequestKey = key;
+                changed = true;
+              }
+              delete node.apiRequest;
+              changed = true;
+            }
+          } catch {
+            // leave inline payload in place if it cannot be migrated safely
+          }
+        }
+      } else if (author === 'assistant') {
+        const explicitKey = asTrimmedString(node.apiResponseKey);
+        const derivedKey = !explicitKey && trimmedChatId && nodeId ? `${trimmedChatId}/${nodeId}/res` : '';
+        const key = explicitKey || derivedKey;
+        const hasInlinePayload = Object.prototype.hasOwnProperty.call(node, 'apiResponse') && node.apiResponse !== undefined;
+        if (key) referencedPayloadKeys.add(key);
+        if (key && hasInlinePayload) {
+          try {
+            if (await ensurePayloadRecordExists(app, key, node.apiResponse)) {
+              if (explicitKey !== key) {
+                node.apiResponseKey = key;
+                changed = true;
+              }
+              delete node.apiResponse;
+              changed = true;
+            }
+          } catch {
+            // leave inline payload in place if it cannot be migrated safely
+          }
+        }
+      }
+      continue;
+    }
+
+    if (kind !== 'ink') continue;
+    const key = trimmedChatId && nodeId ? `${trimmedChatId}/${nodeId}/req` : '';
+    const hasInlinePayload = Object.prototype.hasOwnProperty.call(node, 'apiRequest') && node.apiRequest !== undefined;
+    if (key) referencedPayloadKeys.add(key);
+    if (key && hasInlinePayload) {
+      try {
+        if (await ensurePayloadRecordExists(app, key, node.apiRequest)) {
+          delete node.apiRequest;
+          changed = true;
+        }
+      } catch {
+        // leave inline payload in place if it cannot be migrated safely
+      }
+    }
+  }
+
+  return { changed, referencedPayloadKeys };
+}
+
+async function deleteStaleTempFilesInDir(rootDir) {
+  const root = path.resolve(rootDir);
+  if (!(await dirExists(root))) {
+    return { removedFiles: 0, removedBytes: 0 };
+  }
+
+  let removedFiles = 0;
+  let removedBytes = 0;
+  const stack = [root];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) continue;
+
+    let entries = [];
+    try {
+      entries = await fs.readdir(current, { withFileTypes: true });
+    } catch (err) {
+      if (err && typeof err === 'object' && err.code === 'ENOENT') continue;
+      throw err;
+    }
+
+    for (const entry of entries) {
+      const name = asTrimmedString(entry?.name);
+      if (!name || name === '.' || name === '..') continue;
+      const absPath = path.join(current, name);
+      if (entry.isDirectory()) {
+        stack.push(absPath);
+        continue;
+      }
+      if (!entry.isFile() || !isAtomicTempArtifactName(name)) continue;
+
+      let size = 0;
+      try {
+        const stat = await fs.stat(absPath);
+        size = Number.isFinite(Number(stat?.size)) ? Math.max(0, Number(stat.size)) : 0;
+      } catch {
+        size = 0;
+      }
+      await removePathIfExists(absPath);
+      removedFiles += 1;
+      removedBytes += size;
+    }
+  }
+
+  return { removedFiles, removedBytes };
+}
+
+async function deleteUnreferencedChatPayloadFiles(app, referencedPayloadKeys, protectedChatIds = new Set()) {
+  const root = chatsRootDir(app);
+  if (!(await dirExists(root))) {
+    return { removedFiles: 0, removedBytes: 0 };
+  }
+
+  let removedFiles = 0;
+  let removedBytes = 0;
+  let entries = [];
+  try {
+    entries = await fs.readdir(root, { withFileTypes: true });
+  } catch (err) {
+    if (err && typeof err === 'object' && err.code === 'ENOENT') {
+      return { removedFiles: 0, removedBytes: 0 };
+    }
+    throw err;
+  }
+
+  for (const entry of entries) {
+    if (!entry?.isDirectory?.()) continue;
+    const encodedChatId = asTrimmedString(entry.name);
+    if (!encodedChatId) continue;
+
+    const chatId = asTrimmedString(decodeFsSegment(encodedChatId)) || encodedChatId;
+    if (protectedChatIds.has(chatId)) continue;
+
+    const payloadDir = path.join(root, encodedChatId, 'payloads');
+    if (!(await dirExists(payloadDir))) continue;
+
+    let payloadEntries = [];
+    try {
+      payloadEntries = await fs.readdir(payloadDir, { withFileTypes: true });
+    } catch (err) {
+      if (err && typeof err === 'object' && err.code === 'ENOENT') continue;
+      throw err;
+    }
+
+    for (const payloadEntry of payloadEntries) {
+      if (!payloadEntry?.isFile?.()) continue;
+      const payloadName = asTrimmedString(payloadEntry.name);
+      const match = /^(.*)\.(req|res)\.json$/i.exec(payloadName);
+      if (!match) continue;
+
+      const nodeId = asTrimmedString(decodeFsSegment(match[1]));
+      const key = nodeId ? `${chatId}/${nodeId}/${match[2]}` : '';
+      if (!key || referencedPayloadKeys.has(key)) continue;
+
+      const absPath = path.join(payloadDir, payloadName);
+      let size = 0;
+      try {
+        const stat = await fs.stat(absPath);
+        size = Number.isFinite(Number(stat?.size)) ? Math.max(0, Number(stat.size)) : 0;
+      } catch {
+        size = 0;
+      }
+      await removePathIfExists(absPath);
+      removedFiles += 1;
+      removedBytes += size;
+    }
+
+    if (await isDirectoryEmpty(payloadDir)) {
+      await removePathIfExists(payloadDir);
+    }
+  }
+
+  return { removedFiles, removedBytes };
+}
+
+async function performStorageSnapshotMaintenance(app) {
+  const localRoot = storageRootDir(app);
+  const stats = {
+    removedTempFiles: 0,
+    removedTempBytes: 0,
+    compactedStates: 0,
+    removedOrphanChatDirs: 0,
+    removedPayloadFiles: 0,
+    removedPayloadBytes: 0,
+  };
+
+  if (!(await dirExists(localRoot))) return stats;
+
+  const tmpStats = await deleteStaleTempFilesInDir(localRoot);
+  stats.removedTempFiles += tmpStats.removedFiles;
+  stats.removedTempBytes += tmpStats.removedBytes;
+
+  const chatsRoot = chatsRootDir(app);
+  if (!(await dirExists(chatsRoot))) return stats;
+
+  const referencedPayloadKeys = new Set();
+  const protectedChatIds = new Set();
+  let chatEntries = [];
+  try {
+    chatEntries = await fs.readdir(chatsRoot, { withFileTypes: true });
+  } catch (err) {
+    if (err && typeof err === 'object' && err.code === 'ENOENT') return stats;
+    throw err;
+  }
+
+  for (const entry of chatEntries) {
+    if (!entry?.isDirectory?.()) continue;
+
+    const encodedChatId = asTrimmedString(entry.name);
+    if (!encodedChatId) continue;
+    const chatId = asTrimmedString(decodeFsSegment(encodedChatId)) || encodedChatId;
+    const statePath = chatStatePath(app, chatId);
+    const metaPath = chatMetaPath(app, chatId);
+    const chatDirPath = path.join(chatsRoot, encodedChatId);
+    const hasState = await fileExists(statePath);
+    const hasMeta = await fileExists(metaPath);
+
+    if (!hasState && !hasMeta) {
+      await removePathIfExists(chatDirPath);
+      stats.removedOrphanChatDirs += 1;
+      continue;
+    }
+
+    if (!hasState) {
+      protectedChatIds.add(chatId);
+      continue;
+    }
+
+    let state = null;
+    try {
+      state = await readJsonOrNull(statePath);
+    } catch {
+      state = null;
+    }
+    if (!state || typeof state !== 'object') {
+      protectedChatIds.add(chatId);
+      continue;
+    }
+
+    try {
+      const compacted = await compactPersistedChatStateForSync(app, chatId, state);
+      for (const key of compacted.referencedPayloadKeys) referencedPayloadKeys.add(key);
+      if (compacted.changed) {
+        await writeJsonAtomic(statePath, state);
+        stats.compactedStates += 1;
+      }
+    } catch {
+      protectedChatIds.add(chatId);
+    }
+  }
+
+  const payloadStats = await deleteUnreferencedChatPayloadFiles(app, referencedPayloadKeys, protectedChatIds);
+  stats.removedPayloadFiles += payloadStats.removedFiles;
+  stats.removedPayloadBytes += payloadStats.removedBytes;
+  return stats;
+}
+
 function storageLocationInfo(app) {
   const defaultBaseDir = defaultStorageBaseDir(app);
   const currentBaseDir = currentStorageBaseDir(app);
@@ -1997,6 +2311,10 @@ function payloadPathForKey(app, key) {
   return path.join(payloadsRootDir(app), `${encodeFsSegment(raw, 'Payload key')}.json`);
 }
 
+function isAtomicTempArtifactName(name) {
+  return asTrimmedString(name).includes('.tmp-');
+}
+
 function generateAttachmentKey(prefix = 'att') {
   const p = String(prefix ?? '')
     .replace(/[^a-z0-9_-]/gi, '')
@@ -2025,8 +2343,13 @@ function toBuffer(value) {
 async function writeFileAtomic(absPath, data, opts = {}) {
   await fs.mkdir(path.dirname(absPath), { recursive: true });
   const tmpPath = `${absPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  await fs.writeFile(tmpPath, data, opts);
-  await fs.rename(tmpPath, absPath);
+  try {
+    await fs.writeFile(tmpPath, data, opts);
+    await fs.rename(tmpPath, absPath);
+  } catch (err) {
+    await removePathIfExists(tmpPath);
+    throw err;
+  }
 }
 
 async function writeJsonAtomic(absPath, value) {

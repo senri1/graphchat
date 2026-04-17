@@ -392,7 +392,7 @@ const DEFAULT_INK_SEND_CROP_ENABLED = false;
 const DEFAULT_INK_SEND_DOWNSCALE_ENABLED = false;
 const DEFAULT_SEND_ALL_ENABLED = false;
 const DEFAULT_SEND_ALL_COMPOSER_ENABLED = false;
-const DEFAULT_CLEANUP_CHAT_FOLDERS_ON_DELETE = false;
+const DEFAULT_CLEANUP_CHAT_FOLDERS_ON_DELETE = true;
 const MULTI_SEND_ASSISTANT_MAX_W_PX = 800;
 const MULTI_SEND_ASSISTANT_GAP_X_PX = 26;
 
@@ -727,6 +727,77 @@ function collectAllReferencedAttachmentKeys(args: {
   }
 
   return referenced;
+}
+
+async function ensurePayloadStoredForPersistence(key: string, payload: unknown): Promise<boolean> {
+  const trimmed = String(key ?? '').trim();
+  if (!trimmed) return false;
+  try {
+    const existing = await getPayload(trimmed);
+    if (existing === null) {
+      await putPayload({ key: trimmed, json: payload });
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function compactChatStateForPersistence(chatId: string, state: WorldEngineChatState): Promise<WorldEngineChatState> {
+  const trimmedChatId = String(chatId ?? '').trim();
+  const nextNodes = Array.isArray(state.nodes) ? state.nodes.map((node) => ({ ...node })) : [];
+  let changed = false;
+
+  for (const rawNode of nextNodes) {
+    const node = rawNode as any;
+    if (!node || typeof node !== 'object') continue;
+
+    const nodeId = typeof node.id === 'string' ? node.id.trim() : '';
+    const kind = typeof node.kind === 'string' ? node.kind.trim() : '';
+
+    if (kind === 'text') {
+      const author = typeof node.author === 'string' ? node.author.trim() : '';
+
+      if (author === 'user') {
+        const explicitKey = typeof node.apiRequestKey === 'string' ? node.apiRequestKey.trim() : '';
+        const derivedKey = !explicitKey && trimmedChatId && nodeId ? `${trimmedChatId}/${nodeId}/req` : '';
+        const key = explicitKey || derivedKey;
+        const hasInlinePayload = Object.prototype.hasOwnProperty.call(node, 'apiRequest') && node.apiRequest !== undefined;
+        if (key && hasInlinePayload && (await ensurePayloadStoredForPersistence(key, node.apiRequest))) {
+          if (explicitKey !== key) {
+            node.apiRequestKey = key;
+            changed = true;
+          }
+          delete node.apiRequest;
+          changed = true;
+        }
+      } else if (author === 'assistant') {
+        const explicitKey = typeof node.apiResponseKey === 'string' ? node.apiResponseKey.trim() : '';
+        const derivedKey = !explicitKey && trimmedChatId && nodeId ? `${trimmedChatId}/${nodeId}/res` : '';
+        const key = explicitKey || derivedKey;
+        const hasInlinePayload = Object.prototype.hasOwnProperty.call(node, 'apiResponse') && node.apiResponse !== undefined;
+        if (key && hasInlinePayload && (await ensurePayloadStoredForPersistence(key, node.apiResponse))) {
+          if (explicitKey !== key) {
+            node.apiResponseKey = key;
+            changed = true;
+          }
+          delete node.apiResponse;
+          changed = true;
+        }
+      }
+      continue;
+    }
+
+    if (kind !== 'ink') continue;
+    const key = trimmedChatId && nodeId ? `${trimmedChatId}/${nodeId}/req` : '';
+    const hasInlinePayload = Object.prototype.hasOwnProperty.call(node, 'apiRequest') && node.apiRequest !== undefined;
+    if (key && hasInlinePayload && (await ensurePayloadStoredForPersistence(key, node.apiRequest))) {
+      delete node.apiRequest;
+      changed = true;
+    }
+  }
+
+  return changed ? { ...state, nodes: nextNodes as ChatNode[] } : state;
 }
 
 function findChatNameAndFolderPath(
@@ -3310,11 +3381,15 @@ export default function App() {
           const state = chatStatesRef.current.get(chatId);
           if (state) {
             try {
+              const compactedState = await compactChatStateForPersistence(chatId, state);
               await putChatStateRecord(chatId, {
-                camera: state.camera,
-                nodes: state.nodes,
-                worldInkStrokes: state.worldInkStrokes,
+                camera: compactedState.camera,
+                nodes: compactedState.nodes,
+                worldInkStrokes: compactedState.worldInkStrokes,
               });
+              if (compactedState !== state) {
+                chatStatesRef.current.set(chatId, compactedState);
+              }
             } catch {
               // ignore
             }
