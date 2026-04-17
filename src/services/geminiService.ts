@@ -109,6 +109,40 @@ function extractChunkTextDelta(chunk: any): string {
   return parts.map((p: any) => (typeof p?.text === 'string' ? String(p.text) : '')).join('');
 }
 
+function cloneJsonSafe<T>(value: T): T {
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return value;
+  }
+}
+
+function isPlainTextPart(part: any): boolean {
+  if (!part || typeof part !== 'object' || Array.isArray(part)) return false;
+  if (typeof part.text !== 'string') return false;
+  const keys = Object.keys(part);
+  return keys.length === 1 && keys[0] === 'text';
+}
+
+function cloneContentParts(parts: any): any[] {
+  if (!Array.isArray(parts)) return [];
+  return parts
+    .map((part) => cloneJsonSafe(part))
+    .filter((part) => !!part && typeof part === 'object' && !Array.isArray(part));
+}
+
+function appendChunkParts(acc: any[], chunk: any): void {
+  const parts = cloneContentParts(chunk?.candidates?.[0]?.content?.parts);
+  for (const part of parts) {
+    const prev = acc[acc.length - 1];
+    if (isPlainTextPart(prev) && isPlainTextPart(part)) {
+      prev.text += part.text;
+      continue;
+    }
+    acc.push(part);
+  }
+}
+
 function injectAbortSignalIntoRequest(args: { request: any; signal?: AbortSignal }): any {
   const baseRequest: any = args.request || {};
   const baseConfig: any =
@@ -124,26 +158,31 @@ function buildAggregatedRawFromStream(args: {
   finalChunk: any;
   fullText: string;
   request: any;
+  streamedParts: any[];
 }): any {
-  const base = (() => {
-    try {
-      return JSON.parse(JSON.stringify(args.finalChunk));
-    } catch {
-      return args.finalChunk;
-    }
-  })();
+  const base = cloneJsonSafe(args.finalChunk);
 
   const candidates = Array.isArray(base?.candidates) ? base.candidates : [];
   const c0 = candidates[0] && typeof candidates[0] === 'object' ? candidates[0] : {};
   const content = c0?.content && typeof c0.content === 'object' ? c0.content : {};
   const role = typeof content?.role === 'string' && content.role ? content.role : 'model';
+  const finalParts = cloneContentParts(content?.parts);
+  const finalText = finalParts.map((part) => (typeof part?.text === 'string' ? part.text : '')).join('');
+  const parts =
+    finalParts.length > 0 && args.fullText && finalText === args.fullText
+      ? finalParts
+      : args.streamedParts.length > 0
+        ? cloneContentParts(args.streamedParts)
+        : finalParts.length > 0
+          ? finalParts
+          : [{ text: args.fullText }];
 
   const nextCandidate0 = {
     ...c0,
     content: {
       ...content,
       role,
-      parts: [{ text: args.fullText }],
+      parts,
     },
   };
 
@@ -211,6 +250,7 @@ export async function streamGeminiResponse(args: {
 }): Promise<GeminiReply> {
   let fullText = '';
   let finalChunk: any = null;
+  const streamedParts: any[] = [];
 
   try {
     const apiKey = getGeminiApiKey();
@@ -227,6 +267,7 @@ export async function streamGeminiResponse(args: {
     for await (const chunk of stream) {
       if (args.signal?.aborted) break;
       finalChunk = chunk ?? finalChunk;
+      appendChunkParts(streamedParts, chunk);
       args.callbacks?.onChunk?.(chunk);
       const delta = extractChunkTextDelta(chunk);
       if (!delta) continue;
@@ -236,7 +277,7 @@ export async function streamGeminiResponse(args: {
 
     if (args.signal?.aborted) return { text: 'Canceled', raw: null, cancelled: true };
 
-    const aggregatedRaw = buildAggregatedRawFromStream({ finalChunk, fullText, request: baseRequest });
+    const aggregatedRaw = buildAggregatedRawFromStream({ finalChunk, fullText, request: baseRequest, streamedParts });
 
     const responseForCitations = { ...aggregatedRaw, text: fullText };
     const withCitations = addInlineCitations(responseForCitations);
@@ -266,3 +307,4 @@ export async function streamGeminiResponse(args: {
     return { text: 'An unknown error occurred while contacting Gemini.', raw: null };
   }
 }
+
