@@ -1105,13 +1105,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.input = new InputController(inputEl, this.camera, {
       onChange: () => this.requestRender(),
       onInteractingChange: (v) => {
+        if (v) this.suspendRasterQueueWorkForInteraction();
         this.interacting = v;
         this.requestRender();
-        if (!v) {
-          this.kickTextRasterQueue();
-          this.kickInkPrefaceRasterQueue();
-          this.kickPdfPageRenderQueue();
-        }
+        if (!v) this.kickRasterQueuesAfterViewportUpdate();
         this.emitDebug({ force: true });
       },
       onPointerDown: (p, info) => this.handlePointerDown(p, info),
@@ -3353,6 +3350,26 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (this.interacting) return;
     if (this.pdfPageRenderQueue.size === 0) return;
     void this.runPdfPageRenderQueue();
+  }
+
+  private suspendRasterQueueWorkForInteraction(): void {
+    this.textRasterGeneration += 1;
+    this.textRasterQueueByNodeId.clear();
+    this.fullTextNodeRasterGeneration += 1;
+    this.fullTextNodeRasterQueueByNodeId.clear();
+    this.inkPrefaceRasterGeneration += 1;
+    this.inkPrefaceRasterQueueByNodeId.clear();
+    this.pdfPageRenderQueue.clear();
+  }
+
+  private kickRasterQueuesAfterViewportUpdate(): void {
+    requestAnimationFrame(() => {
+      if (this.interacting) return;
+      this.kickFullTextNodeRasterQueue();
+      this.kickTextRasterQueue();
+      this.kickInkPrefaceRasterQueue();
+      this.kickPdfPageRenderQueue();
+    });
   }
 
   private async runTextRasterQueue(): Promise<void> {
@@ -7924,6 +7941,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   }
 
   private updateFullTextNodeRastersForViewport(): void {
+    if (this.interacting) return;
+
     const view = this.worldViewportRect({ overscan: 320 });
     const desiredScale = this.chooseTextRasterScale();
     const desiredNodeIds = new Set<string>();
@@ -7966,6 +7985,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   }
 
   private updateTextRastersForViewport(): void {
+    if (this.interacting) return;
+
     const view = this.worldViewportRect({ overscan: 320 });
     const desiredScale = this.chooseTextRasterScale();
     const desiredNodeIds = new Set<string>();
@@ -7974,6 +7995,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       if (n.kind !== 'text') continue;
       if (n.id === this.editingNodeId) continue;
       if (n.isGenerating) continue;
+      if (this.isTextNodeEligibleForFullRaster(n)) continue;
       if (!rectsIntersect(n.rect, view)) continue;
 
       const contentRect = this.textContentRect(n.rect);
@@ -8014,6 +8036,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   }
 
   private updateInkPrefaceRastersForViewport(): void {
+    if (this.interacting) return;
+
     const view = this.worldViewportRect({ overscan: 320 });
     const desiredScale = this.chooseTextRasterScale();
     const desiredNodeIds = new Set<string>();
@@ -8059,6 +8083,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   }
 
   private updatePdfPageRendersForViewport(): void {
+    if (this.interacting) return;
+
     const view = this.worldViewportRect({ overscan: 360 });
     const visible: Array<{
       nodeId: string;
