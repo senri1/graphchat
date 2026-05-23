@@ -32,6 +32,7 @@ export type PersistedWorkspaceSnapshot = {
     uiGlassBlurCssPxWebgl?: number;
     uiGlassSaturatePctWebgl?: number;
     glassNodesBlurBackend?: 'webgl' | 'canvas';
+    desktopTransparentBackground?: boolean;
     composerFontFamily?: FontFamilyKey;
     composerFontSizePx?: number;
     composerMinimized?: boolean;

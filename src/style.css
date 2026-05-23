@@ -43,6 +43,12 @@ body {
   overflow: hidden;
 }
 
+html.gc-desktopTransparent,
+html.gc-desktopTransparent body,
+html.gc-desktopTransparent #root {
+  background: transparent;
+}
+
 @media (any-pointer: coarse) {
   /* Prevent iOS Safari (and touch browsers) from selecting UI chrome during taps/drags. */
   body,
@@ -72,6 +78,66 @@ body {
       20px 20px,
     #0b0d12;
   touch-action: none;
+}
+
+.app--transparentDesktop {
+  background: transparent;
+}
+
+.appTitleBar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 28px;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 0 138px 0 8px;
+  box-sizing: border-box;
+  background: #111;
+  color: rgba(255, 255, 255, 0.95);
+  user-select: none;
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.appTitleBar__menuBtn {
+  height: 100%;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0 8px;
+  font: 12px/1.2 "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  cursor: default;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.appTitleBar__menuBtn:hover,
+.appTitleBar__menuBtn:focus-visible {
+  outline: none;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.appTitleBar__dragFill {
+  flex: 1;
+  align-self: stretch;
+  min-width: 32px;
+}
+
+.app--transparentTitlebar .worldSurface {
+  top: 28px;
+}
+
+.app--transparentTitlebar .sidebarDock {
+  top: 38px;
+}
+
+.app--transparentTitlebar .hud {
+  top: 38px;
 }
 
 .workspace {

@@ -1,6 +1,7 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs/promises');
+const fsSync = require('fs');
 const path = require('path');
 const os = require('os');
 const { registerStorageIpcHandlers } = require('./storage.cjs');
@@ -18,6 +19,46 @@ const LATEX_PROJECT_ASSET_EXT = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tif', '.tiff', '.svg', '.pdf', '.eps', '.ps',
   '.csv', '.tsv', '.json', '.yaml', '.yml',
 ]);
+const STORAGE_ROOT_DIRNAME = 'GraphChatV1Data';
+const STORAGE_SCHEMA_DIRNAME = 'v1';
+const STORAGE_LOCATION_CONFIG_FILE = 'storage-location.json';
+const TITLE_BAR_OVERLAY_HEIGHT = 28;
+
+let mainWindowMode = 'native';
+
+function readJsonFileSync(filePath) {
+  try {
+    if (!fsSync.existsSync(filePath)) return null;
+    const text = fsSync.readFileSync(filePath, 'utf8');
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function resolveStorageBaseDirSync() {
+  const userData = app.getPath('userData');
+  const cfg = readJsonFileSync(path.join(userData, STORAGE_LOCATION_CONFIG_FILE));
+  const raw = typeof cfg?.storageBaseDir === 'string' ? cfg.storageBaseDir.trim() : '';
+  if (!raw) return userData;
+  try {
+    return path.resolve(raw);
+  } catch {
+    return userData;
+  }
+}
+
+function readDesktopTransparentBackgroundPreferenceSync() {
+  const workspacePath = path.join(
+    resolveStorageBaseDirSync(),
+    STORAGE_ROOT_DIRNAME,
+    STORAGE_SCHEMA_DIRNAME,
+    'Workspace',
+    'workspace.json',
+  );
+  const workspace = readJsonFileSync(workspacePath);
+  return Boolean(workspace?.visual?.desktopTransparentBackground);
+}
 
 function clampLog(text) {
   const raw = typeof text === 'string' ? text : String(text ?? '');
@@ -745,12 +786,29 @@ async function runLatexCompile(req) {
 
 function createWindow() {
   const preload = path.join(__dirname, 'preload.cjs');
+  const useFullTransparency = process.platform === 'win32' && readDesktopTransparentBackgroundPreferenceSync();
+  mainWindowMode = useFullTransparency ? 'transparent-titlebar' : 'native';
   const win = new BrowserWindow({
     width: 1600,
     height: 980,
     minWidth: 980,
     minHeight: 720,
     title: APP_TITLE,
+    ...(useFullTransparency
+      ? {
+          transparent: true,
+          backgroundColor: '#00000000',
+          titleBarStyle: 'hidden',
+          titleBarOverlay: {
+            color: '#111111',
+            symbolColor: '#ffffff',
+            height: TITLE_BAR_OVERLAY_HEIGHT,
+          },
+          autoHideMenuBar: true,
+        }
+      : process.platform === 'win32'
+        ? {}
+        : { transparent: true, backgroundColor: '#00000000' }),
     webPreferences: {
       preload,
       contextIsolation: true,
@@ -758,6 +816,10 @@ function createWindow() {
       sandbox: false,
     },
   });
+
+  if (useFullTransparency) {
+    win.setMenuBarVisibility(false);
+  }
 
   win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     console.error('[electron] did-fail-load', { errorCode, errorDescription, validatedURL });
@@ -876,6 +938,26 @@ ipcMain.handle('latex:toolchain-status', async () => {
     return { ok: true, latexmk, synctex };
   } catch (err) {
     return { ok: false, error: trimMessage(err?.message, 'Failed to probe LaTeX toolchain.') };
+  }
+});
+
+ipcMain.handle('window:get-mode', async () => ({
+  mode: mainWindowMode,
+  transparentTitlebar: mainWindowMode === 'transparent-titlebar',
+  titleBarOverlayHeight: TITLE_BAR_OVERLAY_HEIGHT,
+}));
+
+ipcMain.handle('app-menu:show', async (event, req) => {
+  try {
+    const index = Math.max(0, Math.floor(Number(req?.index)));
+    const browserWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const menu = Menu.getApplicationMenu();
+    const item = menu?.items?.[index] ?? null;
+    if (!browserWindow || !item?.submenu) return { ok: false, error: 'Menu is unavailable.' };
+    item.submenu.popup({ window: browserWindow });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: trimMessage(err?.message, 'Failed to show menu.') };
   }
 });
 

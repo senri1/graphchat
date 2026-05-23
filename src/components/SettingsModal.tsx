@@ -57,6 +57,8 @@ type Props = {
   onUploadBackground: () => void;
   onRenameBackground: (backgroundId: string, name: string) => void;
   onDeleteBackground: (backgroundId: string) => void;
+  desktopTransparentBackground: boolean;
+  onToggleDesktopTransparentBackground: () => void;
 
   composerFontFamily: FontFamilyKey;
   onChangeComposerFontFamily: (next: FontFamilyKey) => void;
@@ -366,6 +368,25 @@ export default function SettingsModal(props: Props) {
                       </button>
                     </div>
 	                  </div>
+
+                    <div className="settingsRow">
+                      <div className="settingsRow__text">
+                        <div className="settingsRow__title">Desktop transparency</div>
+                        <div className="settingsRow__desc">
+                          Show the desktop wallpaper behind empty canvas space. On Windows, the native window mode applies after a full app restart.
+                        </div>
+                      </div>
+                      <div className="settingsRow__actions">
+                        <button
+                          className={`settingsToggle ${props.desktopTransparentBackground ? 'settingsToggle--on' : ''}`}
+                          type="button"
+                          aria-pressed={props.desktopTransparentBackground}
+                          onClick={props.onToggleDesktopTransparentBackground}
+                        >
+                          {props.desktopTransparentBackground ? 'On' : 'Off'}
+                        </button>
+                      </div>
+                    </div>
 
                     {(props.backgroundLibrary ?? []).length ? (
                       <div className="settingsBgList" role="list" aria-label="Uploaded backgrounds">

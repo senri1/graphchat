@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld('gcElectron', {
   synctexForward: (req) => ipcRenderer.invoke('latex:synctex-forward', req ?? {}),
   synctexInverse: (req) => ipcRenderer.invoke('latex:synctex-inverse', req ?? {}),
   latexToolchainStatus: () => ipcRenderer.invoke('latex:toolchain-status'),
+  getWindowMode: () => ipcRenderer.invoke('window:get-mode'),
+  showAppMenu: (req) => ipcRenderer.invoke('app-menu:show', req ?? {}),
   storageGetWorkspaceSnapshot: () => ipcRenderer.invoke('storage:get-workspace-snapshot'),
   storagePutWorkspaceSnapshot: (req) => ipcRenderer.invoke('storage:put-workspace-snapshot', req ?? {}),
   storageDeleteWorkspaceSnapshot: () => ipcRenderer.invoke('storage:delete-workspace-snapshot'),

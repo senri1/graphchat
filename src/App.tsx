@@ -388,6 +388,7 @@ const DEFAULT_GLASS_SATURATE_PCT_CANVAS = 180;
 const DEFAULT_UI_GLASS_BLUR_CSS_PX_WEBGL = 15;
 const DEFAULT_UI_GLASS_SATURATE_PCT_WEBGL = 140;
 const DEFAULT_GLASS_UNDERLAY_ALPHA = 1;
+const DEFAULT_DESKTOP_TRANSPARENT_BACKGROUND = false;
 const DEFAULT_INK_SEND_CROP_ENABLED = false;
 const DEFAULT_INK_SEND_DOWNSCALE_ENABLED = false;
 const DEFAULT_SEND_ALL_ENABLED = false;
@@ -2645,6 +2646,7 @@ export default function App() {
   const lastEngineInteractingRef = useRef<boolean | null>(null);
   const [engineReady, setEngineReady] = useState(false);
   const engineReadyRef = useRef(false);
+  const [transparentTitlebar, setTransparentTitlebar] = useState(false);
   const bootedRef = useRef(false);
   const bootPayloadRef = useRef<{
     root: WorkspaceFolder;
@@ -2669,6 +2671,7 @@ export default function App() {
       uiGlassSaturatePctWebgl: number;
       glassNodesUnderlayAlpha: number;
       glassNodesBlurBackend: GlassBlurBackend;
+      desktopTransparentBackground: boolean;
       composerFontFamily: FontFamilyKey;
       composerFontSizePx: number;
       composerMinimized: boolean;
@@ -2798,6 +2801,9 @@ export default function App() {
   const [glassNodesSaturatePctCanvas, setGlassNodesSaturatePctCanvas] = useState<number>(() => DEFAULT_GLASS_SATURATE_PCT_CANVAS);
   const [glassNodesUnderlayAlpha, setGlassNodesUnderlayAlpha] = useState<number>(() => DEFAULT_GLASS_UNDERLAY_ALPHA);
   const [glassNodesBlurBackend, setGlassNodesBlurBackend] = useState<GlassBlurBackend>(() => DEFAULT_GLASS_BLUR_BACKEND);
+  const [desktopTransparentBackground, setDesktopTransparentBackground] = useState<boolean>(
+    () => DEFAULT_DESKTOP_TRANSPARENT_BACKGROUND,
+  );
   const [edgeRouterId, setEdgeRouterId] = useState<EdgeRouterId>(() => DEFAULT_EDGE_ROUTER_ID);
   const [replyArrowColor, setReplyArrowColor] = useState<string>(() => DEFAULT_REPLY_ARROW_COLOR);
   const [replyArrowOpacity, setReplyArrowOpacity] = useState<number>(() => DEFAULT_REPLY_ARROW_OPACITY);
@@ -2844,6 +2850,7 @@ export default function App() {
   const glassNodesSaturatePctCanvasRef = useRef<number>(glassNodesSaturatePctCanvas);
   const glassNodesUnderlayAlphaRef = useRef<number>(glassNodesUnderlayAlpha);
   const glassNodesBlurBackendRef = useRef<GlassBlurBackend>(glassNodesBlurBackend);
+  const desktopTransparentBackgroundRef = useRef<boolean>(desktopTransparentBackground);
   const edgeRouterIdRef = useRef<EdgeRouterId>(edgeRouterId);
   const replyArrowColorRef = useRef<string>(replyArrowColor);
   const replyArrowOpacityRef = useRef<number>(replyArrowOpacity);
@@ -2987,6 +2994,28 @@ export default function App() {
   useEffect(() => {
     backgroundLibraryRef.current = backgroundLibrary;
   }, [backgroundLibrary]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const api = (window as any)?.gcElectron;
+    if (!api || typeof api.getWindowMode !== 'function') return;
+    void api.getWindowMode().then((mode: any) => {
+      if (cancelled) return;
+      setTransparentTitlebar(Boolean(mode?.transparentTitlebar));
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    desktopTransparentBackgroundRef.current = desktopTransparentBackground;
+    if (typeof document === 'undefined') return;
+    document.documentElement.classList.toggle('gc-desktopTransparent', desktopTransparentBackground);
+    return () => {
+      document.documentElement.classList.remove('gc-desktopTransparent');
+    };
+  }, [desktopTransparentBackground]);
 
   useEffect(() => {
     sendAllEnabledRef.current = sendAllEnabled;
@@ -3351,6 +3380,7 @@ export default function App() {
                 ? Math.max(0, Math.min(1, glassNodesUnderlayAlphaRef.current))
                 : DEFAULT_GLASS_UNDERLAY_ALPHA,
               glassNodesBlurBackend: glassNodesBlurBackendRef.current === 'canvas' ? 'canvas' : DEFAULT_GLASS_BLUR_BACKEND,
+              desktopTransparentBackground: Boolean(desktopTransparentBackgroundRef.current),
               composerFontFamily: composerFontFamilyRef.current,
               composerFontSizePx: Math.round(clampNumber(composerFontSizePxRef.current, 10, 30, DEFAULT_COMPOSER_FONT_SIZE_PX)),
               composerMinimized: Boolean(composerMinimizedRef.current),
@@ -6192,6 +6222,7 @@ export default function App() {
       ? visual.glassNodesUnderlayAlpha
       : DEFAULT_GLASS_UNDERLAY_ALPHA;
     glassNodesBlurBackendRef.current = visual.glassNodesBlurBackend === 'canvas' ? 'canvas' : DEFAULT_GLASS_BLUR_BACKEND;
+    desktopTransparentBackgroundRef.current = Boolean(visual.desktopTransparentBackground);
     edgeRouterIdRef.current = visual.edgeRouterId;
     replyArrowColorRef.current = visual.replyArrowColor;
     replyArrowOpacityRef.current = visual.replyArrowOpacity;
@@ -6203,6 +6234,7 @@ export default function App() {
     setGlassNodesSaturatePctCanvas(glassNodesSaturatePctCanvasRef.current);
     setGlassNodesUnderlayAlpha(glassNodesUnderlayAlphaRef.current);
     setGlassNodesBlurBackend(glassNodesBlurBackendRef.current);
+    setDesktopTransparentBackground(desktopTransparentBackgroundRef.current);
     setEdgeRouterId(edgeRouterIdRef.current);
     setReplyArrowColor(replyArrowColorRef.current);
     setReplyArrowOpacity(replyArrowOpacityRef.current);
@@ -6553,6 +6585,10 @@ export default function App() {
           ? Math.max(0, Math.min(1, Number(visualSrc.glassNodesUnderlayAlpha)))
           : DEFAULT_GLASS_UNDERLAY_ALPHA,
         glassNodesBlurBackend,
+        desktopTransparentBackground:
+          typeof (visualSrc as any)?.desktopTransparentBackground === 'boolean'
+            ? Boolean((visualSrc as any).desktopTransparentBackground)
+            : DEFAULT_DESKTOP_TRANSPARENT_BACKGROUND,
         composerFontFamily: normalizeFontFamilyKey(
           (visualSrc as any)?.composerFontFamily,
           DEFAULT_COMPOSER_FONT_FAMILY,
@@ -9188,8 +9224,33 @@ export default function App() {
     });
   }, [pendingEditNodeSend]);
 
+  const showNativeAppMenu = (index: number) => {
+    const api = (window as any)?.gcElectron;
+    if (!api || typeof api.showAppMenu !== 'function') return;
+    void api.showAppMenu({ index });
+  };
+
 	  return (
-	    <div className="app">
+	    <div
+        className={`app${desktopTransparentBackground ? ' app--transparentDesktop' : ''}${
+          transparentTitlebar ? ' app--transparentTitlebar' : ''
+        }`}
+      >
+        {transparentTitlebar ? (
+          <div className="appTitleBar">
+            {['File', 'Edit', 'View', 'Window', 'Help'].map((label, index) => (
+              <button
+                key={label}
+                className="appTitleBar__menuBtn"
+                type="button"
+                onClick={() => showNativeAppMenu(index)}
+              >
+                {label}
+              </button>
+            ))}
+            <div className="appTitleBar__dragFill" aria-hidden="true" />
+          </div>
+        ) : null}
 	      {toast && typeof document !== 'undefined' && document.body
 	        ? createPortal(
 	            <div className="toastHost" role="status" aria-live="polite" aria-atomic="true">
@@ -10282,6 +10343,13 @@ export default function App() {
           onUploadBackground={() => backgroundInputRef.current?.click()}
           onRenameBackground={(backgroundId, name) => renameBackgroundLibraryItem(backgroundId, name)}
           onDeleteBackground={(backgroundId) => requestDeleteBackgroundLibraryItem(backgroundId)}
+          desktopTransparentBackground={desktopTransparentBackground}
+          onToggleDesktopTransparentBackground={() => {
+            const next = !desktopTransparentBackgroundRef.current;
+            desktopTransparentBackgroundRef.current = next;
+            setDesktopTransparentBackground(next);
+            schedulePersistSoon();
+          }}
 	          composerFontFamily={composerFontFamily}
 	          onChangeComposerFontFamily={(next) => {
 	            setComposerFontFamily(next);
@@ -10733,6 +10801,7 @@ export default function App() {
             uiGlassSaturatePctWebglRef.current = DEFAULT_UI_GLASS_SATURATE_PCT_WEBGL;
             glassNodesUnderlayAlphaRef.current = DEFAULT_GLASS_UNDERLAY_ALPHA;
             glassNodesBlurBackendRef.current = DEFAULT_GLASS_BLUR_BACKEND;
+            desktopTransparentBackgroundRef.current = DEFAULT_DESKTOP_TRANSPARENT_BACKGROUND;
             setGlassNodesEnabled(DEFAULT_GLASS_NODES_ENABLED);
             setGlassNodesBlurCssPxWebgl(DEFAULT_GLASS_BLUR_CSS_PX_WEBGL);
             setGlassNodesSaturatePctWebgl(DEFAULT_GLASS_SATURATE_PCT_WEBGL);
@@ -10740,6 +10809,7 @@ export default function App() {
             setGlassNodesSaturatePctCanvas(DEFAULT_GLASS_SATURATE_PCT_CANVAS);
             setGlassNodesUnderlayAlpha(DEFAULT_GLASS_UNDERLAY_ALPHA);
             setGlassNodesBlurBackend(DEFAULT_GLASS_BLUR_BACKEND);
+            setDesktopTransparentBackground(DEFAULT_DESKTOP_TRANSPARENT_BACKGROUND);
             setUiGlassBlurCssPxWebgl(DEFAULT_UI_GLASS_BLUR_CSS_PX_WEBGL);
             setUiGlassSaturatePctWebgl(DEFAULT_UI_GLASS_SATURATE_PCT_WEBGL);
 

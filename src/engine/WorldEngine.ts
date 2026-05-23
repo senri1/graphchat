@@ -1080,7 +1080,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const nav = typeof navigator !== 'undefined' ? navigator : null;
     const ua = (nav?.userAgent ?? '').toLowerCase();
     const isAndroid = ua.includes('android');
-    const ctx = this.canvas.getContext('2d', { alpha: false, desynchronized: !isAndroid });
+    const ctx = this.canvas.getContext('2d', { alpha: true, desynchronized: !isAndroid });
     if (!ctx) throw new Error('Missing 2D canvas context');
     this.ctx = ctx;
 
