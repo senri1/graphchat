@@ -60,6 +60,19 @@ interface Window {
       log?: string;
     }>;
     latexToolchainStatus: () => Promise<{ ok: boolean; latexmk?: boolean; synctex?: boolean; error?: string }>;
+    getWindowMode: () => Promise<{
+      mode?: string;
+      transparentTitlebar?: boolean;
+      titleBarOverlayHeight?: number;
+      isFullScreen?: boolean;
+    }>;
+    onWindowModeChanged?: (cb: (mode: {
+      mode?: string;
+      transparentTitlebar?: boolean;
+      titleBarOverlayHeight?: number;
+      isFullScreen?: boolean;
+    }) => void) => () => void;
+    showAppMenu: (req: { index: number }) => Promise<{ ok: boolean; error?: string }>;
     storageGetWorkspaceSnapshot: () => Promise<{ ok: boolean; snapshot?: unknown | null; error?: string }>;
     storagePutWorkspaceSnapshot: (req: { snapshot: unknown }) => Promise<{ ok: boolean; error?: string }>;
     storageDeleteWorkspaceSnapshot: () => Promise<{ ok: boolean; error?: string }>;

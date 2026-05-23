@@ -2647,6 +2647,8 @@ export default function App() {
   const [engineReady, setEngineReady] = useState(false);
   const engineReadyRef = useRef(false);
   const [transparentTitlebar, setTransparentTitlebar] = useState(false);
+  const [electronWindowFullScreen, setElectronWindowFullScreen] = useState(false);
+  const [browserFullScreenGuess, setBrowserFullScreenGuess] = useState(false);
   const bootedRef = useRef(false);
   const bootPayloadRef = useRef<{
     root: WorkspaceFolder;
@@ -2999,12 +3001,39 @@ export default function App() {
     let cancelled = false;
     const api = (window as any)?.gcElectron;
     if (!api || typeof api.getWindowMode !== 'function') return;
-    void api.getWindowMode().then((mode: any) => {
+    const applyWindowMode = (mode: any) => {
       if (cancelled) return;
       setTransparentTitlebar(Boolean(mode?.transparentTitlebar));
-    }).catch(() => {});
+      setElectronWindowFullScreen(Boolean(mode?.isFullScreen));
+    };
+    const unsubscribe =
+      typeof api.onWindowModeChanged === 'function' ? api.onWindowModeChanged(applyWindowMode) : undefined;
+    void api.getWindowMode().then(applyWindowMode).catch(() => {});
     return () => {
       cancelled = true;
+      if (typeof unsubscribe === 'function') unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return;
+    const inferFullScreen = () => {
+      if (document.fullscreenElement) return true;
+      const screenW = Math.max(Number(window.screen?.width) || 0, Number(window.screen?.availWidth) || 0);
+      const screenH = Math.max(Number(window.screen?.height) || 0, Number(window.screen?.availHeight) || 0);
+      const outerW = Math.max(Number(window.outerWidth) || 0, Number(window.innerWidth) || 0);
+      const outerH = Math.max(Number(window.outerHeight) || 0, Number(window.innerHeight) || 0);
+      return screenW > 0 && screenH > 0 && outerW >= screenW - 2 && outerH >= screenH - 2;
+    };
+    const syncFullScreenGuess = () => {
+      setBrowserFullScreenGuess(inferFullScreen());
+    };
+    syncFullScreenGuess();
+    window.addEventListener('resize', syncFullScreenGuess);
+    document.addEventListener('fullscreenchange', syncFullScreenGuess);
+    return () => {
+      window.removeEventListener('resize', syncFullScreenGuess);
+      document.removeEventListener('fullscreenchange', syncFullScreenGuess);
     };
   }, []);
 
@@ -6366,10 +6395,16 @@ export default function App() {
     void (async () => {
       if (bootedRef.current) return;
       let ws: Awaited<ReturnType<typeof getWorkspaceSnapshot>> = null;
+      let workspaceLoadFailed = false;
       try {
         ws = await getWorkspaceSnapshot();
       } catch {
+        workspaceLoadFailed = true;
         ws = null;
+      }
+      if (workspaceLoadFailed) {
+        bootedRef.current = true;
+        return;
       }
       if (!ws || !ws.root || ws.root.kind !== 'folder') {
         bootedRef.current = true;
@@ -9229,14 +9264,16 @@ export default function App() {
     if (!api || typeof api.showAppMenu !== 'function') return;
     void api.showAppMenu({ index });
   };
+  const windowFullScreen = electronWindowFullScreen || browserFullScreenGuess;
+  const showTransparentTitlebar = transparentTitlebar && !windowFullScreen;
 
 	  return (
 	    <div
         className={`app${desktopTransparentBackground ? ' app--transparentDesktop' : ''}${
-          transparentTitlebar ? ' app--transparentTitlebar' : ''
+          showTransparentTitlebar ? ' app--transparentTitlebar' : ''
         }`}
       >
-        {transparentTitlebar ? (
+        {showTransparentTitlebar ? (
           <div className="appTitleBar">
             {['File', 'Edit', 'View', 'Window', 'Help'].map((label, index) => (
               <button

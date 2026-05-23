@@ -10,6 +10,20 @@ contextBridge.exposeInMainWorld('gcElectron', {
   synctexInverse: (req) => ipcRenderer.invoke('latex:synctex-inverse', req ?? {}),
   latexToolchainStatus: () => ipcRenderer.invoke('latex:toolchain-status'),
   getWindowMode: () => ipcRenderer.invoke('window:get-mode'),
+  onWindowModeChanged: (cb) => {
+    if (typeof cb !== 'function') return () => {};
+    const listener = (_event, payload) => {
+      try {
+        cb(payload);
+      } catch {
+        // ignore listener errors
+      }
+    };
+    ipcRenderer.on('window:mode-changed', listener);
+    return () => {
+      ipcRenderer.removeListener('window:mode-changed', listener);
+    };
+  },
   showAppMenu: (req) => ipcRenderer.invoke('app-menu:show', req ?? {}),
   storageGetWorkspaceSnapshot: () => ipcRenderer.invoke('storage:get-workspace-snapshot'),
   storagePutWorkspaceSnapshot: (req) => ipcRenderer.invoke('storage:put-workspace-snapshot', req ?? {}),

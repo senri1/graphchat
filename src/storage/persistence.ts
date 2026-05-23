@@ -85,13 +85,10 @@ function requestToPromise<T>(req: IDBRequest<T>): Promise<T> {
 export async function getWorkspaceSnapshot(): Promise<PersistedWorkspaceSnapshot | null> {
   const electron = getElectronStorageApi();
   if (electron?.storageGetWorkspaceSnapshot) {
-    try {
-      const res = await electron.storageGetWorkspaceSnapshot();
-      const snapshot = (res?.snapshot ?? null) as any;
-      return snapshot && snapshot.key === 'workspace' ? (snapshot as PersistedWorkspaceSnapshot) : null;
-    } catch {
-      return null;
-    }
+    const res = await electron.storageGetWorkspaceSnapshot();
+    if (!res?.ok) throw new Error(res?.error || 'Failed to load workspace snapshot.');
+    const snapshot = (res?.snapshot ?? null) as any;
+    return snapshot && snapshot.key === 'workspace' ? (snapshot as PersistedWorkspaceSnapshot) : null;
   }
 
   const db = await openDb();

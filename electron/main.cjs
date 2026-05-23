@@ -60,6 +60,38 @@ function readDesktopTransparentBackgroundPreferenceSync() {
   return Boolean(workspace?.visual?.desktopTransparentBackground);
 }
 
+function getWindowModePayload(win) {
+  return {
+    mode: mainWindowMode,
+    transparentTitlebar: mainWindowMode === 'transparent-titlebar',
+    titleBarOverlayHeight: TITLE_BAR_OVERLAY_HEIGHT,
+    isFullScreen: Boolean(win?.isFullScreen?.()),
+  };
+}
+
+function syncTitleBarOverlay(win) {
+  if (!win || win.isDestroyed() || mainWindowMode !== 'transparent-titlebar' || typeof win.setTitleBarOverlay !== 'function') {
+    return;
+  }
+  win.setTitleBarOverlay({
+    color: win.isFullScreen() ? '#00000000' : '#111111',
+    symbolColor: '#ffffff',
+    height: TITLE_BAR_OVERLAY_HEIGHT,
+  });
+}
+
+function sendWindowModePayload(win) {
+  if (!win || win.isDestroyed()) return;
+  syncTitleBarOverlay(win);
+  win.webContents.send('window:mode-changed', getWindowModePayload(win));
+}
+
+function scheduleWindowModePayload(win) {
+  sendWindowModePayload(win);
+  setTimeout(() => sendWindowModePayload(win), 50);
+  setTimeout(() => sendWindowModePayload(win), 200);
+}
+
 function clampLog(text) {
   const raw = typeof text === 'string' ? text : String(text ?? '');
   if (raw.length <= LATEX_MAX_LOG_CHARS) return raw;
@@ -821,6 +853,12 @@ function createWindow() {
     win.setMenuBarVisibility(false);
   }
 
+  win.on('enter-full-screen', () => scheduleWindowModePayload(win));
+  win.on('leave-full-screen', () => scheduleWindowModePayload(win));
+  win.on('enter-html-full-screen', () => scheduleWindowModePayload(win));
+  win.on('leave-html-full-screen', () => scheduleWindowModePayload(win));
+  win.on('resize', () => scheduleWindowModePayload(win));
+
   win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     console.error('[electron] did-fail-load', { errorCode, errorDescription, validatedURL });
   });
@@ -941,11 +979,10 @@ ipcMain.handle('latex:toolchain-status', async () => {
   }
 });
 
-ipcMain.handle('window:get-mode', async () => ({
-  mode: mainWindowMode,
-  transparentTitlebar: mainWindowMode === 'transparent-titlebar',
-  titleBarOverlayHeight: TITLE_BAR_OVERLAY_HEIGHT,
-}));
+ipcMain.handle('window:get-mode', async (event) => {
+  const browserWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+  return getWindowModePayload(browserWindow);
+});
 
 ipcMain.handle('app-menu:show', async (event, req) => {
   try {
@@ -954,7 +991,7 @@ ipcMain.handle('app-menu:show', async (event, req) => {
     const menu = Menu.getApplicationMenu();
     const item = menu?.items?.[index] ?? null;
     if (!browserWindow || !item?.submenu) return { ok: false, error: 'Menu is unavailable.' };
-    item.submenu.popup({ window: browserWindow });
+    item.submenu.popup({ window: browserWindow, callback: () => scheduleWindowModePayload(browserWindow) });
     return { ok: true };
   } catch (err) {
     return { ok: false, error: trimMessage(err?.message, 'Failed to show menu.') };
