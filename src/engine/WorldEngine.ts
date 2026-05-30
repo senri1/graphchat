@@ -83,6 +83,23 @@ function fingerprintText(input: string): string {
   return `${s.length.toString(36)}.${fnv1a32(s).toString(36)}`;
 }
 
+function normalizeHexColor(value: unknown): string | null {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (/^#[0-9a-fA-F]{6}$/.test(raw)) return raw.toLowerCase();
+  if (/^#[0-9a-fA-F]{3}$/.test(raw)) {
+    return `#${raw[1]}${raw[1]}${raw[2]}${raw[2]}${raw[3]}${raw[3]}`.toLowerCase();
+  }
+  return null;
+}
+
+function hexColorToRgb(color: string): { r: number; g: number; b: number } {
+  return {
+    r: Number.parseInt(color.slice(1, 3), 16),
+    g: Number.parseInt(color.slice(3, 5), 16),
+    b: Number.parseInt(color.slice(5, 7), 16),
+  };
+}
+
 function escapeHtml(text: string): string {
   const t = (text ?? '').toString();
   if (!t) return '';
@@ -673,6 +690,9 @@ export class WorldEngine {
   private glassSaturatePct = 180;
   private glassUnderlayAlpha = 1;
   private glassBlurBackend: GlassBlurBackend = 'webgl';
+  private nodeBackgroundColor = '#181818';
+  private nodeBackgroundRgb = hexColorToRgb(this.nodeBackgroundColor);
+  private nodeBackgroundOpacity = 0.28;
   private edgeRouterId: EdgeRouterId = DEFAULT_EDGE_ROUTER_ID;
   private readonly edgeRouteCache = new Map<string, EdgeRoute | null>();
   private readonly edgeRouteCacheMaxEntries = 24000;
@@ -720,6 +740,7 @@ export class WorldEngine {
 
   private selectedNodeId: string | null = null;
   private editingNodeId: string | null = null;
+  private editingOriginalContent: string | null = null;
   private getEditingDraft: ((nodeId: string) => string | null) | null = null;
   private rawViewerNodeId: string | null = null;
   private allowEditingAllTextNodes = false;
@@ -1103,7 +1124,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const inputEl = opts.inputEl ?? this.canvas;
     this.inputEl = inputEl;
     this.input = new InputController(inputEl, this.camera, {
-      onChange: () => this.requestRender(),
+      onChange: () => {
+        this.requestRender();
+        this.requestPersist();
+      },
       onInteractingChange: (v) => {
         if (v) this.suspendRasterQueueWorkForInteraction();
         this.interacting = v;
@@ -1226,6 +1250,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   loadChatState(next: WorldEngineChatState): void {
     // Tear down any active interactions/overlays first to avoid dangling DOM selection.
     this.editingNodeId = null;
+    this.editingOriginalContent = null;
     this.selectedNodeId = null;
     this.activeGesture = null;
     this.textResizeHold = null;
@@ -1603,10 +1628,12 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     // Close editor so the canvas is the thing being tested.
     this.selectedNodeId = null;
     this.editingNodeId = null;
+    this.editingOriginalContent = null;
     this.textRasterGeneration += 1;
 
     this.requestRender();
     this.emitUiState();
+    this.requestPersist();
   }
 
   clearStressNodes(): void {
@@ -1618,6 +1645,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.worldInkStrokes = [];
     this.requestRender();
     this.emitUiState();
+    this.requestPersist();
   }
 
   autoResizeAllTextNodes(): void {
@@ -1638,7 +1666,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       anyResized = true;
     }
 
-    if (anyResized) this.requestRender();
+    if (anyResized) {
+      this.requestRender();
+      this.requestPersist();
+    }
   }
 
   canonicalizeLayout(algorithm: CanonicalizeLayoutAlgorithm): void {
@@ -2024,6 +2055,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     }
 
     this.requestRender();
+    this.requestPersist();
   }
 
   setTool(tool: Tool): void {
@@ -2130,16 +2162,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   }
 
   setReplyArrowColor(color: string): void {
-    const raw = typeof color === 'string' ? color.trim() : '';
-    if (!raw) return;
-    let next = '';
-    if (/^#[0-9a-fA-F]{6}$/.test(raw)) {
-      next = raw.toLowerCase();
-    } else if (/^#[0-9a-fA-F]{3}$/.test(raw)) {
-      next = `#${raw[1]}${raw[1]}${raw[2]}${raw[2]}${raw[3]}${raw[3]}`.toLowerCase();
-    } else {
-      return;
-    }
+    const next = normalizeHexColor(color);
+    if (!next) return;
     if (this.replyArrowColor === next) return;
     this.replyArrowColor = next;
     this.requestRender();
@@ -2195,6 +2219,25 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (next === 'webgl') this.webglPreblurDisabled = false;
     this.backgroundCache = null;
     this.requestRender();
+    this.requestPersist();
+  }
+
+  setNodeBackgroundOpacity(opacity: number): void {
+    const raw = Number(opacity);
+    const next = clamp(Number.isFinite(raw) ? raw : 0.28, 0, 1);
+    if (Math.abs(next - this.nodeBackgroundOpacity) < 0.001) return;
+    this.nodeBackgroundOpacity = next;
+    this.invalidateFullTextNodeRasters({ requestRender: false });
+    this.requestRender();
+  }
+
+  setNodeBackgroundColor(color: string): void {
+    const next = normalizeHexColor(color);
+    if (!next || this.nodeBackgroundColor === next) return;
+    this.nodeBackgroundColor = next;
+    this.nodeBackgroundRgb = hexColorToRgb(next);
+    this.invalidateFullTextNodeRasters({ requestRender: false });
+    this.requestRender();
   }
 
   private nodeTextStyle(): { fontFamily: string; fontSizePx: number; lineHeight: number; color: string } {
@@ -2204,6 +2247,21 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       lineHeight: this.nodeTextLineHeight,
       color: this.nodeTextColor,
     };
+  }
+
+  private nodeBackgroundAlpha(selected = false): number {
+    return clamp(this.nodeBackgroundOpacity + (selected ? 0.08 : 0), 0, 1);
+  }
+
+  private nodeBackgroundFillStyle(selected = false): string {
+    const { r, g, b } = this.nodeBackgroundRgb;
+    return `rgba(${r},${g},${b},${this.nodeBackgroundAlpha(selected).toFixed(3)})`;
+  }
+
+  private nodeInnerFillStyle(): string {
+    const alpha = this.glassNodesEnabled ? this.nodeBackgroundOpacity * 0.43 : this.nodeBackgroundOpacity * 0.79;
+    const { r, g, b } = this.nodeBackgroundRgb;
+    return `rgba(${r},${g},${b},${clamp(alpha, 0, 1).toFixed(3)})`;
   }
 
   private invalidateFullTextNodeRasters(opts?: { requestRender?: boolean }): void {
@@ -2483,6 +2541,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const changed = this.selectedNodeId !== id || this.editingNodeId !== id;
     this.selectedNodeId = id;
     this.editingNodeId = id;
+    this.editingOriginalContent = String(node.content ?? '');
     this.bringNodeToFront(id);
     this.requestRender();
     if (changed) this.emitUiState();
@@ -2542,6 +2601,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const changed = this.selectedNodeId !== id || this.editingNodeId !== null;
     this.selectedNodeId = id;
     this.editingNodeId = null;
+    this.editingOriginalContent = null;
     this.bringNodeToFront(id);
     this.requestRender();
     if (changed) this.emitUiState();
@@ -2696,6 +2756,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const changed = this.selectedNodeId !== assistantNodeId || this.editingNodeId !== null;
     this.selectedNodeId = assistantNodeId;
     this.editingNodeId = null;
+    this.editingOriginalContent = null;
 
     this.textRasterGeneration += 1;
     this.requestRender();
@@ -2854,6 +2915,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const changed = this.selectedNodeId !== assistantNodeId || this.editingNodeId !== null;
     this.selectedNodeId = assistantNodeId;
     this.editingNodeId = null;
+    this.editingOriginalContent = null;
 
     this.textRasterGeneration += 1;
     this.inkPrefaceRasterGeneration += 1;
@@ -2951,6 +3013,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const changed = this.selectedNodeId !== assistantNodeId || this.editingNodeId !== null;
     this.selectedNodeId = assistantNodeId;
     this.editingNodeId = null;
+    this.editingOriginalContent = null;
 
     this.textRasterGeneration += 1;
     this.requestRender();
@@ -2963,6 +3026,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (this.worldInkStrokes.length === 0) return;
     this.worldInkStrokes = [];
     this.requestRender();
+    this.requestPersist();
   }
 
   async importPdfFromFile(file: File, opts?: { storageKey?: string | null }): Promise<void> {
@@ -2991,6 +3055,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const selectionChanged = this.selectedNodeId !== id || this.editingNodeId !== null;
     this.selectedNodeId = id;
     this.editingNodeId = null;
+    this.editingOriginalContent = null;
     this.bringNodeToFront(id);
     this.requestRender();
     if (selectionChanged) this.emitUiState();
@@ -4304,6 +4369,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.textRasterGeneration += 1;
     this.requestRender();
     this.emitUiState();
+    this.requestPersist();
   }
 
   getTextNodeUserPreface(nodeId: string): { replyTo: string; contexts: string[]; collapsedPrefaceContexts: Record<number, boolean> } | null {
@@ -4667,6 +4733,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     node.rect = nextWorld;
     this.requestRender();
+    this.requestPersist();
   }
 
   beginEditingSelectedNode(): void {
@@ -4734,6 +4801,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     const changed = this.editingNodeId !== nodeId || this.selectedNodeId !== nodeId;
     this.selectedNodeId = nodeId;
+    if (this.editingNodeId !== nodeId) {
+      this.editingOriginalContent = String(node.content ?? '');
+    }
     this.editingNodeId = nodeId;
     this.bringNodeToFront(nodeId);
     this.requestRender();
@@ -4741,19 +4811,20 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return true;
   }
 
-  commitEditing(next: string): void {
+  commitEditing(next?: string): void {
     const nodeId = this.editingNodeId;
     if (!nodeId) return;
 
     const node = this.nodes.find((n) => n.id === nodeId);
     if (!node || node.kind !== 'text') {
       this.editingNodeId = null;
+      this.editingOriginalContent = null;
       this.requestRender();
       this.emitUiState();
       return;
     }
 
-	    const text = typeof next === 'string' ? next : String(next ?? '');
+	    const text = next === undefined ? String(node.content ?? '') : typeof next === 'string' ? next : String(next ?? '');
 	    if (node.content !== text) {
 	      node.content = text;
 	      node.contentHash = fingerprintText(text);
@@ -4762,15 +4833,27 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 	    }
 
     this.editingNodeId = null;
+    this.editingOriginalContent = null;
     this.requestRender();
     this.emitUiState();
+    this.requestPersist();
   }
 
   cancelEditing(): void {
-    if (!this.editingNodeId) return;
+    const nodeId = this.editingNodeId;
+    if (!nodeId) return;
+    const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === nodeId) ?? null;
+    if (node && this.editingOriginalContent != null && node.content !== this.editingOriginalContent) {
+      node.content = this.editingOriginalContent;
+      node.contentHash = fingerprintText(node.content);
+      this.recomputeTextNodeDisplayHash(node);
+      this.textRasterGeneration += 1;
+    }
     this.editingNodeId = null;
+    this.editingOriginalContent = null;
     this.requestRender();
     this.emitUiState();
+    this.requestPersist();
   }
 
   setEditingText(next: string): void {
@@ -4785,7 +4868,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 	    this.recomputeTextNodeDisplayHash(node);
 	    this.textRasterGeneration += 1;
 	    this.requestRender();
-	    this.emitUiState();
+	    this.requestPersist();
   }
 
   setTextNodeContent(nodeId: string, next: string, opts?: { streaming?: boolean }): void {
@@ -4963,6 +5046,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const changed = this.selectedNodeId != null || this.editingNodeId != null;
     this.selectedNodeId = null;
     this.editingNodeId = null;
+    this.editingOriginalContent = null;
     this.clearTextSelection({ suppressOverlayCallback: true });
     this.clearPdfTextSelection({ suppressOverlayCallback: true });
     if (changed) {
@@ -5015,7 +5099,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (g?.nodeId === id) this.activeGesture = null;
 
     if (this.selectedNodeId === id) this.selectedNodeId = null;
-    if (this.editingNodeId === id) this.editingNodeId = null;
+    if (this.editingNodeId === id) {
+      this.editingNodeId = null;
+      this.editingOriginalContent = null;
+    }
     if (this.rawViewerNodeId === id) this.rawViewerNodeId = null;
     if (this.hoverTextNodeId === id) this.hoverTextNodeId = null;
     if (this.hoverPdfPage?.nodeId === id) this.hoverPdfPage = null;
@@ -5027,6 +5114,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     this.requestRender();
     this.emitUiState();
+    this.requestPersist();
   }
 
   private emitUiState(): void {
@@ -5345,6 +5433,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       `fs:${Math.max(1, Math.round(this.nodeTextFontSizePx))}`,
       `lh:${Math.max(0.1, this.nodeTextLineHeight).toFixed(3)}`,
       `fc:${fingerprintText(this.nodeTextColor)}`,
+      `bgc:${this.nodeBackgroundColor}`,
+      `bg:${this.nodeBackgroundAlpha(false).toFixed(3)}`,
     ].join('|');
     return { sig, scrollX, scrollY };
   }
@@ -5390,7 +5480,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     return (
       `<div style="position:relative;width:100%;height:100%;box-sizing:border-box;overflow:hidden;` +
-      `border-radius:18px;background:rgba(0,0,0,0.28);border:1px solid rgba(255,255,255,0.14);">` +
+      `border-radius:18px;background:${this.nodeBackgroundFillStyle(false)};border:1px solid rgba(255,255,255,0.14);">` +
       `<div style="position:absolute;left:${TEXT_NODE_PAD_PX}px;top:9px;right:${TEXT_NODE_PAD_PX}px;height:22px;display:flex;align-items:center;` +
       `color:rgba(255,255,255,0.85);font:600 14px ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;` +
       `white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${title}</div>` +
@@ -8760,7 +8850,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
             y: clamp(world.y - contentRect.y, 0, contentRect.h),
           };
 
-          this.eraseInkNodeStrokesAlongSegment(inkNode, local, local, radiusWorld);
+          const erased = this.eraseInkNodeStrokesAlongSegment(inkNode, local, local, radiusWorld);
           this.activeGesture = {
             kind: 'erase-node',
             pointerId: info.pointerId,
@@ -8775,12 +8865,13 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           this.bringNodeToFront(inkNode.id);
           this.suppressTapPointerIds.add(info.pointerId);
           this.requestRender();
+          if (erased) this.requestPersist();
           if (selectionChanged) this.emitUiState();
           return 'draw';
         }
       }
 
-      this.eraseWorldInkStrokesAlongSegment(world, world, radiusWorld);
+      const erased = this.eraseWorldInkStrokesAlongSegment(world, world, radiusWorld);
       this.activeGesture = {
         kind: 'erase-world',
         pointerId: info.pointerId,
@@ -8790,6 +8881,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       };
       this.suppressTapPointerIds.add(info.pointerId);
       this.requestRender();
+      if (erased) this.requestPersist();
       return 'draw';
     }
 
@@ -9267,7 +9359,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       const world = this.camera.screenToWorld(p);
       const changed = this.eraseWorldInkStrokesAlongSegment(g.lastWorld, world, g.radiusWorld);
       g.lastWorld = world;
-      if (changed) this.requestRender();
+      if (changed) {
+        this.requestRender();
+        this.requestPersist();
+      }
       return;
     }
 
@@ -9282,7 +9377,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       };
       const changed = this.eraseInkNodeStrokesAlongSegment(node, g.lastLocal, local, g.radiusWorld);
       g.lastLocal = local;
-      if (changed) this.requestRender();
+      if (changed) {
+        this.requestRender();
+        this.requestPersist();
+      }
       return;
     }
 
@@ -9314,6 +9412,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           };
         }
         this.requestRender();
+        this.requestPersist();
         return;
       }
 
@@ -9324,6 +9423,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         h: g.startRect.h,
       };
       this.requestRender();
+      this.requestPersist();
       return;
     }
 
@@ -9403,6 +9503,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
 	    node.rect = next;
 	    this.requestRender();
+	    this.requestPersist();
 	  }
 
   private handlePointerUp(p: Vec2, info: { pointerType: string; pointerId: number; wasDrag: boolean }): void {
@@ -9780,6 +9881,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       this.activeGesture = null;
       this.suppressTapPointerIds.delete(info.pointerId);
       this.requestRender();
+      this.requestPersist();
       return;
     }
 
@@ -9808,6 +9910,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       this.activeGesture = null;
       this.suppressTapPointerIds.delete(info.pointerId);
       this.requestRender();
+      this.requestPersist();
       return;
     }
 
@@ -9817,6 +9920,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       this.activeGesture = null;
       this.suppressTapPointerIds.delete(info.pointerId);
       if (changed) this.requestRender();
+      this.requestPersist();
       return;
     }
 
@@ -9838,6 +9942,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       this.activeGesture = null;
       this.suppressTapPointerIds.delete(info.pointerId);
       if (changed) this.requestRender();
+      this.requestPersist();
       return;
     }
 
@@ -9859,6 +9964,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.activeGesture = null;
     if (info.wasDrag) this.suppressTapPointerIds.delete(info.pointerId);
     this.requestRender();
+    this.requestPersist();
   }
 
   private handlePointerCancel(info: { pointerType: string; pointerId: number }): void {
@@ -9876,6 +9982,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     }
     this.suppressTapPointerIds.delete(info.pointerId);
     this.requestRender();
+    this.requestPersist();
   }
 
   private recenterCameraOnWorldPoint(world: Vec2): void {
@@ -10141,7 +10248,10 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     if (hit) this.bringNodeToFront(hit.id);
     const shouldMouseClickRecenter =
       this.mouseClickRecenterEnabled && !hit && info.pointerType === 'mouse' && info.wheelInput === 'mouse';
-    if (shouldMouseClickRecenter) this.recenterCameraOnWorldPoint(world);
+    if (shouldMouseClickRecenter) {
+      this.recenterCameraOnWorldPoint(world);
+      this.requestPersist();
+    }
     if (changed || shouldMouseClickRecenter) {
       this.requestRender();
       if (changed) this.emitUiState();
@@ -10154,6 +10264,14 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       this.raf = null;
       this.draw();
     });
+  }
+
+  private requestPersist(): void {
+    try {
+      this.onRequestPersist?.();
+    } catch {
+      // Persistence is best-effort at the engine boundary; the app handles retries.
+    }
   }
 
   private emitDebug(opts?: { force?: boolean }): void {
@@ -10952,7 +11070,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       const r = 18;
 
       const isSelected = node.id === this.selectedNodeId;
-      ctx.fillStyle = isSelected ? 'rgba(0,0,0,0.36)' : 'rgba(0,0,0,0.28)';
+      ctx.fillStyle = this.nodeBackgroundFillStyle(isSelected);
       ctx.strokeStyle = isSelected ? 'rgba(147,197,253,0.65)' : 'rgba(255,255,255,0.14)';
       ctx.lineWidth = 1.2 / (this.camera.zoom || 1);
 
@@ -11132,7 +11250,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 		        ctx.rect(contentRect.x, contentRect.y, contentRect.w, contentRect.h);
 		        ctx.clip();
 	
-		        ctx.fillStyle = this.glassNodesEnabled ? 'rgba(0,0,0,0.12)' : 'rgba(0,0,0,0.22)';
+		        ctx.fillStyle = this.nodeInnerFillStyle();
 		        ctx.beginPath();
 		        addRoundedRectPath(ctx, inkRect, INK_NODE_INNER_RADIUS_PX);
 		        ctx.fill();

@@ -32,6 +32,9 @@ export type PersistedWorkspaceSnapshot = {
     uiGlassBlurCssPxWebgl?: number;
     uiGlassSaturatePctWebgl?: number;
     glassNodesBlurBackend?: 'webgl' | 'canvas';
+    nodeBackgroundColorVersion?: number;
+    nodeBackgroundColor?: string;
+    nodeBackgroundOpacity?: number;
     desktopTransparentBackground?: boolean;
     composerFontFamily?: FontFamilyKey;
     composerFontSizePx?: number;
@@ -94,17 +97,8 @@ export async function getWorkspaceSnapshot(): Promise<PersistedWorkspaceSnapshot
   const db = await openDb();
   const tx = db.transaction('workspace', 'readonly');
   const store = tx.objectStore('workspace');
-  let rec: PersistedWorkspaceSnapshot | null = null;
-  try {
-    rec = (await requestToPromise(store.get('workspace'))) as any;
-  } catch {
-    rec = null;
-  }
-  try {
-    await txDone(tx);
-  } catch {
-    // ignore
-  }
+  const rec = (await requestToPromise(store.get('workspace'))) as PersistedWorkspaceSnapshot | null;
+  await txDone(tx);
   return rec && rec.key === 'workspace' ? rec : null;
 }
 
@@ -142,29 +136,17 @@ export async function getChatStateRecord(chatId: string): Promise<PersistedChatS
 
   const electron = getElectronStorageApi();
   if (electron?.storageGetChatStateRecord) {
-    try {
-      const res = await electron.storageGetChatStateRecord({ chatId });
-      const rec = (res?.record ?? null) as any;
-      return rec && rec.chatId === chatId && rec.state ? (rec as PersistedChatStateRecord) : null;
-    } catch {
-      return null;
-    }
+    const res = await electron.storageGetChatStateRecord({ chatId });
+    if (!res?.ok) throw new Error(res?.error || 'Failed to load chat state.');
+    const rec = (res?.record ?? null) as any;
+    return rec && rec.chatId === chatId && rec.state ? (rec as PersistedChatStateRecord) : null;
   }
 
   const db = await openDb();
   const tx = db.transaction('chatStates', 'readonly');
   const store = tx.objectStore('chatStates');
-  let rec: PersistedChatStateRecord | null = null;
-  try {
-    rec = (await requestToPromise(store.get(chatId))) as any;
-  } catch {
-    rec = null;
-  }
-  try {
-    await txDone(tx);
-  } catch {
-    // ignore
-  }
+  const rec = (await requestToPromise(store.get(chatId))) as PersistedChatStateRecord | null;
+  await txDone(tx);
   return rec && rec.chatId === chatId && rec.state ? rec : null;
 }
 
@@ -205,29 +187,17 @@ export async function getChatMetaRecord(chatId: string): Promise<PersistedChatMe
 
   const electron = getElectronStorageApi();
   if (electron?.storageGetChatMetaRecord) {
-    try {
-      const res = await electron.storageGetChatMetaRecord({ chatId });
-      const rec = (res?.record ?? null) as any;
-      return rec && rec.chatId === chatId ? (rec as PersistedChatMetaRecord) : null;
-    } catch {
-      return null;
-    }
+    const res = await electron.storageGetChatMetaRecord({ chatId });
+    if (!res?.ok) throw new Error(res?.error || 'Failed to load chat metadata.');
+    const rec = (res?.record ?? null) as any;
+    return rec && rec.chatId === chatId ? (rec as PersistedChatMetaRecord) : null;
   }
 
   const db = await openDb();
   const tx = db.transaction('chatMeta', 'readonly');
   const store = tx.objectStore('chatMeta');
-  let rec: PersistedChatMetaRecord | null = null;
-  try {
-    rec = (await requestToPromise(store.get(chatId))) as any;
-  } catch {
-    rec = null;
-  }
-  try {
-    await txDone(tx);
-  } catch {
-    // ignore
-  }
+  const rec = (await requestToPromise(store.get(chatId))) as PersistedChatMetaRecord | null;
+  await txDone(tx);
   return rec && rec.chatId === chatId ? rec : null;
 }
 

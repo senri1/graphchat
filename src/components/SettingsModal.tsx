@@ -68,6 +68,10 @@ type Props = {
   onChangeNodeFontFamily: (next: FontFamilyKey) => void;
   nodeFontSizePx: number;
   onChangeNodeFontSizePx: (next: number) => void;
+  nodeBackgroundColor: string;
+  onChangeNodeBackgroundColor: (next: string) => void;
+  nodeBackgroundOpacityPct: number;
+  onChangeNodeBackgroundOpacityPct: (next: number) => void;
   sidebarFontFamily: FontFamilyKey;
   onChangeSidebarFontFamily: (next: FontFamilyKey) => void;
   sidebarFontSizePx: number;
@@ -560,6 +564,42 @@ export default function SettingsModal(props: Props) {
                         step={1}
                         value={Math.round(props.nodeFontSizePx)}
                         onChange={(e) => props.onChangeNodeFontSizePx(Number(e.currentTarget.value))}
+                      />
+                    </div>
+
+                    <div className="settingsRow">
+                      <div className="settingsRow__text">
+                        <div className="settingsRow__title">Node color</div>
+                        <div className="settingsRow__desc">Adjust the background color of nodes on the canvas.</div>
+                      </div>
+                      <div className="settingsRow__actions">
+                        <div className="settingsColorPicker">
+                          <input
+                            className="settingsColorInput"
+                            type="color"
+                            value={props.nodeBackgroundColor}
+                            onChange={(e) => props.onChangeNodeBackgroundColor(e.currentTarget.value)}
+                            aria-label="Node background color"
+                          />
+                          <span className="settingsColorHex">{String(props.nodeBackgroundColor || '').toUpperCase()}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="settingsSlider">
+                      <div className="settingsSlider__labelRow">
+                        <span>Node opacity</span>
+                        <span>{Math.round(props.nodeBackgroundOpacityPct)}%</span>
+                      </div>
+                      <input
+                        className="settingsSlider__range"
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={Math.round(props.nodeBackgroundOpacityPct)}
+                        onChange={(e) => props.onChangeNodeBackgroundOpacityPct(Number(e.currentTarget.value))}
+                        aria-label="Node opacity"
                       />
                     </div>
 

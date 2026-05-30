@@ -858,6 +858,23 @@ function createWindow() {
   win.on('enter-html-full-screen', () => scheduleWindowModePayload(win));
   win.on('leave-html-full-screen', () => scheduleWindowModePayload(win));
   win.on('resize', () => scheduleWindowModePayload(win));
+  win.on('close', (event) => {
+    if (win.__gcAllowClose === true) return;
+    event.preventDefault();
+    if (win.__gcCloseFlushRequested === true) return;
+    win.__gcCloseFlushRequested = true;
+    win.webContents.send('app:before-close');
+    win.__gcCloseFlushTimer = setTimeout(() => {
+      win.__gcCloseFlushRequested = false;
+      win.__gcCloseFlushTimer = null;
+      void dialog.showMessageBox(win, {
+        type: 'error',
+        title: 'GraphChatV1 is still saving',
+        message: 'The app could not finish saving your changes, so the window will remain open.',
+        detail: 'Wait a moment and close the window again. If the problem continues, check the in-app saving error.',
+      });
+    }, 10000);
+  });
 
   win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     console.error('[electron] did-fail-load', { errorCode, errorDescription, validatedURL });
@@ -996,6 +1013,17 @@ ipcMain.handle('app-menu:show', async (event, req) => {
   } catch (err) {
     return { ok: false, error: trimMessage(err?.message, 'Failed to show menu.') };
   }
+});
+
+ipcMain.on('app:close-ready', (event) => {
+  const browserWindow = BrowserWindow.fromWebContents(event.sender) ?? null;
+  if (!browserWindow || browserWindow.isDestroyed()) return;
+  if (browserWindow.__gcCloseFlushTimer) {
+    clearTimeout(browserWindow.__gcCloseFlushTimer);
+    browserWindow.__gcCloseFlushTimer = null;
+  }
+  browserWindow.__gcAllowClose = true;
+  browserWindow.close();
 });
 
 registerStorageIpcHandlers({ ipcMain, app, shell, dialog });

@@ -388,6 +388,10 @@ const DEFAULT_GLASS_SATURATE_PCT_CANVAS = 180;
 const DEFAULT_UI_GLASS_BLUR_CSS_PX_WEBGL = 15;
 const DEFAULT_UI_GLASS_SATURATE_PCT_WEBGL = 140;
 const DEFAULT_GLASS_UNDERLAY_ALPHA = 1;
+const DEFAULT_NODE_BACKGROUND_COLOR = '#181818';
+const LEGACY_NODE_BACKGROUND_COLOR = '#000000';
+const NODE_BACKGROUND_COLOR_VERSION = 1;
+const DEFAULT_NODE_BACKGROUND_OPACITY = 0.28;
 const DEFAULT_DESKTOP_TRANSPARENT_BACKGROUND = false;
 const DEFAULT_INK_SEND_CROP_ENABLED = false;
 const DEFAULT_INK_SEND_DOWNSCALE_ENABLED = false;
@@ -396,6 +400,88 @@ const DEFAULT_SEND_ALL_COMPOSER_ENABLED = false;
 const DEFAULT_CLEANUP_CHAT_FOLDERS_ON_DELETE = true;
 const MULTI_SEND_ASSISTANT_MAX_W_PX = 800;
 const MULTI_SEND_ASSISTANT_GAP_X_PX = 26;
+const EDITABLE_NODE_RECOVERY_STORAGE_KEY = 'graphchatv1.editable-node-recovery.v1';
+
+type EditableNodeRecoveryDraft = {
+  chatId: string;
+  nodeId: string;
+  content: string;
+  updatedAt: number;
+};
+
+function readEditableNodeRecoveryDrafts(): EditableNodeRecoveryDraft[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(EDITABLE_NODE_RECOVERY_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((entry): EditableNodeRecoveryDraft | null => {
+        const chatId = typeof entry?.chatId === 'string' ? entry.chatId.trim() : '';
+        const nodeId = typeof entry?.nodeId === 'string' ? entry.nodeId.trim() : '';
+        if (!chatId || !nodeId || typeof entry?.content !== 'string') return null;
+        const updatedAt = Number(entry?.updatedAt);
+        return { chatId, nodeId, content: entry.content, updatedAt: Number.isFinite(updatedAt) ? updatedAt : 0 };
+      })
+      .filter((entry): entry is EditableNodeRecoveryDraft => Boolean(entry));
+  } catch {
+    return [];
+  }
+}
+
+function writeEditableNodeRecoveryDrafts(drafts: EditableNodeRecoveryDraft[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (drafts.length === 0) {
+      window.localStorage.removeItem(EDITABLE_NODE_RECOVERY_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(EDITABLE_NODE_RECOVERY_STORAGE_KEY, JSON.stringify(drafts.slice(0, 25)));
+  } catch {
+    // Primary persistence still retries and surfaces failures.
+  }
+}
+
+function rememberEditableNodeRecoveryDraft(chatIdRaw: string, nodeIdRaw: string, content: string): void {
+  const chatId = String(chatIdRaw ?? '').trim();
+  const nodeId = String(nodeIdRaw ?? '').trim();
+  if (!chatId || !nodeId) return;
+  const drafts = readEditableNodeRecoveryDrafts().filter((entry) => entry.chatId !== chatId || entry.nodeId !== nodeId);
+  drafts.unshift({ chatId, nodeId, content, updatedAt: Date.now() });
+  writeEditableNodeRecoveryDrafts(drafts);
+}
+
+function clearEditableNodeRecoveryDraft(chatIdRaw: string, nodeIdRaw: string): void {
+  const chatId = String(chatIdRaw ?? '').trim();
+  const nodeId = String(nodeIdRaw ?? '').trim();
+  if (!chatId || !nodeId) return;
+  writeEditableNodeRecoveryDrafts(
+    readEditableNodeRecoveryDrafts().filter((entry) => entry.chatId !== chatId || entry.nodeId !== nodeId),
+  );
+}
+
+function clearPersistedEditableNodeRecoveryDrafts(chatStates: Map<string, WorldEngineChatState>): void {
+  const remaining = readEditableNodeRecoveryDrafts().filter((entry) => {
+    const state = chatStates.get(entry.chatId);
+    if (!state) return false;
+    const node = state.nodes.find((candidate) => candidate.id === entry.nodeId) ?? null;
+    return Boolean(node && node.kind === 'text' && node.content !== entry.content);
+  });
+  writeEditableNodeRecoveryDrafts(remaining);
+}
+
+function applyEditableNodeRecoveryDrafts(chatStates: Map<string, WorldEngineChatState>): number {
+  let recovered = 0;
+  for (const entry of readEditableNodeRecoveryDrafts()) {
+    const state = chatStates.get(entry.chatId);
+    const node = state?.nodes.find((candidate) => candidate.id === entry.nodeId) ?? null;
+    if (!node || node.kind !== 'text' || node.content === entry.content) continue;
+    node.content = entry.content;
+    recovered += 1;
+  }
+  return recovered;
+}
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
   const n = Number(value);
@@ -411,6 +497,18 @@ function normalizeHexColor(value: unknown, fallback: string): string {
     return `#${raw[1]}${raw[1]}${raw[2]}${raw[2]}${raw[3]}${raw[3]}`.toLowerCase();
   }
   return fallback;
+}
+
+function normalizePersistedNodeBackgroundColor(value: unknown, version: unknown): string {
+  const normalized = normalizeHexColor(value, DEFAULT_NODE_BACKGROUND_COLOR);
+  const parsedVersion = Number(version);
+  if (
+    (!Number.isFinite(parsedVersion) || parsedVersion < NODE_BACKGROUND_COLOR_VERSION) &&
+    normalized === LEGACY_NODE_BACKGROUND_COLOR
+  ) {
+    return DEFAULT_NODE_BACKGROUND_COLOR;
+  }
+  return normalized;
 }
 
 function parseBoolParam(params: URLSearchParams, key: string, fallback: boolean): boolean {
@@ -2650,6 +2748,7 @@ export default function App() {
   const [electronWindowFullScreen, setElectronWindowFullScreen] = useState(false);
   const [browserFullScreenGuess, setBrowserFullScreenGuess] = useState(false);
   const bootedRef = useRef(false);
+  const bootLoadBlockedRef = useRef(false);
   const bootPayloadRef = useRef<{
     root: WorkspaceFolder;
     activeChatId: string;
@@ -2673,6 +2772,9 @@ export default function App() {
       uiGlassSaturatePctWebgl: number;
       glassNodesUnderlayAlpha: number;
       glassNodesBlurBackend: GlassBlurBackend;
+      nodeBackgroundColorVersion: number;
+      nodeBackgroundColor: string;
+      nodeBackgroundOpacity: number;
       desktopTransparentBackground: boolean;
       composerFontFamily: FontFamilyKey;
       composerFontSizePx: number;
@@ -2701,6 +2803,9 @@ export default function App() {
   const persistTimerRef = useRef<number | null>(null);
   const persistInFlightRef = useRef<Promise<void> | null>(null);
   const persistPendingRef = useRef(false);
+  const persistForcePendingRef = useRef(false);
+  const persistFailureNotifiedRef = useRef(false);
+  const persistNowRef = useRef<((opts?: { force?: boolean }) => void) | null>(null);
   const hydratingPdfChatsRef = useRef<Set<string>>(new Set());
   const attachmentsGcDirtyRef = useRef(false);
   const attachmentsGcRunningRef = useRef(false);
@@ -2803,6 +2908,8 @@ export default function App() {
   const [glassNodesSaturatePctCanvas, setGlassNodesSaturatePctCanvas] = useState<number>(() => DEFAULT_GLASS_SATURATE_PCT_CANVAS);
   const [glassNodesUnderlayAlpha, setGlassNodesUnderlayAlpha] = useState<number>(() => DEFAULT_GLASS_UNDERLAY_ALPHA);
   const [glassNodesBlurBackend, setGlassNodesBlurBackend] = useState<GlassBlurBackend>(() => DEFAULT_GLASS_BLUR_BACKEND);
+  const [nodeBackgroundColor, setNodeBackgroundColor] = useState<string>(() => DEFAULT_NODE_BACKGROUND_COLOR);
+  const [nodeBackgroundOpacity, setNodeBackgroundOpacity] = useState<number>(() => DEFAULT_NODE_BACKGROUND_OPACITY);
   const [desktopTransparentBackground, setDesktopTransparentBackground] = useState<boolean>(
     () => DEFAULT_DESKTOP_TRANSPARENT_BACKGROUND,
   );
@@ -2852,6 +2959,8 @@ export default function App() {
   const glassNodesSaturatePctCanvasRef = useRef<number>(glassNodesSaturatePctCanvas);
   const glassNodesUnderlayAlphaRef = useRef<number>(glassNodesUnderlayAlpha);
   const glassNodesBlurBackendRef = useRef<GlassBlurBackend>(glassNodesBlurBackend);
+  const nodeBackgroundColorRef = useRef<string>(nodeBackgroundColor);
+  const nodeBackgroundOpacityRef = useRef<number>(nodeBackgroundOpacity);
   const desktopTransparentBackgroundRef = useRef<boolean>(desktopTransparentBackground);
   const edgeRouterIdRef = useRef<EdgeRouterId>(edgeRouterId);
   const replyArrowColorRef = useRef<string>(replyArrowColor);
@@ -3153,6 +3262,8 @@ export default function App() {
     glassNodesSaturatePctCanvasRef.current = glassNodesSaturatePctCanvas;
     glassNodesUnderlayAlphaRef.current = glassNodesUnderlayAlpha;
     glassNodesBlurBackendRef.current = glassNodesBlurBackend;
+    nodeBackgroundColorRef.current = nodeBackgroundColor;
+    nodeBackgroundOpacityRef.current = nodeBackgroundOpacity;
     uiGlassBlurCssPxWebglRef.current = uiGlassBlurCssPxWebgl;
     uiGlassSaturatePctWebglRef.current = uiGlassSaturatePctWebgl;
 
@@ -3179,6 +3290,8 @@ export default function App() {
     glassNodesSaturatePctCanvas,
     glassNodesUnderlayAlpha,
     glassNodesBlurBackend,
+    nodeBackgroundColor,
+    nodeBackgroundOpacity,
     uiGlassBlurCssPxWebgl,
     uiGlassSaturatePctWebgl,
   ]);
@@ -3352,11 +3465,16 @@ export default function App() {
   }, [focusedFolderId]);
 
   const schedulePersistSoon = useMemo(() => {
-    const persist = () => {
+    const persist = (opts?: { force?: boolean }) => {
       if (!bootedRef.current) return;
       if (!persistPendingRef.current) return;
-      if (lastEngineInteractingRef.current === true) return;
+      if (opts?.force) persistForcePendingRef.current = true;
+      const force = persistForcePendingRef.current;
+      if (lastEngineInteractingRef.current === true && !force) return;
+      if (persistInFlightRef.current) return;
+      persistForcePendingRef.current = false;
       persistPendingRef.current = false;
+      let failed = false;
       const root = treeRootRef.current;
       const active = activeChatIdRef.current;
       const focused = focusedFolderIdRef.current;
@@ -3367,7 +3485,7 @@ export default function App() {
         try {
           chatStatesRef.current.set(active, engine.exportChatState());
         } catch {
-          // ignore
+          failed = true;
         }
       }
 
@@ -3409,6 +3527,11 @@ export default function App() {
                 ? Math.max(0, Math.min(1, glassNodesUnderlayAlphaRef.current))
                 : DEFAULT_GLASS_UNDERLAY_ALPHA,
               glassNodesBlurBackend: glassNodesBlurBackendRef.current === 'canvas' ? 'canvas' : DEFAULT_GLASS_BLUR_BACKEND,
+              nodeBackgroundColorVersion: NODE_BACKGROUND_COLOR_VERSION,
+              nodeBackgroundColor: normalizeHexColor(nodeBackgroundColorRef.current, DEFAULT_NODE_BACKGROUND_COLOR),
+              nodeBackgroundOpacity: Number.isFinite(nodeBackgroundOpacityRef.current)
+                ? Math.max(0, Math.min(1, nodeBackgroundOpacityRef.current))
+                : DEFAULT_NODE_BACKGROUND_OPACITY,
               desktopTransparentBackground: Boolean(desktopTransparentBackgroundRef.current),
               composerFontFamily: composerFontFamilyRef.current,
               composerFontSizePx: Math.round(clampNumber(composerFontSizePxRef.current, 10, 30, DEFAULT_COMPOSER_FONT_SIZE_PX)),
@@ -3433,7 +3556,7 @@ export default function App() {
             },
           });
         } catch {
-          // ignore
+          failed = true;
         }
 
         for (const chatId of chatIds) {
@@ -3450,7 +3573,7 @@ export default function App() {
                 chatStatesRef.current.set(chatId, compactedState);
               }
             } catch {
-              // ignore
+              failed = true;
             }
           }
           const meta = chatMetaRef.current.get(chatId);
@@ -3458,7 +3581,7 @@ export default function App() {
             try {
               await putChatMetaRecord(chatId, meta);
             } catch {
-              // ignore
+              failed = true;
             }
           }
         }
@@ -3493,9 +3616,29 @@ export default function App() {
         if (persistInFlightRef.current === persistPromise) {
           persistInFlightRef.current = null;
         }
+        if (failed) {
+          persistPendingRef.current = true;
+          if (!persistFailureNotifiedRef.current) {
+            persistFailureNotifiedRef.current = true;
+            showToast('Saving failed. Changes are still pending and will be retried.', 'error', 5200);
+          }
+        } else {
+          clearPersistedEditableNodeRecoveryDrafts(chatStatesRef.current);
+          persistFailureNotifiedRef.current = false;
+        }
+        if (force && persistPendingRef.current) {
+          persistForcePendingRef.current = true;
+        }
+        if (persistPendingRef.current && persistTimerRef.current == null) {
+          persistTimerRef.current = window.setTimeout(() => {
+            persistTimerRef.current = null;
+            persist({ force: persistForcePendingRef.current });
+          }, failed ? 1500 : 0);
+        }
       });
     };
 
+    persistNowRef.current = persist;
     return () => {
       if (!bootedRef.current) return;
       persistPendingRef.current = true;
@@ -3560,6 +3703,10 @@ export default function App() {
     );
     engine.setGlassNodesUnderlayAlpha(
       Number.isFinite(glassNodesUnderlayAlphaRef.current) ? glassNodesUnderlayAlphaRef.current : DEFAULT_GLASS_UNDERLAY_ALPHA,
+    );
+    engine.setNodeBackgroundColor(nodeBackgroundColorRef.current);
+    engine.setNodeBackgroundOpacity(
+      Number.isFinite(nodeBackgroundOpacityRef.current) ? nodeBackgroundOpacityRef.current : DEFAULT_NODE_BACKGROUND_OPACITY,
     );
 
     const key = typeof meta.backgroundStorageKey === 'string' ? meta.backgroundStorageKey : null;
@@ -5719,6 +5866,8 @@ export default function App() {
     });
     engine.setNodeTextFontFamily(fontFamilyCss(nodeFontFamilyRef.current));
     engine.setNodeTextFontSizePx(nodeFontSizePxRef.current);
+    engine.setNodeBackgroundColor(nodeBackgroundColorRef.current);
+    engine.setNodeBackgroundOpacity(nodeBackgroundOpacityRef.current);
     engine.setEdgeRouter(edgeRouterIdRef.current);
     engine.setReplyArrowColor(replyArrowColorRef.current);
     engine.setReplyArrowOpacity(replyArrowOpacityRef.current);
@@ -5733,7 +5882,11 @@ export default function App() {
     engine.onDebug = (next) => {
       const nextInteracting = Boolean(next?.interacting);
       if (lastEngineInteractingRef.current === true && !nextInteracting && bootedRef.current && persistPendingRef.current) {
-        schedulePersistSoon();
+        if (persistTimerRef.current != null) {
+          window.clearTimeout(persistTimerRef.current);
+          persistTimerRef.current = null;
+        }
+        persistNowRef.current?.();
       }
       lastEngineInteractingRef.current = nextInteracting;
       if (debugBridgeEnabledRef.current) setDebug(next);
@@ -6141,6 +6294,54 @@ export default function App() {
     }
   }, [nodeMenuId]);
 
+  const syncActiveEditingDraftToEngine = (
+    engine: WorldEngine,
+    opts?: { nodeId?: string | null; draft?: string | null },
+  ): void => {
+    const uiState = engine.getUiState();
+    const editingNodeId = typeof uiState.editingNodeId === 'string' ? uiState.editingNodeId.trim() : '';
+    if (!editingNodeId) return;
+
+    const overrideNodeId = typeof opts?.nodeId === 'string' ? opts.nodeId.trim() : '';
+    let nextDraft: string | null = null;
+
+    if (overrideNodeId && overrideNodeId === editingNodeId && typeof opts?.draft === 'string') {
+      nextDraft = opts.draft;
+    } else {
+      const liveDraft = editingDraftByNodeIdRef.current.get(editingNodeId);
+      if (typeof liveDraft === 'string') nextDraft = liveDraft;
+      else if (typeof uiState.editingText === 'string') nextDraft = uiState.editingText;
+    }
+
+    if (typeof nextDraft === 'string') {
+      engine.setEditingText(nextDraft);
+    }
+  };
+
+  useEffect(() => {
+    const requestImmediatePersist = () => {
+      const engine = engineRef.current;
+      if (engine) syncActiveEditingDraftToEngine(engine);
+      persistPendingRef.current = true;
+      if (persistTimerRef.current != null) {
+        window.clearTimeout(persistTimerRef.current);
+        persistTimerRef.current = null;
+      }
+      persistNowRef.current?.({ force: true });
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') requestImmediatePersist();
+    };
+    window.addEventListener('pagehide', requestImmediatePersist);
+    window.addEventListener('beforeunload', requestImmediatePersist);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.removeEventListener('pagehide', requestImmediatePersist);
+      window.removeEventListener('beforeunload', requestImmediatePersist);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, []);
+
   const switchChat = (nextChatId: string, opts?: { saveCurrent?: boolean }) => {
     if (!nextChatId) return;
     const engine = engineRef.current;
@@ -6165,7 +6366,8 @@ export default function App() {
     }
 
     if (engine) {
-      engine.cancelEditing();
+      syncActiveEditingDraftToEngine(engine);
+      engine.commitEditing();
       if (opts?.saveCurrent !== false && prevChatId) {
         chatStatesRef.current.set(prevChatId, engine.exportChatState());
       }
@@ -6251,6 +6453,10 @@ export default function App() {
       ? visual.glassNodesUnderlayAlpha
       : DEFAULT_GLASS_UNDERLAY_ALPHA;
     glassNodesBlurBackendRef.current = visual.glassNodesBlurBackend === 'canvas' ? 'canvas' : DEFAULT_GLASS_BLUR_BACKEND;
+    nodeBackgroundColorRef.current = normalizeHexColor(visual.nodeBackgroundColor, DEFAULT_NODE_BACKGROUND_COLOR);
+    nodeBackgroundOpacityRef.current = Number.isFinite(visual.nodeBackgroundOpacity)
+      ? Math.max(0, Math.min(1, visual.nodeBackgroundOpacity))
+      : DEFAULT_NODE_BACKGROUND_OPACITY;
     desktopTransparentBackgroundRef.current = Boolean(visual.desktopTransparentBackground);
     edgeRouterIdRef.current = visual.edgeRouterId;
     replyArrowColorRef.current = visual.replyArrowColor;
@@ -6263,6 +6469,8 @@ export default function App() {
     setGlassNodesSaturatePctCanvas(glassNodesSaturatePctCanvasRef.current);
     setGlassNodesUnderlayAlpha(glassNodesUnderlayAlphaRef.current);
     setGlassNodesBlurBackend(glassNodesBlurBackendRef.current);
+    setNodeBackgroundColor(nodeBackgroundColorRef.current);
+    setNodeBackgroundOpacity(nodeBackgroundOpacityRef.current);
     setDesktopTransparentBackground(desktopTransparentBackgroundRef.current);
     setEdgeRouterId(edgeRouterIdRef.current);
     setReplyArrowColor(replyArrowColorRef.current);
@@ -6344,6 +6552,8 @@ export default function App() {
             : DEFAULT_GLASS_SATURATE_PCT_WEBGL,
       );
       engine.setGlassNodesUnderlayAlpha(glassNodesUnderlayAlphaRef.current);
+      engine.setNodeBackgroundColor(nodeBackgroundColorRef.current);
+      engine.setNodeBackgroundOpacity(nodeBackgroundOpacityRef.current);
       engine.setEdgeRouter(edgeRouterIdRef.current);
       engine.setReplyArrowColor(replyArrowColorRef.current);
       engine.setReplyArrowOpacity(replyArrowOpacityRef.current);
@@ -6393,7 +6603,7 @@ export default function App() {
 
   useEffect(() => {
     void (async () => {
-      if (bootedRef.current) return;
+      if (bootedRef.current || bootLoadBlockedRef.current) return;
       let ws: Awaited<ReturnType<typeof getWorkspaceSnapshot>> = null;
       let workspaceLoadFailed = false;
       try {
@@ -6403,7 +6613,8 @@ export default function App() {
         ws = null;
       }
       if (workspaceLoadFailed) {
-        bootedRef.current = true;
+        bootLoadBlockedRef.current = true;
+        showToast('Failed to load saved workspace data. No local data was overwritten. Restart the app and try again.', 'error', 10000);
         return;
       }
       if (!ws || !ws.root || ws.root.kind !== 'folder') {
@@ -6433,6 +6644,7 @@ export default function App() {
       const chatMeta = new Map<string, ChatRuntimeMeta>();
       const backgroundLibraryFromWorkspace = normalizeBackgroundLibrary((ws as any)?.backgroundLibrary);
       const backgroundKeysInChats = new Set<string>();
+      let chatStorageLoadFailed = false;
 
       for (const chatId of chatIds) {
         try {
@@ -6449,7 +6661,8 @@ export default function App() {
             chatStates.set(chatId, createEmptyChatState());
           }
         } catch {
-          chatStates.set(chatId, createEmptyChatState());
+          chatStorageLoadFailed = true;
+          break;
         }
 
         try {
@@ -6517,8 +6730,24 @@ export default function App() {
           };
           chatMeta.set(chatId, meta);
         } catch {
-          // ignore missing meta
+          chatStorageLoadFailed = true;
+          break;
         }
+      }
+
+      if (chatStorageLoadFailed) {
+        bootLoadBlockedRef.current = true;
+        showToast('Failed to load saved chat data. No local data was overwritten. Restart the app and try again.', 'error', 10000);
+        return;
+      }
+
+      const recoveredEditableNodeDrafts = applyEditableNodeRecoveryDrafts(chatStates);
+      if (recoveredEditableNodeDrafts > 0) {
+        showToast(
+          `Recovered ${recoveredEditableNodeDrafts} editable node draft${recoveredEditableNodeDrafts === 1 ? '' : 's'} from the previous session.`,
+          'info',
+          6200,
+        );
       }
 
       const backgroundLibraryByKey = new Set(backgroundLibraryFromWorkspace.map((b) => b.storageKey));
@@ -6620,6 +6849,14 @@ export default function App() {
           ? Math.max(0, Math.min(1, Number(visualSrc.glassNodesUnderlayAlpha)))
           : DEFAULT_GLASS_UNDERLAY_ALPHA,
         glassNodesBlurBackend,
+        nodeBackgroundColorVersion: NODE_BACKGROUND_COLOR_VERSION,
+        nodeBackgroundColor: normalizePersistedNodeBackgroundColor(
+          (visualSrc as any)?.nodeBackgroundColor,
+          (visualSrc as any)?.nodeBackgroundColorVersion,
+        ),
+        nodeBackgroundOpacity: Number.isFinite(Number((visualSrc as any)?.nodeBackgroundOpacity))
+          ? Math.max(0, Math.min(1, Number((visualSrc as any).nodeBackgroundOpacity)))
+          : DEFAULT_NODE_BACKGROUND_OPACITY,
         desktopTransparentBackground:
           typeof (visualSrc as any)?.desktopTransparentBackground === 'boolean'
             ? Boolean((visualSrc as any).desktopTransparentBackground)
@@ -6768,6 +7005,7 @@ export default function App() {
     let state: WorldEngineChatState | null = null;
     if (engine && isActive) {
       try {
+        syncActiveEditingDraftToEngine(engine);
         state = engine.exportChatState();
       } catch {
         state = null;
@@ -6851,7 +7089,10 @@ export default function App() {
       };
       try {
         const engine = engineRef.current;
-        if (engine) chatStatesRef.current.set(activeId, engine.exportChatState());
+        if (engine) {
+          syncActiveEditingDraftToEngine(engine);
+          chatStatesRef.current.set(activeId, engine.exportChatState());
+        }
       } catch {
         // ignore
       }
@@ -7461,6 +7702,7 @@ export default function App() {
     );
     void (async () => {
       try {
+        await flushPendingPersistenceForCloudSync();
         const res = await api.storageChooseDataDir({ moveExisting });
         if (!res?.ok) {
           if (res?.canceled) return;
@@ -7499,6 +7741,7 @@ export default function App() {
     );
     void (async () => {
       try {
+        await flushPendingPersistenceForCloudSync();
         const res = await api.storageResetDataDir({ moveExisting });
         if (!res?.ok) {
           showToast(`Failed to reset storage location: ${String(res?.error ?? 'unknown error')}`, 'error');
@@ -7587,8 +7830,15 @@ export default function App() {
     })();
   };
 
-  const flushPendingPersistenceForCloudSync = async () => {
-    schedulePersistSoon();
+  async function flushPendingPersistenceForCloudSync(): Promise<void> {
+    const engine = engineRef.current;
+    if (engine) syncActiveEditingDraftToEngine(engine);
+    persistPendingRef.current = true;
+    if (persistTimerRef.current != null) {
+      window.clearTimeout(persistTimerRef.current);
+      persistTimerRef.current = null;
+    }
+    persistNowRef.current?.({ force: true });
     const sleep = (ms: number) =>
       new Promise<void>((resolve) => {
         window.setTimeout(() => resolve(), ms);
@@ -7598,7 +7848,7 @@ export default function App() {
     while (Date.now() < deadline) {
       const timerPending = persistTimerRef.current != null;
       const inFlight = persistInFlightRef.current;
-      if (!timerPending && !inFlight) return;
+      if (!timerPending && !inFlight && !persistPendingRef.current) return;
       if (inFlight) {
         try {
           await Promise.race([inFlight, sleep(120)]);
@@ -7609,7 +7859,23 @@ export default function App() {
         await sleep(120);
       }
     }
-  };
+    throw new Error('Timed out while saving local changes before cloud sync.');
+  }
+
+  useEffect(() => {
+    const api = (window as any)?.gcElectron;
+    if (typeof api?.onBeforeClose !== 'function' || typeof api?.notifyCloseReady !== 'function') return;
+    return api.onBeforeClose(() => {
+      void (async () => {
+        try {
+          await flushPendingPersistenceForCloudSync();
+          api.notifyCloseReady();
+        } catch (err: any) {
+          showToast(`Could not finish saving before close: ${err?.message || String(err)}`, 'error', 10000);
+        }
+      })();
+    });
+  }, []);
 
   const pushToCloudSyncFolder = () => {
     const api = (window as any)?.gcElectron;
@@ -7896,30 +8162,6 @@ export default function App() {
     if (!settingsOpen || settingsPanel !== 'models') return;
     setRuntimeApiKeys(getRuntimeApiKeys());
   }, [settingsOpen, settingsPanel]);
-
-  const syncActiveEditingDraftToEngine = (
-    engine: WorldEngine,
-    opts?: { nodeId?: string | null; draft?: string | null },
-  ): void => {
-    const uiState = engine.getUiState();
-    const editingNodeId = typeof uiState.editingNodeId === 'string' ? uiState.editingNodeId.trim() : '';
-    if (!editingNodeId) return;
-
-    const overrideNodeId = typeof opts?.nodeId === 'string' ? opts.nodeId.trim() : '';
-    let nextDraft: string | null = null;
-
-    if (overrideNodeId && overrideNodeId === editingNodeId && typeof opts?.draft === 'string') {
-      nextDraft = opts.draft;
-    } else {
-      const liveDraft = editingDraftByNodeIdRef.current.get(editingNodeId);
-      if (typeof liveDraft === 'string') nextDraft = liveDraft;
-      else if (typeof uiState.editingText === 'string') nextDraft = uiState.editingText;
-    }
-
-    if (typeof nextDraft === 'string') {
-      engine.setEditingText(nextDraft);
-    }
-  };
 
   const saveRuntimeProviderApiKey = (provider: RuntimeApiProvider, value: string) => {
     const next = setRuntimeApiKey(provider, value);
@@ -9566,7 +9808,15 @@ export default function App() {
                 mainFile: editorLatexState?.mainFile ?? null,
                 activeFile: editorLatexState?.activeFile ?? null,
               }}
-              onDraftChange={(next) => editingDraftByNodeIdRef.current.set(ui.editingNodeId as string, next)}
+              onDraftChange={(next) => {
+                const id = String(ui.editingNodeId ?? '').trim();
+                if (!id) return;
+                editingDraftByNodeIdRef.current.set(id, next);
+                const engine = engineRef.current;
+                const previous = engine?.getUiState().editingText ?? '';
+                engine?.setEditingText(next);
+                if (previous !== next) rememberEditableNodeRecoveryDraft(activeChatIdRef.current, id, next);
+              }}
               onProjectStateChange={(patch) => {
                 const id = String(ui.editingNodeId ?? '').trim();
                 if (!id) return;
@@ -9720,7 +9970,11 @@ export default function App() {
                 engineRef.current?.commitEditing(next);
                 schedulePersistSoon();
               }}
-              onCancel={() => engineRef.current?.cancelEditing()}
+              onCancel={() => {
+                const id = String(ui.editingNodeId ?? '').trim();
+                engineRef.current?.cancelEditing();
+                if (id) clearEditableNodeRecoveryDraft(activeChatIdRef.current, id);
+              }}
             />
           ) : (
             <TextNodeEditor
@@ -9730,7 +9984,15 @@ export default function App() {
               userPreface={editorUserPreface}
               modelId={composerModelId}
               modelOptions={composerModelOptions}
-              onDraftChange={(next) => editingDraftByNodeIdRef.current.set(ui.editingNodeId as string, next)}
+              onDraftChange={(next) => {
+                const id = String(ui.editingNodeId ?? '').trim();
+                if (!id) return;
+                editingDraftByNodeIdRef.current.set(id, next);
+                const engine = engineRef.current;
+                const previous = engine?.getUiState().editingText ?? '';
+                engine?.setEditingText(next);
+                if (previous !== next) rememberEditableNodeRecoveryDraft(activeChatIdRef.current, id, next);
+              }}
               anchorRect={editorAnchor}
               getScreenRect={() => engineRef.current?.getNodeScreenRect(ui.editingNodeId as string) ?? null}
               getZoom={() => engineRef.current?.camera.zoom ?? 1}
@@ -9837,7 +10099,11 @@ export default function App() {
                 engineRef.current?.commitEditing(next);
                 schedulePersistSoon();
               }}
-              onCancel={() => engineRef.current?.cancelEditing()}
+              onCancel={() => {
+                const id = String(ui.editingNodeId ?? '').trim();
+                engineRef.current?.cancelEditing();
+                if (id) clearEditableNodeRecoveryDraft(activeChatIdRef.current, id);
+              }}
             />
           )
         ) : null}
@@ -10407,6 +10673,23 @@ export default function App() {
             setNodeFontSizePx(Math.round(clampNumber(raw, 10, 30, DEFAULT_NODE_FONT_SIZE_PX)));
             schedulePersistSoon();
           }}
+          nodeBackgroundOpacityPct={nodeBackgroundOpacity * 100}
+          nodeBackgroundColor={nodeBackgroundColor}
+          onChangeNodeBackgroundColor={(raw) => {
+            const next = normalizeHexColor(raw, nodeBackgroundColorRef.current);
+            nodeBackgroundColorRef.current = next;
+            setNodeBackgroundColor(next);
+            engineRef.current?.setNodeBackgroundColor(next);
+            schedulePersistSoon();
+          }}
+          onChangeNodeBackgroundOpacityPct={(raw) => {
+            const pct = Number.isFinite(raw) ? Math.max(0, Math.min(100, raw)) : DEFAULT_NODE_BACKGROUND_OPACITY * 100;
+            const next = pct / 100;
+            nodeBackgroundOpacityRef.current = next;
+            setNodeBackgroundOpacity(next);
+            engineRef.current?.setNodeBackgroundOpacity(next);
+            schedulePersistSoon();
+          }}
           sidebarFontFamily={sidebarFontFamily}
           onChangeSidebarFontFamily={(next) => {
             setSidebarFontFamily(next);
@@ -10735,6 +11018,7 @@ export default function App() {
             setRawViewer(null);
             setConfirmDelete(null);
             setConfirmApplyBackground(null);
+            writeEditableNodeRecoveryDrafts([]);
 
             for (const assistantNodeId of Array.from(generationJobsByAssistantIdRef.current.keys())) {
               cancelJob(assistantNodeId);
@@ -10838,6 +11122,8 @@ export default function App() {
             uiGlassSaturatePctWebglRef.current = DEFAULT_UI_GLASS_SATURATE_PCT_WEBGL;
             glassNodesUnderlayAlphaRef.current = DEFAULT_GLASS_UNDERLAY_ALPHA;
             glassNodesBlurBackendRef.current = DEFAULT_GLASS_BLUR_BACKEND;
+            nodeBackgroundColorRef.current = DEFAULT_NODE_BACKGROUND_COLOR;
+            nodeBackgroundOpacityRef.current = DEFAULT_NODE_BACKGROUND_OPACITY;
             desktopTransparentBackgroundRef.current = DEFAULT_DESKTOP_TRANSPARENT_BACKGROUND;
             setGlassNodesEnabled(DEFAULT_GLASS_NODES_ENABLED);
             setGlassNodesBlurCssPxWebgl(DEFAULT_GLASS_BLUR_CSS_PX_WEBGL);
@@ -10846,6 +11132,8 @@ export default function App() {
             setGlassNodesSaturatePctCanvas(DEFAULT_GLASS_SATURATE_PCT_CANVAS);
             setGlassNodesUnderlayAlpha(DEFAULT_GLASS_UNDERLAY_ALPHA);
             setGlassNodesBlurBackend(DEFAULT_GLASS_BLUR_BACKEND);
+            setNodeBackgroundColor(DEFAULT_NODE_BACKGROUND_COLOR);
+            setNodeBackgroundOpacity(DEFAULT_NODE_BACKGROUND_OPACITY);
             setDesktopTransparentBackground(DEFAULT_DESKTOP_TRANSPARENT_BACKGROUND);
             setUiGlassBlurCssPxWebgl(DEFAULT_UI_GLASS_BLUR_CSS_PX_WEBGL);
             setUiGlassSaturatePctWebgl(DEFAULT_UI_GLASS_SATURATE_PCT_WEBGL);
@@ -10893,6 +11181,8 @@ export default function App() {
               engine.setGlassNodesSaturatePct(DEFAULT_GLASS_SATURATE_PCT_WEBGL);
               engine.setGlassNodesUnderlayAlpha(DEFAULT_GLASS_UNDERLAY_ALPHA);
               engine.setGlassNodesBlurBackend(DEFAULT_GLASS_BLUR_BACKEND);
+              engine.setNodeBackgroundColor(DEFAULT_NODE_BACKGROUND_COLOR);
+              engine.setNodeBackgroundOpacity(DEFAULT_NODE_BACKGROUND_OPACITY);
               engine.setEdgeRouter(DEFAULT_EDGE_ROUTER_ID);
               engine.setReplyArrowColor(DEFAULT_REPLY_ARROW_COLOR);
               engine.setReplyArrowOpacity(DEFAULT_REPLY_ARROW_OPACITY);

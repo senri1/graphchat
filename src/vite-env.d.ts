@@ -73,6 +73,8 @@ interface Window {
       isFullScreen?: boolean;
     }) => void) => () => void;
     showAppMenu: (req: { index: number }) => Promise<{ ok: boolean; error?: string }>;
+    onBeforeClose?: (cb: () => void) => () => void;
+    notifyCloseReady?: () => void;
     storageGetWorkspaceSnapshot: () => Promise<{ ok: boolean; snapshot?: unknown | null; error?: string }>;
     storagePutWorkspaceSnapshot: (req: { snapshot: unknown }) => Promise<{ ok: boolean; error?: string }>;
     storageDeleteWorkspaceSnapshot: () => Promise<{ ok: boolean; error?: string }>;

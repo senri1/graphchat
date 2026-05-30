@@ -257,6 +257,9 @@ export default function LatexNodeEditor(props: Props) {
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const draftRef = useRef(draft);
+  const draftRevisionRef = useRef(0);
+  const isDirtyRef = useRef(false);
+  const saveActiveFileInFlightRef = useRef<Promise<boolean> | null>(null);
   const projectRootRef = useRef<string | null>(null);
   const mainFileRef = useRef<string | null>(null);
   const activeFileRef = useRef<string | null>(null);
@@ -304,10 +307,16 @@ export default function LatexNodeEditor(props: Props) {
     selectedTreePath && projectFileByPath.has(selectedTreePath) ? projectFileByPath.get(selectedTreePath) ?? null : null;
   const selectedReadOnlyFile = selectedTreeFile && !selectedTreeFile.editable ? selectedTreeFile : null;
 
+  const setDirty = useCallback((next: boolean) => {
+    isDirtyRef.current = next;
+    setIsDirty(next);
+  }, []);
+
   const applyDraft = useCallback((next: string) => {
     const text = typeof next === 'string' ? next : String(next ?? '');
     setDraft(text);
     draftRef.current = text;
+    draftRevisionRef.current += 1;
     onDraftChangeRef.current?.(text);
   }, []);
 
@@ -560,7 +569,7 @@ export default function LatexNodeEditor(props: Props) {
       rootRaw: string,
       preferredMainRaw?: string | null,
       preferredActiveRaw?: string | null,
-      opts?: { persist?: boolean; fallbackContent?: string },
+      opts?: { persist?: boolean; fallbackContent?: string; preferFallbackContent?: boolean },
     ): Promise<{ ok: boolean; error?: string }> => {
       const root = typeof rootRaw === 'string' ? rootRaw.trim() : '';
       if (!root) {
@@ -570,7 +579,7 @@ export default function LatexNodeEditor(props: Props) {
         setProjectFiles([]);
         setProjectError(null);
         setProjectBusy(false);
-        setIsDirty(false);
+        setDirty(false);
         setTreeQuery('');
         setExpandedDirs({});
         setSelectedTreePath(null);
@@ -611,11 +620,19 @@ export default function LatexNodeEditor(props: Props) {
         }
 
         let loadedContent = typeof opts?.fallbackContent === 'string' ? opts.fallbackContent : initialValue ?? '';
+        let recoveredUnsavedDraft = false;
         if (nextActive) {
           const fileRes = await readLatexProjectFile(root, nextActive);
           if (!fileRes.ok) throw new Error((fileRes.error ?? 'Failed to open file.').trim() || 'Failed to open file.');
           if (ticket !== loadTicketRef.current) return { ok: false, error: 'stale' };
-          loadedContent = typeof fileRes.content === 'string' ? fileRes.content : '';
+          const fileContent = typeof fileRes.content === 'string' ? fileRes.content : '';
+          const fallbackContent = typeof opts?.fallbackContent === 'string' ? opts.fallbackContent : null;
+          if (opts?.preferFallbackContent && fallbackContent != null && fallbackContent !== fileContent) {
+            loadedContent = fallbackContent;
+            recoveredUnsavedDraft = true;
+          } else {
+            loadedContent = fileContent;
+          }
         }
 
         setProjectRoot(root);
@@ -627,7 +644,7 @@ export default function LatexNodeEditor(props: Props) {
         setSelectedTreePath(nextActive ?? (files[0]?.path ?? null));
         setIsSyncingPdf(false);
         setProjectError(null);
-        setIsDirty(false);
+        setDirty(recoveredUnsavedDraft);
         applyDraft(loadedContent);
 
         if (opts?.persist !== false) {
@@ -653,7 +670,7 @@ export default function LatexNodeEditor(props: Props) {
         if (ticket === loadTicketRef.current) setProjectBusy(false);
       }
     },
-    [applyDraft, initialValue],
+    [applyDraft, initialValue, setDirty],
   );
 
   useEffect(() => {
@@ -676,6 +693,7 @@ export default function LatexNodeEditor(props: Props) {
       void refreshProject(root, nextMain || null, nextActive || null, {
         persist: false,
         fallbackContent: initialValue ?? '',
+        preferFallbackContent: true,
       });
     } else {
       loadTicketRef.current += 1;
@@ -685,7 +703,7 @@ export default function LatexNodeEditor(props: Props) {
       setProjectFiles([]);
       setProjectBusy(false);
       setProjectError(null);
-      setIsDirty(false);
+      setDirty(false);
       setTreeQuery('');
       setExpandedDirs({});
       setSelectedTreePath(null);
@@ -921,30 +939,44 @@ export default function LatexNodeEditor(props: Props) {
     const root = typeof projectRootRef.current === 'string' ? projectRootRef.current.trim() : '';
     const filePath = typeof activeFileRef.current === 'string' ? activeFileRef.current.trim() : '';
     if (!root || !filePath) return true;
-    if (!isDirty) return true;
+    if (!isDirtyRef.current) return true;
+    if (saveActiveFileInFlightRef.current) return saveActiveFileInFlightRef.current;
 
     setIsSavingFile(true);
-    try {
-      const res = await writeLatexProjectFile(root, filePath, draftRef.current);
-      if (!res.ok) {
-        const msg = (res.error ?? 'Failed to save file.').trim() || 'Failed to save file.';
-        setProjectError(msg);
-        setRuntimeCompileError(msg);
-        return false;
+    const savePromise = (async (): Promise<boolean> => {
+      while (isDirtyRef.current) {
+        const revision = draftRevisionRef.current;
+        const content = draftRef.current;
+        const res = await writeLatexProjectFile(root, filePath, content);
+        if (!res.ok) {
+          const msg = (res.error ?? 'Failed to save file.').trim() || 'Failed to save file.';
+          setProjectError(msg);
+          setRuntimeCompileError(msg);
+          return false;
+        }
+        setProjectError(null);
+        if (revision === draftRevisionRef.current && content === draftRef.current) {
+          setDirty(false);
+        }
+        await persistProjectState({
+          projectRoot: root,
+          mainFile: mainFileRef.current,
+          activeFile: filePath,
+          content,
+        });
       }
-      setProjectError(null);
-      setIsDirty(false);
-      await persistProjectState({
-        projectRoot: root,
-        mainFile: mainFileRef.current,
-        activeFile: filePath,
-        content: draftRef.current,
-      });
       return true;
+    })();
+    saveActiveFileInFlightRef.current = savePromise;
+    try {
+      return await savePromise;
     } finally {
+      if (saveActiveFileInFlightRef.current === savePromise) {
+        saveActiveFileInFlightRef.current = null;
+      }
       setIsSavingFile(false);
     }
-  }, [isDirty, persistProjectState]);
+  }, [persistProjectState, setDirty]);
 
   const switchActiveFile = useCallback(
     async (nextPathRaw: string, opts?: { line?: number }): Promise<boolean> => {
@@ -984,7 +1016,7 @@ export default function LatexNodeEditor(props: Props) {
       setActiveFile(nextPath);
       setSelectedTreePath(nextPath);
       setProjectError(null);
-      setIsDirty(false);
+      setDirty(false);
       applyDraft(content);
       await persistProjectState({
         projectRoot: root,
@@ -1022,12 +1054,14 @@ export default function LatexNodeEditor(props: Props) {
       }
       return;
     }
+    const saved = await saveActiveFile();
+    if (!saved) return;
     setRuntimeCompileError(null);
     await refreshProject(picked.projectRoot, null, null, {
       persist: true,
       fallbackContent: initialValue ?? '',
     });
-  }, [initialValue, refreshProject]);
+  }, [initialValue, refreshProject, saveActiveFile]);
 
   const refreshCurrentProject = useCallback(async () => {
     const root = typeof projectRootRef.current === 'string' ? projectRootRef.current.trim() : '';
@@ -1614,7 +1648,7 @@ export default function LatexNodeEditor(props: Props) {
                 onChange={(e) => {
                   const next = e.target.value;
                   applyDraft(next);
-                  if (projectRootRef.current && activeFileRef.current) setIsDirty(true);
+                  if (projectRootRef.current && activeFileRef.current) setDirty(true);
                 }}
                 onPointerUp={(e) => {
                   openSourceSelectionMenuFromSelection({ x: Number(e.clientX), y: Number(e.clientY) });

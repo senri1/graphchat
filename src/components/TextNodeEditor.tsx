@@ -1034,6 +1034,7 @@ export default function TextNodeEditor(props: Props) {
         onPointerMove={onResizePointerMove}
         onPointerUp={onResizePointerEnd}
         onPointerCancel={onResizePointerEnd}
+        onLostPointerCapture={onResizePointerEnd}
       />
       <div
         className="editor__resizeHandle editor__resizeHandle--ne"
@@ -1042,6 +1043,7 @@ export default function TextNodeEditor(props: Props) {
         onPointerMove={onResizePointerMove}
         onPointerUp={onResizePointerEnd}
         onPointerCancel={onResizePointerEnd}
+        onLostPointerCapture={onResizePointerEnd}
       />
       <div
         className="editor__resizeHandle editor__resizeHandle--sw"
@@ -1050,6 +1052,7 @@ export default function TextNodeEditor(props: Props) {
         onPointerMove={onResizePointerMove}
         onPointerUp={onResizePointerEnd}
         onPointerCancel={onResizePointerEnd}
+        onLostPointerCapture={onResizePointerEnd}
       />
       <div
         className="editor__resizeHandle editor__resizeHandle--se"
@@ -1058,6 +1061,7 @@ export default function TextNodeEditor(props: Props) {
         onPointerMove={onResizePointerMove}
         onPointerUp={onResizePointerEnd}
         onPointerCancel={onResizePointerEnd}
+        onLostPointerCapture={onResizePointerEnd}
       />
 
       <div className="editor__topbar">
@@ -1067,6 +1071,7 @@ export default function TextNodeEditor(props: Props) {
           onPointerMove={onDragPointerMove}
           onPointerUp={onDragPointerEnd}
           onPointerCancel={onDragPointerEnd}
+          onLostPointerCapture={onDragPointerEnd}
         >
           {title ?? 'Edit node'}
         </div>

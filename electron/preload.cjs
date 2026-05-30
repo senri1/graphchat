@@ -25,6 +25,21 @@ contextBridge.exposeInMainWorld('gcElectron', {
     };
   },
   showAppMenu: (req) => ipcRenderer.invoke('app-menu:show', req ?? {}),
+  onBeforeClose: (cb) => {
+    if (typeof cb !== 'function') return () => {};
+    const listener = () => {
+      try {
+        cb();
+      } catch {
+        // ignore listener errors
+      }
+    };
+    ipcRenderer.on('app:before-close', listener);
+    return () => {
+      ipcRenderer.removeListener('app:before-close', listener);
+    };
+  },
+  notifyCloseReady: () => ipcRenderer.send('app:close-ready'),
   storageGetWorkspaceSnapshot: () => ipcRenderer.invoke('storage:get-workspace-snapshot'),
   storagePutWorkspaceSnapshot: (req) => ipcRenderer.invoke('storage:put-workspace-snapshot', req ?? {}),
   storageDeleteWorkspaceSnapshot: () => ipcRenderer.invoke('storage:delete-workspace-snapshot'),
