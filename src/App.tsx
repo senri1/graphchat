@@ -327,7 +327,12 @@ const API_PROVIDER_LABELS: Record<RuntimeApiProvider, string> = {
 
 type MenuPos = { left: number; top?: number; bottom?: number; maxHeight: number };
 
-type PendingEditNodeSend = { nodeId: string; modelIdOverride?: string | null; assistantRect?: Rect | null };
+type PendingEditNodeSend = {
+  nodeId: string;
+  modelIdOverride?: string | null;
+  assistantRect?: Rect | null;
+  selectedAttachmentKeys?: string[];
+};
 
 type SendTurnArgs = {
   userText: string;
@@ -365,6 +370,8 @@ const DEFAULT_COMPOSER_FONT_SIZE_PX = 14;
 
 const DEFAULT_NODE_FONT_FAMILY: FontFamilyKey = 'font-sans';
 const DEFAULT_NODE_FONT_SIZE_PX = 14;
+const DEFAULT_NODE_TEXT_COLOR = '#ffffff';
+const DEFAULT_NODE_TEXT_OPACITY = 0.92;
 
 const DEFAULT_SIDEBAR_FONT_FAMILY: FontFamilyKey = 'ui-monospace';
 const DEFAULT_SIDEBAR_FONT_SIZE_PX = 13;
@@ -379,6 +386,7 @@ const DEFAULT_WHEEL_INPUT_PREFERENCE: WheelInputPreference = 'auto';
 const DEFAULT_MOUSE_CLICK_RECENTER_ENABLED = true;
 const DEFAULT_RIGHT_CLICK_HEADER_DRAG_SUBTREE_ENABLED = true;
 const EDIT_NODE_SEND_MODEL_MENU_WIDTH = 160;
+const EDIT_NODE_ATTACHMENT_MENU_WIDTH = 280;
 const DEFAULT_GLASS_NODES_ENABLED = true;
 const DEFAULT_GLASS_BLUR_BACKEND: GlassBlurBackend = 'webgl';
 const DEFAULT_GLASS_BLUR_CSS_PX_WEBGL = 23;
@@ -497,6 +505,14 @@ function normalizeHexColor(value: unknown, fallback: string): string {
     return `#${raw[1]}${raw[1]}${raw[2]}${raw[2]}${raw[3]}${raw[3]}`.toLowerCase();
   }
   return fallback;
+}
+
+function hexColorWithOpacity(value: unknown, fallback: string, opacity: number): string {
+  const color = normalizeHexColor(value, fallback);
+  const r = Number.parseInt(color.slice(1, 3), 16);
+  const g = Number.parseInt(color.slice(3, 5), 16);
+  const b = Number.parseInt(color.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${Math.max(0, Math.min(1, opacity)).toFixed(3)})`;
 }
 
 function normalizePersistedNodeBackgroundColor(value: unknown, version: unknown): string {
@@ -791,6 +807,33 @@ function collectContextAttachments(nodes: ChatNode[], startNodeId: string): Cont
   }
 
   return out;
+}
+
+function collectHistoryContextAttachments(nodes: ChatNode[], startNodeId: string): ContextAttachmentItem[] {
+  const id = typeof startNodeId === 'string' ? startNodeId.trim() : '';
+  if (!id) return [];
+  return collectContextAttachments(nodes, id).filter((item) => item.nodeId !== id);
+}
+
+function formatAttachmentBytes(bytes?: number): string {
+  const n = typeof bytes === 'number' && Number.isFinite(bytes) ? bytes : 0;
+  if (n <= 0) return '';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const idx = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+  const value = n / Math.pow(1024, idx);
+  const digits = idx === 0 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(digits)} ${units[idx]}`;
+}
+
+function labelForAttachment(att: ChatAttachment): string {
+  const base =
+    att.kind === 'image' || att.kind === 'pdf'
+      ? att.name?.trim() || (att.kind === 'pdf' ? 'PDF' : 'Image')
+      : att.kind === 'ink'
+        ? 'Ink'
+        : 'Attachment';
+  const size = att.kind === 'image' || att.kind === 'pdf' ? formatAttachmentBytes(att.size) : '';
+  return size ? `${base} - ${size}` : base;
 }
 
 function collectAllReferencedAttachmentKeys(args: {
@@ -2775,6 +2818,7 @@ export default function App() {
       nodeBackgroundColorVersion: number;
       nodeBackgroundColor: string;
       nodeBackgroundOpacity: number;
+      nodeTextColor: string;
       desktopTransparentBackground: boolean;
       composerFontFamily: FontFamilyKey;
       composerFontSizePx: number;
@@ -2820,6 +2864,10 @@ export default function App() {
   const [nodeMenuId, setNodeMenuId] = useState<string | null>(null);
   const [editNodeSendMenuId, setEditNodeSendMenuId] = useState<string | null>(null);
   const [editNodeSendMenuPos, setEditNodeSendMenuPos] = useState<MenuPos | null>(null);
+  const [editNodeAttachmentMenuId, setEditNodeAttachmentMenuId] = useState<string | null>(null);
+  const [editNodeAttachmentMenuPos, setEditNodeAttachmentMenuPos] = useState<MenuPos | null>(null);
+  const [editNodeAttachmentSelections, setEditNodeAttachmentSelections] = useState<Record<string, string[]>>(() => ({}));
+  const editNodeAttachmentSelectionsRef = useRef<Record<string, string[]>>({});
   const [replySpawnMenuId, setReplySpawnMenuId] = useState<string | null>(null);
   const [replySpawnMenuPos, setReplySpawnMenuPos] = useState<MenuPos | null>(null);
   const [pendingEditNodeSend, setPendingEditNodeSend] = useState<PendingEditNodeSend | null>(null);
@@ -2910,6 +2958,7 @@ export default function App() {
   const [glassNodesBlurBackend, setGlassNodesBlurBackend] = useState<GlassBlurBackend>(() => DEFAULT_GLASS_BLUR_BACKEND);
   const [nodeBackgroundColor, setNodeBackgroundColor] = useState<string>(() => DEFAULT_NODE_BACKGROUND_COLOR);
   const [nodeBackgroundOpacity, setNodeBackgroundOpacity] = useState<number>(() => DEFAULT_NODE_BACKGROUND_OPACITY);
+  const [nodeTextColor, setNodeTextColor] = useState<string>(() => DEFAULT_NODE_TEXT_COLOR);
   const [desktopTransparentBackground, setDesktopTransparentBackground] = useState<boolean>(
     () => DEFAULT_DESKTOP_TRANSPARENT_BACKGROUND,
   );
@@ -2961,6 +3010,7 @@ export default function App() {
   const glassNodesBlurBackendRef = useRef<GlassBlurBackend>(glassNodesBlurBackend);
   const nodeBackgroundColorRef = useRef<string>(nodeBackgroundColor);
   const nodeBackgroundOpacityRef = useRef<number>(nodeBackgroundOpacity);
+  const nodeTextColorRef = useRef<string>(nodeTextColor);
   const desktopTransparentBackgroundRef = useRef<boolean>(desktopTransparentBackground);
   const edgeRouterIdRef = useRef<EdgeRouterId>(edgeRouterId);
   const replyArrowColorRef = useRef<string>(replyArrowColor);
@@ -3282,6 +3332,10 @@ export default function App() {
     const gamma = 0.26;
     const uiAlpha = uiMinAlpha + (uiMaxAlpha - uiMinAlpha) * Math.pow(1 - t, gamma);
     root.style.setProperty('--ui-glass-bg-alpha', uiAlpha.toFixed(3));
+    root.style.setProperty(
+      '--node-editor-background-color',
+      hexColorWithOpacity(nodeBackgroundColor, DEFAULT_NODE_BACKGROUND_COLOR, nodeBackgroundOpacity + 0.08),
+    );
   }, [
     glassNodesEnabled,
     glassNodesBlurCssPxWebgl,
@@ -3301,6 +3355,7 @@ export default function App() {
     composerFontSizePxRef.current = composerFontSizePx;
     nodeFontFamilyRef.current = nodeFontFamily;
     nodeFontSizePxRef.current = nodeFontSizePx;
+    nodeTextColorRef.current = nodeTextColor;
     sidebarFontFamilyRef.current = sidebarFontFamily;
     sidebarFontSizePxRef.current = sidebarFontSizePx;
 
@@ -3316,12 +3371,16 @@ export default function App() {
       '--node-font-size',
       `${Math.round(clampNumber(nodeFontSizePx, 10, 30, DEFAULT_NODE_FONT_SIZE_PX))}px`,
     );
+    root.style.setProperty('--node-text-color', hexColorWithOpacity(nodeTextColor, DEFAULT_NODE_TEXT_COLOR, DEFAULT_NODE_TEXT_OPACITY));
+    root.style.setProperty('--node-title-color', hexColorWithOpacity(nodeTextColor, DEFAULT_NODE_TEXT_COLOR, 0.85));
+    root.style.setProperty('--node-secondary-text-color', hexColorWithOpacity(nodeTextColor, DEFAULT_NODE_TEXT_COLOR, 0.88));
+    root.style.setProperty('--node-muted-text-color', hexColorWithOpacity(nodeTextColor, DEFAULT_NODE_TEXT_COLOR, 0.55));
     root.style.setProperty('--sidebar-font-family', fontFamilyCss(sidebarFontFamily));
     root.style.setProperty(
       '--sidebar-font-size',
       `${Math.round(clampNumber(sidebarFontSizePx, 8, 24, DEFAULT_SIDEBAR_FONT_SIZE_PX))}px`,
     );
-  }, [composerFontFamily, composerFontSizePx, nodeFontFamily, nodeFontSizePx, sidebarFontFamily, sidebarFontSizePx]);
+  }, [composerFontFamily, composerFontSizePx, nodeFontFamily, nodeFontSizePx, nodeTextColor, sidebarFontFamily, sidebarFontSizePx]);
 
   useEffect(() => {
     composerMinimizedRef.current = composerMinimized;
@@ -3333,16 +3392,22 @@ export default function App() {
     const handle = window.setTimeout(() => {
       engine.setNodeTextFontFamily(fontFamilyCss(nodeFontFamilyRef.current));
       engine.setNodeTextFontSizePx(nodeFontSizePxRef.current);
+      engine.setNodeTextColor(nodeTextColorRef.current);
     }, 200);
     return () => window.clearTimeout(handle);
-  }, [nodeFontFamily, nodeFontSizePx]);
+  }, [nodeFontFamily, nodeFontSizePx, nodeTextColor]);
 
   useEffect(() => {
     setRawViewer(null);
     setNodeMenuId(null);
     setEditNodeSendMenuId(null);
+    setEditNodeAttachmentMenuId(null);
     setReplySpawnMenuId(null);
   }, [activeChatId]);
+
+  useEffect(() => {
+    editNodeAttachmentSelectionsRef.current = editNodeAttachmentSelections;
+  }, [editNodeAttachmentSelections]);
 
   useEffect(() => {
     engineRef.current?.setRawViewerNodeId(rawViewer?.nodeId ?? null);
@@ -3368,6 +3433,20 @@ export default function App() {
     const canvas = canvasRef.current;
     if (!engine || !canvas) return null;
     const r = engine.getNodeSendButtonArrowScreenRect(nodeId);
+    if (!r) return null;
+    const canvasRect = canvas.getBoundingClientRect();
+    const left = canvasRect.left + r.x;
+    const top = canvasRect.top + r.y;
+    const right = left + r.w;
+    const bottom = top + r.h;
+    return { left, top, right, bottom };
+  }, []);
+
+  const getNodeAttachmentMenuButtonRect = React.useCallback((nodeId: string): { left: number; top: number; right: number; bottom: number } | null => {
+    const engine = engineRef.current;
+    const canvas = canvasRef.current;
+    if (!engine || !canvas) return null;
+    const r = engine.getNodeAttachmentButtonArrowScreenRect(nodeId);
     if (!r) return null;
     const canvasRect = canvas.getBoundingClientRect();
     const left = canvasRect.left + r.x;
@@ -3532,6 +3611,7 @@ export default function App() {
               nodeBackgroundOpacity: Number.isFinite(nodeBackgroundOpacityRef.current)
                 ? Math.max(0, Math.min(1, nodeBackgroundOpacityRef.current))
                 : DEFAULT_NODE_BACKGROUND_OPACITY,
+              nodeTextColor: normalizeHexColor(nodeTextColorRef.current, DEFAULT_NODE_TEXT_COLOR),
               desktopTransparentBackground: Boolean(desktopTransparentBackgroundRef.current),
               composerFontFamily: composerFontFamilyRef.current,
               composerFontSizePx: Math.round(clampNumber(composerFontSizePxRef.current, 10, 30, DEFAULT_COMPOSER_FONT_SIZE_PX)),
@@ -3657,6 +3737,7 @@ export default function App() {
       debugHudVisible ||
       nodeMenuId != null ||
       editNodeSendMenuId != null ||
+      editNodeAttachmentMenuId != null ||
       replySpawnMenuId != null;
 
     const wasEnabled = debugBridgeEnabledRef.current;
@@ -3670,7 +3751,7 @@ export default function App() {
     if (!wasEnabled) {
       engineRef.current?.requestRender();
     }
-  }, [debugHudVisible, nodeMenuId, editNodeSendMenuId, replySpawnMenuId]);
+  }, [debugHudVisible, nodeMenuId, editNodeSendMenuId, editNodeAttachmentMenuId, replySpawnMenuId]);
 
   const applyVisualSettings = (chatId: string) => {
     const engine = engineRef.current;
@@ -3708,6 +3789,7 @@ export default function App() {
     engine.setNodeBackgroundOpacity(
       Number.isFinite(nodeBackgroundOpacityRef.current) ? nodeBackgroundOpacityRef.current : DEFAULT_NODE_BACKGROUND_OPACITY,
     );
+    engine.setNodeTextColor(nodeTextColorRef.current);
 
     const key = typeof meta.backgroundStorageKey === 'string' ? meta.backgroundStorageKey : null;
     const seq = (backgroundLoadSeqRef.current += 1);
@@ -5866,6 +5948,7 @@ export default function App() {
     });
     engine.setNodeTextFontFamily(fontFamilyCss(nodeFontFamilyRef.current));
     engine.setNodeTextFontSizePx(nodeFontSizePxRef.current);
+    engine.setNodeTextColor(nodeTextColorRef.current);
     engine.setNodeBackgroundColor(nodeBackgroundColorRef.current);
     engine.setNodeBackgroundOpacity(nodeBackgroundOpacityRef.current);
     engine.setEdgeRouter(edgeRouterIdRef.current);
@@ -5996,12 +6079,14 @@ export default function App() {
     engine.onRequestNodeMenu = (nodeId) => {
       setNodeMenuId((prev) => (prev === nodeId ? null : nodeId));
       setEditNodeSendMenuId(null);
+      setEditNodeAttachmentMenuId(null);
       setReplySpawnMenuId(null);
     };
     engine.onRequestReplyMenu = (nodeId) => {
       setReplySpawnMenuId((prev) => (prev === nodeId ? null : nodeId));
       setNodeMenuId(null);
       setEditNodeSendMenuId(null);
+      setEditNodeAttachmentMenuId(null);
     };
     engine.onRequestSendEditNode = (nodeId, opts) => {
       setPendingEditNodeSend({ nodeId, modelIdOverride: null, assistantRect: opts?.assistantRect ?? null });
@@ -6009,6 +6094,13 @@ export default function App() {
     engine.onRequestSendEditNodeModelMenu = (nodeId) => {
       setEditNodeSendMenuId((prev) => (prev === nodeId ? null : nodeId));
       setNodeMenuId(null);
+      setEditNodeAttachmentMenuId(null);
+      setReplySpawnMenuId(null);
+    };
+    engine.onRequestSendEditNodeAttachmentsMenu = (nodeId) => {
+      setEditNodeAttachmentMenuId((prev) => (prev === nodeId ? null : nodeId));
+      setNodeMenuId(null);
+      setEditNodeSendMenuId(null);
       setReplySpawnMenuId(null);
     };
     engine.onRequestCancelGeneration = (nodeId) => cancelJob(nodeId);
@@ -6278,6 +6370,31 @@ export default function App() {
   const rawAnchor = rawViewer ? engineRef.current?.getTextNodeContentScreenRect(rawViewer.nodeId) ?? null : null;
   const nodeMenuButtonRect = nodeMenuId ? getNodeMenuButtonRect(nodeMenuId) : null;
   const editNodeSendMenuButtonRect = editNodeSendMenuId ? getNodeSendMenuButtonRect(editNodeSendMenuId) : null;
+  const getEditNodeHistoryAttachments = React.useCallback((nodeId: string): ContextAttachmentItem[] => {
+    const id = String(nodeId ?? '').trim();
+    const engine = engineRef.current;
+    if (!id || !engine) return [];
+    try {
+      const snapshot = engine.exportChatState();
+      return collectHistoryContextAttachments(snapshot.nodes ?? [], id);
+    } catch {
+      return [];
+    }
+  }, []);
+  const resolveEditNodeSelectedAttachmentKeys = React.useCallback(
+    (nodeId: string): string[] => {
+      const id = String(nodeId ?? '').trim();
+      if (!id) return [];
+      const allowed = new Set(getEditNodeHistoryAttachments(id).map((item) => item.key));
+      return (editNodeAttachmentSelectionsRef.current[id] ?? []).filter((key) => allowed.has(key));
+    },
+    [getEditNodeHistoryAttachments],
+  );
+  const editorContextAttachments = useMemo(() => {
+    const id = String(ui.editingNodeId ?? '').trim();
+    if (!id) return [];
+    return getEditNodeHistoryAttachments(id);
+  }, [getEditNodeHistoryAttachments, ui.editingNodeId, ui.editingText]);
   const nodeMenuRawEnabled = useMemo(() => {
     const nodeId = nodeMenuId;
     const engine = engineRef.current;
@@ -6457,6 +6574,7 @@ export default function App() {
     nodeBackgroundOpacityRef.current = Number.isFinite(visual.nodeBackgroundOpacity)
       ? Math.max(0, Math.min(1, visual.nodeBackgroundOpacity))
       : DEFAULT_NODE_BACKGROUND_OPACITY;
+    nodeTextColorRef.current = normalizeHexColor(visual.nodeTextColor, DEFAULT_NODE_TEXT_COLOR);
     desktopTransparentBackgroundRef.current = Boolean(visual.desktopTransparentBackground);
     edgeRouterIdRef.current = visual.edgeRouterId;
     replyArrowColorRef.current = visual.replyArrowColor;
@@ -6471,6 +6589,7 @@ export default function App() {
     setGlassNodesBlurBackend(glassNodesBlurBackendRef.current);
     setNodeBackgroundColor(nodeBackgroundColorRef.current);
     setNodeBackgroundOpacity(nodeBackgroundOpacityRef.current);
+    setNodeTextColor(nodeTextColorRef.current);
     setDesktopTransparentBackground(desktopTransparentBackgroundRef.current);
     setEdgeRouterId(edgeRouterIdRef.current);
     setReplyArrowColor(replyArrowColorRef.current);
@@ -6554,6 +6673,7 @@ export default function App() {
       engine.setGlassNodesUnderlayAlpha(glassNodesUnderlayAlphaRef.current);
       engine.setNodeBackgroundColor(nodeBackgroundColorRef.current);
       engine.setNodeBackgroundOpacity(nodeBackgroundOpacityRef.current);
+      engine.setNodeTextColor(nodeTextColorRef.current);
       engine.setEdgeRouter(edgeRouterIdRef.current);
       engine.setReplyArrowColor(replyArrowColorRef.current);
       engine.setReplyArrowOpacity(replyArrowOpacityRef.current);
@@ -6857,6 +6977,7 @@ export default function App() {
         nodeBackgroundOpacity: Number.isFinite(Number((visualSrc as any)?.nodeBackgroundOpacity))
           ? Math.max(0, Math.min(1, Number((visualSrc as any).nodeBackgroundOpacity)))
           : DEFAULT_NODE_BACKGROUND_OPACITY,
+        nodeTextColor: normalizeHexColor((visualSrc as any)?.nodeTextColor, DEFAULT_NODE_TEXT_COLOR),
         desktopTransparentBackground:
           typeof (visualSrc as any)?.desktopTransparentBackground === 'boolean'
             ? Boolean((visualSrc as any).desktopTransparentBackground)
@@ -8729,6 +8850,7 @@ export default function App() {
     modelIdOverride?: string | null;
     assistantRect?: Rect | null;
     liveDraftOverride?: string | null;
+    selectedAttachmentKeys?: string[] | null;
     clearComposerText?: boolean;
   }): { chatId: string; assistantNodeId: string } | null => {
     const engine = engineRef.current;
@@ -8756,6 +8878,14 @@ export default function App() {
       const label = typeof info?.label === 'string' ? info.label.trim() : '';
       return label || 'Assistant';
     })();
+
+    const hasSelectedAttachmentKeysOverride = Array.isArray(args.selectedAttachmentKeys);
+    const selectedAttachmentKeysOverride = hasSelectedAttachmentKeysOverride
+      ? (args.selectedAttachmentKeys ?? []).map((key) => String(key ?? '').trim()).filter(Boolean)
+      : [];
+    if (hasSelectedAttachmentKeysOverride) {
+      engine.setNodeSelectedAttachmentKeys(userNodeId, selectedAttachmentKeysOverride);
+    }
 
     const preSnapshot = engine.exportChatState();
     const leafNode = preSnapshot.nodes.find((n) => n.id === userNodeId) ?? null;
@@ -9031,7 +9161,9 @@ export default function App() {
 
       // Don't drop existing attachments/selection when the composer is empty.
       if (composerDraftAttachments.length) next.attachments = composerDraftAttachments;
-      if (replySelectedAttachmentKeys.length) {
+      if (hasSelectedAttachmentKeysOverride) {
+        next.selectedAttachmentKeys = selectedAttachmentKeysOverride;
+      } else if (replySelectedAttachmentKeys.length) {
         if (!contextPdfKeys.length) {
           next.selectedAttachmentKeys = replySelectedAttachmentKeys;
         } else {
@@ -9249,6 +9381,29 @@ export default function App() {
     setEditNodeSendMenuId(null);
   }, [clearEditNodeSendModelPreview]);
 
+  const closeEditNodeAttachmentMenu = React.useCallback(() => {
+    setEditNodeAttachmentMenuId(null);
+  }, []);
+
+  const toggleEditNodeAttachmentKey = React.useCallback(
+    (nodeId: string, key: string, included: boolean) => {
+      const id = String(nodeId ?? '').trim();
+      const normalizedKey = String(key ?? '').trim();
+      if (!id || !normalizedKey) return;
+      const allowed = new Set(getEditNodeHistoryAttachments(id).map((item) => item.key));
+      if (!allowed.has(normalizedKey)) return;
+      setEditNodeAttachmentSelections((prev) => {
+        const nextSet = new Set((prev[id] ?? []).filter((itemKey) => allowed.has(itemKey)));
+        if (included) nextSet.add(normalizedKey);
+        else nextSet.delete(normalizedKey);
+        const next = { ...prev, [id]: Array.from(nextSet) };
+        editNodeAttachmentSelectionsRef.current = next;
+        return next;
+      });
+    },
+    [getEditNodeHistoryAttachments],
+  );
+
   const beginEditNodeSendModelDrag = React.useCallback((e: React.PointerEvent<HTMLButtonElement>, nodeId: string, modelId: string) => {
     if (e.button !== 0) return;
     const id = String(nodeId ?? '').trim();
@@ -9389,6 +9544,39 @@ export default function App() {
     setEditNodeSendMenuPos({ top, bottom, left, maxHeight });
   }, [composerModelOptions.length, editNodeSendMenuId, getNodeSendMenuButtonRect]);
 
+  const updateEditNodeAttachmentMenuPosition = React.useCallback(() => {
+    const nodeId = editNodeAttachmentMenuId;
+    if (!nodeId) {
+      setEditNodeAttachmentMenuPos(null);
+      return;
+    }
+
+    const rect = getNodeAttachmentMenuButtonRect(nodeId);
+    if (!rect) {
+      setEditNodeAttachmentMenuPos(null);
+      return;
+    }
+
+    const itemCount = getEditNodeHistoryAttachments(nodeId).length;
+    const gap = 8;
+    const viewportPadding = 8;
+    const estimatedWidth = EDIT_NODE_ATTACHMENT_MENU_WIDTH;
+    const maxMenuH = 280;
+    const itemH = 42;
+    const paddingY = 14;
+    const desiredH = Math.min(maxMenuH, Math.max(56, itemCount * itemH + paddingY));
+
+    const spaceAbove = rect.top - gap - viewportPadding;
+    const spaceBelow = window.innerHeight - rect.bottom - gap - viewportPadding;
+    const openAbove = spaceAbove >= desiredH || spaceAbove >= spaceBelow;
+    const top = openAbove ? undefined : rect.bottom + gap;
+    const bottom = openAbove ? window.innerHeight - rect.top + gap : undefined;
+    const maxHeight = Math.max(0, Math.min(maxMenuH, openAbove ? spaceAbove : spaceBelow));
+
+    const left = Math.min(window.innerWidth - viewportPadding - estimatedWidth, Math.max(viewportPadding, rect.left));
+    setEditNodeAttachmentMenuPos({ top, bottom, left, maxHeight });
+  }, [editNodeAttachmentMenuId, getEditNodeHistoryAttachments, getNodeAttachmentMenuButtonRect]);
+
   const updateReplySpawnMenuPosition = React.useCallback(() => {
     const nodeId = replySpawnMenuId;
     if (!nodeId) {
@@ -9490,6 +9678,44 @@ export default function App() {
   }, [clearEditNodeSendModelPreview, editNodeSendMenuId, updateEditNodeSendMenuPosition]);
 
   useEffect(() => {
+    if (!editNodeAttachmentMenuId) {
+      setEditNodeAttachmentMenuPos(null);
+      return;
+    }
+
+    const items = getEditNodeHistoryAttachments(editNodeAttachmentMenuId);
+    if (items.length === 0) {
+      setEditNodeAttachmentMenuId(null);
+      setEditNodeAttachmentMenuPos(null);
+      return;
+    }
+
+    updateEditNodeAttachmentMenuPosition();
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setEditNodeAttachmentMenuId(null);
+    };
+
+    const onReposition = () => updateEditNodeAttachmentMenuPosition();
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('resize', onReposition);
+    window.addEventListener('scroll', onReposition, true);
+    window.addEventListener('wheel', onReposition, { passive: true });
+    const vv = window.visualViewport;
+    vv?.addEventListener('resize', onReposition);
+    vv?.addEventListener('scroll', onReposition);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('resize', onReposition);
+      window.removeEventListener('scroll', onReposition, true);
+      window.removeEventListener('wheel', onReposition);
+      vv?.removeEventListener('resize', onReposition);
+      vv?.removeEventListener('scroll', onReposition);
+    };
+  }, [editNodeAttachmentMenuId, getEditNodeHistoryAttachments, updateEditNodeAttachmentMenuPosition]);
+
+  useEffect(() => {
     const pending = pendingEditNodeSend;
     if (!pending) return;
     setPendingEditNodeSend(null);
@@ -9497,9 +9723,12 @@ export default function App() {
       userNodeId: pending.nodeId,
       modelIdOverride: pending.modelIdOverride ?? null,
       assistantRect: pending.assistantRect ?? null,
+      selectedAttachmentKeys: Array.isArray(pending.selectedAttachmentKeys)
+        ? pending.selectedAttachmentKeys
+        : resolveEditNodeSelectedAttachmentKeys(pending.nodeId),
       clearComposerText: false,
     });
-  }, [pendingEditNodeSend]);
+  }, [pendingEditNodeSend, resolveEditNodeSelectedAttachmentKeys]);
 
   const showNativeAppMenu = (index: number) => {
     const api = (window as any)?.gcElectron;
@@ -9508,6 +9737,10 @@ export default function App() {
   };
   const windowFullScreen = electronWindowFullScreen || browserFullScreenGuess;
   const showTransparentTitlebar = transparentTitlebar && !windowFullScreen;
+  const editNodeAttachmentItems = editNodeAttachmentMenuId ? getEditNodeHistoryAttachments(editNodeAttachmentMenuId) : [];
+  const editNodeAttachmentSelectedSet = new Set(
+    editNodeAttachmentMenuId ? resolveEditNodeSelectedAttachmentKeys(editNodeAttachmentMenuId) : [],
+  );
 
 	  return (
 	    <div
@@ -9793,6 +10026,55 @@ export default function App() {
                   document.body,
                 )
               : null}
+            {typeof document !== 'undefined' &&
+            editNodeAttachmentMenuId &&
+            editNodeAttachmentMenuPos &&
+            editNodeAttachmentItems.length > 0
+              ? createPortal(
+                  <>
+                    <div className="composerMenuBackdrop" onPointerDown={closeEditNodeAttachmentMenu} aria-hidden="true" />
+                    <div
+                      className="composerMenu composerMenu--attachments"
+                      style={{
+                        top: editNodeAttachmentMenuPos.top,
+                        bottom: editNodeAttachmentMenuPos.bottom,
+                        left: editNodeAttachmentMenuPos.left,
+                        width: EDIT_NODE_ATTACHMENT_MENU_WIDTH,
+                        maxHeight: editNodeAttachmentMenuPos.maxHeight,
+                      }}
+                      role="menu"
+                      aria-label="Attachments"
+                    >
+                      {editNodeAttachmentItems.map((item) => {
+                        const checked = editNodeAttachmentSelectedSet.has(item.key);
+                        return (
+                          <label
+                            key={item.key}
+                            className={`composerMenu__attachmentItem ${checked ? 'composerMenu__attachmentItem--active' : ''}`}
+                            role="menuitemcheckbox"
+                            aria-checked={checked}
+                          >
+                            <input
+                              className="composerMenu__attachmentCheckbox"
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) =>
+                                toggleEditNodeAttachmentKey(
+                                  editNodeAttachmentMenuId,
+                                  item.key,
+                                  Boolean(e.currentTarget.checked),
+                                )
+                              }
+                            />
+                            <span className="composerMenu__attachmentLabel">{labelForAttachment(item.attachment)}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </>,
+                  document.body,
+                )
+              : null}
         {ui.editingNodeId ? (
           editorTextFormat === 'latex' ? (
             <LatexNodeEditor
@@ -9984,6 +10266,7 @@ export default function App() {
               userPreface={editorUserPreface}
               modelId={composerModelId}
               modelOptions={composerModelOptions}
+              contextAttachments={editorContextAttachments}
               onDraftChange={(next) => {
                 const id = String(ui.editingNodeId ?? '').trim();
                 if (!id) return;
@@ -10024,6 +10307,7 @@ export default function App() {
                   modelIdOverride: opts?.modelIdOverride ?? null,
                   assistantRect,
                   liveDraftOverride: text,
+                  selectedAttachmentKeys: Array.isArray(opts?.selectedAttachmentKeys) ? opts.selectedAttachmentKeys : [],
                   clearComposerText: false,
                 });
               }}
@@ -10690,6 +10974,14 @@ export default function App() {
             engineRef.current?.setNodeBackgroundOpacity(next);
             schedulePersistSoon();
           }}
+          nodeTextColor={nodeTextColor}
+          onChangeNodeTextColor={(raw) => {
+            const next = normalizeHexColor(raw, nodeTextColorRef.current);
+            nodeTextColorRef.current = next;
+            setNodeTextColor(next);
+            engineRef.current?.setNodeTextColor(next);
+            schedulePersistSoon();
+          }}
           sidebarFontFamily={sidebarFontFamily}
           onChangeSidebarFontFamily={(next) => {
             setSidebarFontFamily(next);
@@ -11124,6 +11416,7 @@ export default function App() {
             glassNodesBlurBackendRef.current = DEFAULT_GLASS_BLUR_BACKEND;
             nodeBackgroundColorRef.current = DEFAULT_NODE_BACKGROUND_COLOR;
             nodeBackgroundOpacityRef.current = DEFAULT_NODE_BACKGROUND_OPACITY;
+            nodeTextColorRef.current = DEFAULT_NODE_TEXT_COLOR;
             desktopTransparentBackgroundRef.current = DEFAULT_DESKTOP_TRANSPARENT_BACKGROUND;
             setGlassNodesEnabled(DEFAULT_GLASS_NODES_ENABLED);
             setGlassNodesBlurCssPxWebgl(DEFAULT_GLASS_BLUR_CSS_PX_WEBGL);
@@ -11134,6 +11427,7 @@ export default function App() {
             setGlassNodesBlurBackend(DEFAULT_GLASS_BLUR_BACKEND);
             setNodeBackgroundColor(DEFAULT_NODE_BACKGROUND_COLOR);
             setNodeBackgroundOpacity(DEFAULT_NODE_BACKGROUND_OPACITY);
+            setNodeTextColor(DEFAULT_NODE_TEXT_COLOR);
             setDesktopTransparentBackground(DEFAULT_DESKTOP_TRANSPARENT_BACKGROUND);
             setUiGlassBlurCssPxWebgl(DEFAULT_UI_GLASS_BLUR_CSS_PX_WEBGL);
             setUiGlassSaturatePctWebgl(DEFAULT_UI_GLASS_SATURATE_PCT_WEBGL);
@@ -11183,6 +11477,7 @@ export default function App() {
               engine.setGlassNodesBlurBackend(DEFAULT_GLASS_BLUR_BACKEND);
               engine.setNodeBackgroundColor(DEFAULT_NODE_BACKGROUND_COLOR);
               engine.setNodeBackgroundOpacity(DEFAULT_NODE_BACKGROUND_OPACITY);
+              engine.setNodeTextColor(DEFAULT_NODE_TEXT_COLOR);
               engine.setEdgeRouter(DEFAULT_EDGE_ROUTER_ID);
               engine.setReplyArrowColor(DEFAULT_REPLY_ARROW_COLOR);
               engine.setReplyArrowOpacity(DEFAULT_REPLY_ARROW_OPACITY);

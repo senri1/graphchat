@@ -19,6 +19,11 @@
     "Noto Color Emoji";
   --node-font-size: 14px;
   --node-line-height: 1.55;
+  --node-text-color: rgba(255, 255, 255, 0.92);
+  --node-title-color: rgba(255, 255, 255, 0.85);
+  --node-secondary-text-color: rgba(255, 255, 255, 0.88);
+  --node-muted-text-color: rgba(255, 255, 255, 0.55);
+  --node-editor-background-color: rgba(24, 24, 24, 0.36);
   --sidebar-font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
     monospace;
   --sidebar-font-size: 13px;
@@ -2655,6 +2660,49 @@ html.gc-desktopTransparent #root {
   white-space: nowrap;
 }
 
+.composerMenu--attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.composerMenu__attachmentItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 10px;
+  padding: 7px 8px;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 12px;
+  line-height: 1.25;
+  cursor: pointer;
+  user-select: none;
+}
+
+.composerMenu__attachmentItem:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.composerMenu__attachmentItem--active {
+  background: rgba(147, 197, 253, 0.14);
+}
+
+.composerMenu__attachmentCheckbox {
+  flex: 0 0 auto;
+  margin: 1px 0 0;
+  accent-color: rgba(147, 197, 253, 0.92);
+}
+
+.composerMenu__attachmentLabel {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .composer__send {
   appearance: none;
   border: 1px solid rgba(147, 197, 253, 0.55);
@@ -2687,7 +2735,7 @@ html.gc-desktopTransparent #root {
   flex-direction: column;
   pointer-events: auto;
   box-sizing: border-box;
-  background: rgba(0, 0, 0, 0.36);
+  background: var(--node-editor-background-color);
   border: 1.2px solid rgba(147, 197, 253, 0.65);
   border-radius: 18px;
   overflow: visible;
@@ -2756,7 +2804,7 @@ html.gc-desktopTransparent #root {
   font-weight: 600;
   line-height: calc(22px * var(--editor-scale, 1));
   letter-spacing: 0;
-  color: rgba(255, 255, 255, 0.85);
+  color: var(--node-title-color);
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
@@ -2892,7 +2940,7 @@ html.gc-desktopTransparent #root {
 
 .editor__paneLabel {
   font-size: calc(12px * var(--editor-scale, 1));
-  color: rgba(255, 255, 255, 0.55);
+  color: var(--node-muted-text-color);
   user-select: none;
   margin: 0 0 calc(6px * var(--editor-scale, 1));
 }
@@ -2908,7 +2956,7 @@ html.gc-desktopTransparent #root {
   outline: none;
   padding: calc(10px * var(--editor-scale, 1)) 0;
   background: transparent;
-  color: rgba(255, 255, 255, 0.92);
+  color: var(--node-text-color);
   font-size: calc(var(--editor-font-size) * var(--editor-scale, 1));
   line-height: var(--node-line-height);
   font-family: var(--editor-font-family);
@@ -2916,7 +2964,7 @@ html.gc-desktopTransparent #root {
 }
 
 .editor__emptyPreview {
-  color: rgba(255, 255, 255, 0.55);
+  color: var(--node-muted-text-color);
   font-size: calc(12px * var(--editor-scale, 1));
 }
 

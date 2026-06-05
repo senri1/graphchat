@@ -72,6 +72,8 @@ type Props = {
   onChangeNodeBackgroundColor: (next: string) => void;
   nodeBackgroundOpacityPct: number;
   onChangeNodeBackgroundOpacityPct: (next: number) => void;
+  nodeTextColor: string;
+  onChangeNodeTextColor: (next: string) => void;
   sidebarFontFamily: FontFamilyKey;
   onChangeSidebarFontFamily: (next: FontFamilyKey) => void;
   sidebarFontSizePx: number;
@@ -569,7 +571,26 @@ export default function SettingsModal(props: Props) {
 
                     <div className="settingsRow">
                       <div className="settingsRow__text">
-                        <div className="settingsRow__title">Node color</div>
+                        <div className="settingsRow__title">Node text color</div>
+                        <div className="settingsRow__desc">Adjust the primary text color inside nodes.</div>
+                      </div>
+                      <div className="settingsRow__actions">
+                        <div className="settingsColorPicker">
+                          <input
+                            className="settingsColorInput"
+                            type="color"
+                            value={props.nodeTextColor}
+                            onChange={(e) => props.onChangeNodeTextColor(e.currentTarget.value)}
+                            aria-label="Node text color"
+                          />
+                          <span className="settingsColorHex">{String(props.nodeTextColor || '').toUpperCase()}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="settingsRow">
+                      <div className="settingsRow__text">
+                        <div className="settingsRow__title">Node background color</div>
                         <div className="settingsRow__desc">Adjust the background color of nodes on the canvas.</div>
                       </div>
                       <div className="settingsRow__actions">

@@ -4,11 +4,17 @@ import MarkdownMath from './MarkdownMath';
 import { renderMarkdownMathInline } from '../markdown/renderMarkdownMath';
 import type { Rect } from '../engine/types';
 import type { ModelInfo } from '../llm/registry';
+import type { ChatAttachment } from '../model/chat';
 
 type TextNodeUserPreface = { replyTo: string; contexts: string[]; collapsedPrefaceContexts: Record<number, boolean> };
 type SendPlacementClientPoint = { clientX: number; clientY: number };
-type SendOptions = { modelIdOverride?: string | null; placementClient?: SendPlacementClientPoint | null };
+type SendOptions = {
+  modelIdOverride?: string | null;
+  placementClient?: SendPlacementClientPoint | null;
+  selectedAttachmentKeys?: string[];
+};
 type SelectionSourceKind = 'source';
+type ContextAttachmentItem = { key: string; nodeId?: string; attachment: ChatAttachment };
 
 type Props = {
   nodeId: string;
@@ -17,6 +23,7 @@ type Props = {
   userPreface?: TextNodeUserPreface | null;
   modelId: string;
   modelOptions: ModelInfo[];
+  contextAttachments?: ContextAttachmentItem[];
   anchorRect: Rect | null;
   getScreenRect?: () => Rect | null;
   getZoom?: () => number;
@@ -51,6 +58,27 @@ type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
 
 type MenuPos = { left: number; top?: number; bottom?: number; maxHeight: number };
 
+function formatBytes(bytes?: number): string {
+  const n = typeof bytes === 'number' && Number.isFinite(bytes) ? bytes : 0;
+  if (n <= 0) return '';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const idx = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+  const value = n / Math.pow(1024, idx);
+  const digits = idx === 0 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(digits)} ${units[idx]}`;
+}
+
+function labelForAttachment(att: ChatAttachment): string {
+  const base =
+    att.kind === 'image' || att.kind === 'pdf'
+      ? att.name?.trim() || (att.kind === 'pdf' ? 'PDF' : 'Image')
+      : att.kind === 'ink'
+        ? 'Ink'
+        : 'Attachment';
+  const size = att.kind === 'image' || att.kind === 'pdf' ? formatBytes(att.size) : '';
+  return size ? `${base} - ${size}` : base;
+}
+
 export default function TextNodeEditor(props: Props) {
   const {
     nodeId,
@@ -59,6 +87,7 @@ export default function TextNodeEditor(props: Props) {
     userPreface,
     modelId,
     modelOptions,
+    contextAttachments,
     anchorRect,
     getScreenRect,
     getZoom,
@@ -188,17 +217,49 @@ export default function TextNodeEditor(props: Props) {
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modelMenuPos, setModelMenuPos] = useState<MenuPos | null>(null);
   const [modelMenuPointerLock, setModelMenuPointerLock] = useState(false);
+  const attachmentMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
+  const [attachmentMenuPos, setAttachmentMenuPos] = useState<MenuPos | null>(null);
+  const [selectedAttachmentKeys, setSelectedAttachmentKeys] = useState<string[]>(() => []);
+  const selectedAttachmentKeysRef = useRef<string[]>([]);
+  const contextAttachmentItems = useMemo(
+    () => (Array.isArray(contextAttachments) ? contextAttachments.filter((item) => item?.key && item.attachment) : []),
+    [contextAttachments],
+  );
+  const selectedAttachmentSet = useMemo(() => new Set(selectedAttachmentKeys), [selectedAttachmentKeys]);
 
   useEffect(() => {
     setModelMenuOpen(false);
     setModelMenuPos(null);
     setModelMenuPointerLock(false);
+    setAttachmentMenuOpen(false);
+    setAttachmentMenuPos(null);
+    setSelectedAttachmentKeys([]);
+    selectedAttachmentKeysRef.current = [];
   }, [nodeId]);
 
   const closeModelMenu = useCallback(() => {
     setModelMenuPointerLock(false);
     setModelMenuOpen(false);
   }, []);
+
+  const closeAttachmentMenu = useCallback(() => {
+    setAttachmentMenuOpen(false);
+  }, []);
+
+  useEffect(() => {
+    selectedAttachmentKeysRef.current = selectedAttachmentKeys;
+  }, [selectedAttachmentKeys]);
+
+  useEffect(() => {
+    const allowed = new Set(contextAttachmentItems.map((item) => item.key));
+    setSelectedAttachmentKeys((prev) => {
+      const next = prev.filter((key) => allowed.has(key));
+      selectedAttachmentKeysRef.current = next;
+      return next.length === prev.length ? prev : next;
+    });
+    if (contextAttachmentItems.length === 0) closeAttachmentMenu();
+  }, [closeAttachmentMenu, contextAttachmentItems]);
 
   const closeSourceSelectionMenu = useCallback(() => {
     setSourceSelectionMenu(null);
@@ -394,11 +455,43 @@ export default function TextNodeEditor(props: Props) {
     setModelMenuPos({ top, bottom, left, maxHeight });
   }, [modelOptions.length]);
 
+  const updateAttachmentMenuPosition = useCallback(() => {
+    const btn = attachmentMenuButtonRef.current;
+    if (!btn) return;
+    const rect = btn.getBoundingClientRect();
+
+    const gap = 8;
+    const viewportPadding = 8;
+    const estimatedWidth = 280;
+    const maxMenuH = 280;
+    const itemH = 42;
+    const paddingY = 14;
+    const desiredH = Math.min(maxMenuH, Math.max(56, contextAttachmentItems.length * itemH + paddingY));
+
+    const spaceAbove = rect.top - gap - viewportPadding;
+    const spaceBelow = window.innerHeight - rect.bottom - gap - viewportPadding;
+    const openAbove = spaceAbove >= desiredH || spaceAbove >= spaceBelow;
+    const top = openAbove ? undefined : rect.bottom + gap;
+    const bottom = openAbove ? window.innerHeight - rect.top + gap : undefined;
+    const maxHeight = Math.max(0, Math.min(maxMenuH, openAbove ? spaceAbove : spaceBelow));
+
+    const left = Math.min(window.innerWidth - viewportPadding - estimatedWidth, Math.max(viewportPadding, rect.left));
+    setAttachmentMenuPos({ top, bottom, left, maxHeight });
+  }, [contextAttachmentItems.length]);
+
   const openModelMenu = useCallback(() => {
     if (modelOptions.length === 0) return;
+    closeAttachmentMenu();
     updateModelMenuPosition();
     setModelMenuOpen(true);
-  }, [modelOptions.length, updateModelMenuPosition]);
+  }, [closeAttachmentMenu, modelOptions.length, updateModelMenuPosition]);
+
+  const openAttachmentMenu = useCallback(() => {
+    if (contextAttachmentItems.length === 0) return;
+    closeModelMenu();
+    updateAttachmentMenuPosition();
+    setAttachmentMenuOpen(true);
+  }, [closeModelMenu, contextAttachmentItems.length, updateAttachmentMenuPosition]);
 
   useEffect(() => {
     if (!modelMenuOpen) setModelMenuPointerLock(false);
@@ -451,6 +544,34 @@ export default function TextNodeEditor(props: Props) {
       vv?.removeEventListener('scroll', onReposition);
     };
   }, [closeModelMenu, modelMenuOpen, updateModelMenuPosition]);
+
+  useEffect(() => {
+    if (!attachmentMenuOpen) return;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeAttachmentMenu();
+    };
+
+    const onReposition = () => {
+      if (attachmentMenuOpen) updateAttachmentMenuPosition();
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('resize', onReposition);
+    window.addEventListener('scroll', onReposition, true);
+    const vv = window.visualViewport;
+    vv?.addEventListener('resize', onReposition);
+    vv?.addEventListener('scroll', onReposition);
+
+    onReposition();
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('resize', onReposition);
+      window.removeEventListener('scroll', onReposition, true);
+      vv?.removeEventListener('resize', onReposition);
+      vv?.removeEventListener('scroll', onReposition);
+    };
+  }, [attachmentMenuOpen, closeAttachmentMenu, updateAttachmentMenuPosition]);
 
   useEffect(() => {
     if (resizeRef.current || dragRef.current) return;
@@ -697,7 +818,10 @@ export default function TextNodeEditor(props: Props) {
   };
 
   const send = (modelIdOverride?: string | null) => {
-    onSendRef.current(draftRef.current, { modelIdOverride: modelIdOverride ?? null });
+    onSendRef.current(draftRef.current, {
+      modelIdOverride: modelIdOverride ?? null,
+      selectedAttachmentKeys: selectedAttachmentKeysRef.current.slice(),
+    });
   };
 
   const reply = () => {
@@ -791,6 +915,7 @@ export default function TextNodeEditor(props: Props) {
     onSendRef.current(draftRef.current, {
       modelIdOverride: active.modelIdOverride ?? null,
       placementClient: { clientX: active.lastClient.x, clientY: active.lastClient.y },
+      selectedAttachmentKeys: selectedAttachmentKeysRef.current.slice(),
     });
   };
 
@@ -820,6 +945,19 @@ export default function TextNodeEditor(props: Props) {
   const onModelMenuItemClick = (nextModelId: string) => {
     closeModelMenu();
     onSelectModelRef.current?.(nextModelId);
+  };
+
+  const toggleAttachmentKey = (key: string, included: boolean) => {
+    const allowed = new Set(contextAttachmentItems.map((item) => item.key));
+    if (!allowed.has(key)) return;
+    setSelectedAttachmentKeys((prev) => {
+      const next = new Set(prev.filter((k) => allowed.has(k)));
+      if (included) next.add(key);
+      else next.delete(key);
+      const arr = Array.from(next);
+      selectedAttachmentKeysRef.current = arr;
+      return arr;
+    });
   };
 
   const baseFontSize = Math.max(1, Math.round(Number.isFinite(baseFontSizePx) ? baseFontSizePx : 14));
@@ -867,7 +1005,7 @@ export default function TextNodeEditor(props: Props) {
   const previewStyle = useMemo<React.CSSProperties>(
     () => ({
       fontSize: baseFontSize,
-      color: 'rgba(255,255,255,0.92)',
+      color: 'var(--node-text-color)',
       lineHeight: 'var(--node-line-height)',
       wordBreak: 'break-word',
       fontFamily: 'var(--node-font-family)',
@@ -895,7 +1033,7 @@ export default function TextNodeEditor(props: Props) {
       borderRadius: 'calc(12px * var(--editor-scale, 1))',
       background: 'rgba(0,0,0,0.18)',
       fontSize: 'calc(var(--editor-font-size) * var(--editor-scale, 1) * 0.85)',
-      color: 'rgba(255,255,255,0.88)',
+      color: 'var(--node-secondary-text-color)',
     };
 
     return (
@@ -947,7 +1085,7 @@ export default function TextNodeEditor(props: Props) {
                     marginTop: chevronMarginTop,
                     display: 'inline-flex',
                     justifyContent: 'center',
-                    color: 'rgba(255,255,255,0.55)',
+                    color: 'var(--node-muted-text-color)',
                     cursor: 'pointer',
                     userSelect: 'none',
                   }}
@@ -999,7 +1137,7 @@ export default function TextNodeEditor(props: Props) {
                   marginTop: chevronMarginTop,
                   display: 'inline-flex',
                   justifyContent: 'center',
-                  color: 'rgba(255,255,255,0.55)',
+                  color: 'var(--node-muted-text-color)',
                   cursor: 'pointer',
                   userSelect: 'none',
                 }}
@@ -1087,6 +1225,40 @@ export default function TextNodeEditor(props: Props) {
           <button className="editor__btn" type="button" onClick={reply}>
             Reply
           </button>
+          {contextAttachmentItems.length > 0 ? (
+            <div className="editor__btnGroup" role="group" aria-label="Attachments">
+              <button
+                className={`editor__btn editor__btn--splitMain ${selectedAttachmentKeys.length ? 'editor__btn--toggleOn' : ''}`}
+                type="button"
+                onClick={() => {
+                  if (attachmentMenuOpen) {
+                    closeAttachmentMenu();
+                    return;
+                  }
+                  openAttachmentMenu();
+                }}
+              >
+                Attachments
+              </button>
+              <button
+                ref={attachmentMenuButtonRef}
+                className={`editor__btn editor__btn--splitArrow ${selectedAttachmentKeys.length ? 'editor__btn--toggleOn' : ''}`}
+                type="button"
+                onClick={() => {
+                  if (attachmentMenuOpen) {
+                    closeAttachmentMenu();
+                    return;
+                  }
+                  openAttachmentMenu();
+                }}
+                aria-haspopup="menu"
+                aria-expanded={attachmentMenuOpen ? 'true' : 'false'}
+                aria-label="Choose attachments"
+              >
+                {"\u25BE"}
+              </button>
+            </div>
+          ) : null}
           <div className="editor__btnGroup" role="group" aria-label="Send">
             <button
               className="editor__btn editor__btn--primary editor__btn--splitMain"
@@ -1115,7 +1287,7 @@ export default function TextNodeEditor(props: Props) {
               aria-expanded={modelMenuOpen ? 'true' : 'false'}
               aria-label="Send with model"
             >
-              ▾
+              {"\u25BE"}
             </button>
           </div>
           <button className="editor__btn" type="button" onClick={cancel}>
@@ -1235,6 +1407,47 @@ export default function TextNodeEditor(props: Props) {
                 Annotate with ink
               </button>
             </div>,
+            document.body,
+          )
+        : null}
+
+      {typeof document !== 'undefined' && attachmentMenuOpen && attachmentMenuPos
+        ? createPortal(
+            <>
+              <div className="composerMenuBackdrop" onPointerDown={closeAttachmentMenu} aria-hidden="true" />
+              <div
+                className="composerMenu composerMenu--attachments"
+                style={{
+                  top: attachmentMenuPos.top,
+                  bottom: attachmentMenuPos.bottom,
+                  left: attachmentMenuPos.left,
+                  width: 280,
+                  maxHeight: attachmentMenuPos.maxHeight,
+                }}
+                role="menu"
+                aria-label="Attachments"
+              >
+                {contextAttachmentItems.map((item) => {
+                  const checked = selectedAttachmentSet.has(item.key);
+                  return (
+                    <label
+                      key={item.key}
+                      className={`composerMenu__attachmentItem ${checked ? 'composerMenu__attachmentItem--active' : ''}`}
+                      role="menuitemcheckbox"
+                      aria-checked={checked}
+                    >
+                      <input
+                        className="composerMenu__attachmentCheckbox"
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(e) => toggleAttachmentKey(item.key, Boolean(e.currentTarget.checked))}
+                      />
+                      <span className="composerMenu__attachmentLabel">{labelForAttachment(item.attachment)}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </>,
             document.body,
           )
         : null}

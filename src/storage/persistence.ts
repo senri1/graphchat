@@ -35,6 +35,7 @@ export type PersistedWorkspaceSnapshot = {
     nodeBackgroundColorVersion?: number;
     nodeBackgroundColor?: string;
     nodeBackgroundOpacity?: number;
+    nodeTextColor?: string;
     desktopTransparentBackground?: boolean;
     composerFontFamily?: FontFamilyKey;
     composerFontSizePx?: number;

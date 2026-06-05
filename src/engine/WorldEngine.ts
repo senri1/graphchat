@@ -735,6 +735,7 @@ export class WorldEngine {
   onRequestNodeMenu?: (nodeId: string) => void;
   onRequestSendEditNode?: (nodeId: string, opts?: { assistantRect?: Rect | null } | null) => void;
   onRequestSendEditNodeModelMenu?: (nodeId: string) => void;
+  onRequestSendEditNodeAttachmentsMenu?: (nodeId: string) => void;
   onRequestCancelGeneration?: (nodeId: string) => void;
   onRequestPersist?: () => void;
 
@@ -770,6 +771,8 @@ export class WorldEngine {
   private nodeTextFontFamily =
     'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"';
   private nodeTextFontSizePx = 14;
+  private nodeTextColorHex = '#ffffff';
+  private nodeTextRgb = hexColorToRgb(this.nodeTextColorHex);
   private nodeTextColor = 'rgba(255,255,255,0.92)';
   private nodeTextLineHeight = 1.55;
   private textScrollGutterPx: number | null = null;
@@ -791,7 +794,7 @@ export class WorldEngine {
   private hoverPdfPage: { nodeId: string; token: number; pageNumber: number } | null = null;
   private hoverNodeHeaderButton: {
     nodeId: string;
-    kind: 'menu' | 'reply' | 'reply_menu' | 'stop' | 'send' | 'send_menu' | 'edit';
+    kind: 'menu' | 'reply' | 'reply_menu' | 'stop' | 'send' | 'send_menu' | 'attachments' | 'attachments_menu' | 'edit';
   } | null = null;
 
   private pdfTextLod2: PdfTextLod2Overlay | null = null;
@@ -2238,6 +2241,20 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     this.nodeBackgroundRgb = hexColorToRgb(next);
     this.invalidateFullTextNodeRasters({ requestRender: false });
     this.requestRender();
+  }
+
+  setNodeTextColor(color: string): void {
+    const next = normalizeHexColor(color);
+    if (!next || this.nodeTextColorHex === next) return;
+    this.nodeTextColorHex = next;
+    this.nodeTextRgb = hexColorToRgb(next);
+    this.nodeTextColor = this.nodeTextFillStyle(0.92);
+    this.invalidateNodeTextRendering();
+  }
+
+  private nodeTextFillStyle(opacity: number): string {
+    const { r, g, b } = this.nodeTextRgb;
+    return `rgba(${r},${g},${b},${clamp(opacity, 0, 1).toFixed(3)})`;
   }
 
   private nodeTextStyle(): { fontFamily: string; fontSizePx: number; lineHeight: number; color: string } {
@@ -4010,7 +4027,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     let nextPdfHover: { nodeId: string; token: number; pageNumber: number } | null = null;
     let nextHeaderHover: {
       nodeId: string;
-      kind: 'menu' | 'reply' | 'reply_menu' | 'stop' | 'send' | 'send_menu' | 'edit';
+      kind: 'menu' | 'reply' | 'reply_menu' | 'stop' | 'send' | 'send_menu' | 'attachments' | 'attachments_menu' | 'edit';
     } | null = null;
 
     if (hit) {
@@ -4052,6 +4069,22 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
               world.y >= arrowBtn.y &&
               world.y <= arrowBtn.y + arrowBtn.h;
             if (inMain || inArrow) nextHeaderHover = { nodeId: hit.id, kind: inArrow ? 'send_menu' : 'send' };
+          }
+
+          if (!nextHeaderHover && hit.kind === 'text' && this.isHeaderAttachmentsEnabled(hit)) {
+            const mainBtn = this.attachmentsButtonMainRect(hit);
+            const arrowBtn = this.attachmentsButtonArrowRect(hit);
+            const inMain =
+              world.x >= mainBtn.x &&
+              world.x <= mainBtn.x + mainBtn.w &&
+              world.y >= mainBtn.y &&
+              world.y <= mainBtn.y + mainBtn.h;
+            const inArrow =
+              world.x >= arrowBtn.x &&
+              world.x <= arrowBtn.x + arrowBtn.w &&
+              world.y >= arrowBtn.y &&
+              world.y <= arrowBtn.y + arrowBtn.h;
+            if (inMain || inArrow) nextHeaderHover = { nodeId: hit.id, kind: inArrow ? 'attachments_menu' : 'attachments' };
           }
 
           if (!nextHeaderHover && hit.kind === 'text' && this.isHeaderEditEnabled(hit)) {
@@ -4158,6 +4191,19 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           world.y >= sendBtn.y &&
           world.y <= sendBtn.y + sendBtn.h;
         if (inSend) {
+          this.setCanvasCursor('pointer');
+          return;
+        }
+      }
+
+      if (hit.kind === 'text' && this.isHeaderAttachmentsEnabled(hit)) {
+        const attachmentsBtn = this.attachmentsButtonRect(hit);
+        const inAttachments =
+          world.x >= attachmentsBtn.x &&
+          world.x <= attachmentsBtn.x + attachmentsBtn.w &&
+          world.y >= attachmentsBtn.y &&
+          world.y <= attachmentsBtn.y + attachmentsBtn.h;
+        if (inAttachments) {
           this.setCanvasCursor('pointer');
           return;
         }
@@ -4274,6 +4320,25 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       mainFile: typeof node.latexMainFile === 'string' && node.latexMainFile.trim() ? node.latexMainFile.trim() : null,
       activeFile: typeof node.latexActiveFile === 'string' && node.latexActiveFile.trim() ? node.latexActiveFile.trim() : null,
     };
+  }
+
+  setNodeSelectedAttachmentKeys(nodeId: string, keys: string[] | null | undefined): void {
+    const id = typeof nodeId === 'string' ? nodeId.trim() : String(nodeId ?? '').trim();
+    if (!id) return;
+    const node = this.nodes.find((n): n is TextNode | InkNode => (n.kind === 'text' || n.kind === 'ink') && n.id === id) ?? null;
+    if (!node) return;
+
+    const next = Array.isArray(keys)
+      ? Array.from(new Set(keys.map((key) => String(key ?? '').trim()).filter(Boolean)))
+      : [];
+    node.selectedAttachmentKeys = next;
+    if (node.kind === 'text') {
+      this.recomputeTextNodeDisplayHash(node);
+      this.textRasterGeneration += 1;
+    } else {
+      this.inkPrefaceRasterGeneration += 1;
+    }
+    this.requestRender();
   }
 
   setTextNodeLatexState(
@@ -4648,6 +4713,16 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y };
   }
 
+  getNodeAttachmentButtonArrowScreenRect(nodeId: string): Rect | null {
+    const node = this.nodes.find((n): n is TextNode => n.kind === 'text' && n.id === nodeId) ?? null;
+    if (!node) return null;
+    if (!this.isHeaderAttachmentsEnabled(node)) return null;
+    const btn = this.attachmentsButtonArrowRect(node);
+    const tl = this.camera.worldToScreen({ x: btn.x, y: btn.y });
+    const br = this.camera.worldToScreen({ x: btn.x + btn.w, y: btn.y + btn.h });
+    return { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y };
+  }
+
   getNodeSendAssistantSpawnRectAtScreen(nodeId: string, screen: Vec2): Rect | null {
     const node =
       this.nodes.find((n): n is TextNode | InkNode => (n.kind === 'text' || n.kind === 'ink') && n.id === nodeId) ??
@@ -4758,6 +4833,73 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
   private isHeaderSendEnabled(node: TextNode | InkNode): boolean {
     if (node.kind === 'ink') return true;
     return Boolean(node.isEditNode) && !this.isLatexTextNode(node);
+  }
+
+  private collectHeaderContextAttachmentKeys(startNodeId: string): string[] {
+    const id = typeof startNodeId === 'string' ? startNodeId.trim() : '';
+    if (!id) return [];
+
+    const byId = new Map<string, WorldNode>();
+    for (const n of this.nodes) byId.set(n.id, n);
+
+    const out: string[] = [];
+    const seenPdfStorageKeys = new Set<string>();
+    let cur: WorldNode | null = byId.get(id) ?? null;
+    while (cur) {
+      const includeNodeAttachments = cur.id !== id;
+      if (cur.kind === 'text' && cur.author === 'user' && Array.isArray(cur.attachments)) {
+        for (let i = 0; i < cur.attachments.length; i += 1) {
+          const att = cur.attachments[i];
+          if (!att) continue;
+          if (att.kind === 'pdf' && typeof (att as any)?.storageKey === 'string') {
+            const key = String((att as any).storageKey).trim();
+            if (key) seenPdfStorageKeys.add(key);
+          }
+          if (includeNodeAttachments) out.push(`${cur.id}:${i}`);
+        }
+      }
+      if (cur.kind === 'ink' && Array.isArray(cur.attachments)) {
+        for (let i = 0; i < cur.attachments.length; i += 1) {
+          const att = cur.attachments[i];
+          if (!att) continue;
+          if (att.kind === 'pdf' && typeof (att as any)?.storageKey === 'string') {
+            const key = String((att as any).storageKey).trim();
+            if (key) seenPdfStorageKeys.add(key);
+          }
+          if (includeNodeAttachments) out.push(`${cur.id}:${i}`);
+        }
+      }
+      if (cur.kind === 'pdf') {
+        const storageKey = typeof (cur as any)?.storageKey === 'string' ? String((cur as any).storageKey).trim() : '';
+        if (storageKey && !seenPdfStorageKeys.has(storageKey)) {
+          seenPdfStorageKeys.add(storageKey);
+          out.push(`pdf:${cur.id}`);
+        }
+      }
+      const parentId = (cur as any)?.parentId as string | null | undefined;
+      if (!parentId) break;
+      cur = byId.get(parentId) ?? null;
+    }
+
+    return out;
+  }
+
+  private isHeaderAttachmentsEnabled(node: TextNode): boolean {
+    if (!this.isHeaderSendEnabled(node)) return false;
+    if (this.collectHeaderContextAttachmentKeys(node.id).length === 0) return false;
+
+    const pad = TEXT_NODE_PAD_PX;
+    const gap = 8;
+    const controlsWidth =
+      28 +
+      gap +
+      74 +
+      gap +
+      68 +
+      gap +
+      108 +
+      (this.isHeaderEditEnabled(node) ? gap + 62 : 0);
+    return controlsWidth <= Math.max(0, node.rect.w - pad * 2);
   }
 
   private isHeaderEditEnabled(node: TextNode): boolean {
@@ -5460,12 +5602,13 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       const arrowW = 18;
       const mainW = Math.max(1, Math.round(totalWidth) - arrowW - splitGap);
       const main = buttonBox(label, { width: mainW, accent });
-      const arrow = buttonBox('▾', { width: 18, accent });
+      const arrow = buttonBox('\u25BE', { width: 18, accent });
       return `<div style="display:flex;align-items:center;gap:${splitGap}px;">${main}${arrow}</div>`;
     };
 
     const controls: string[] = [];
     if (this.isHeaderEditEnabled(node)) controls.push(buttonBox('Edit', { width: 62 }));
+    if (this.isHeaderAttachmentsEnabled(node)) controls.push(splitButton('Attachments', 108));
     if (this.isHeaderSendEnabled(node)) controls.push(splitButton('Send', 68, { accent: 'blue' }));
     controls.push(splitButton('Reply', 74));
     controls.push(buttonBox('⋮', { width: 28 }));
@@ -5482,7 +5625,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       `<div style="position:relative;width:100%;height:100%;box-sizing:border-box;overflow:hidden;` +
       `border-radius:18px;background:${this.nodeBackgroundFillStyle(false)};border:1px solid rgba(255,255,255,0.14);">` +
       `<div style="position:absolute;left:${TEXT_NODE_PAD_PX}px;top:9px;right:${TEXT_NODE_PAD_PX}px;height:22px;display:flex;align-items:center;` +
-      `color:rgba(255,255,255,0.85);font:600 14px ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;` +
+      `color:${this.nodeTextFillStyle(0.85)};font:600 14px ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;` +
       `white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${title}</div>` +
       `<div style="position:absolute;right:${TEXT_NODE_PAD_PX}px;top:9px;display:flex;align-items:center;gap:8px;">` +
       `${controls.join('')}` +
@@ -5508,6 +5651,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     parts.push(`latex_project:${node.latexProjectRoot ?? ''}`);
     parts.push(`latex_main:${node.latexMainFile ?? ''}`);
     parts.push(`latex_active:${node.latexActiveFile ?? ''}`);
+    parts.push(`ctx_att:${this.collectHeaderContextAttachmentKeys(node.id).join(',')}`);
 
     const atts = Array.isArray(node.attachments) ? node.attachments : [];
     if (atts.length > 0) {
@@ -6071,6 +6215,9 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const textFormat = this.textNodeFormat(node);
     const isUser = node.author === 'user';
     const isAssistant = node.author === 'assistant';
+    const secondaryTextColor = this.nodeTextFillStyle(0.88);
+    const mutedTextColor = this.nodeTextFillStyle(0.55);
+    const quietTextColor = this.nodeTextFillStyle(0.45);
     const content = typeof node.content === 'string' ? node.content : String(node.content ?? '');
     const hasContent = Boolean(content.trim());
     const parts: string[] = [];
@@ -6094,7 +6241,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       const previewSource = content.trim() ? content : '% Empty document';
 
       parts.push('<div style="display:flex;flex-direction:column;height:100%;min-height:0;">');
-      parts.push('<div style="margin:0 0 8px;padding:8px 10px;border:1px solid rgba(255,255,255,0.12);border-radius:12px;background:rgba(0,0,0,0.18);font-size:0.86em;color:rgba(255,255,255,0.88);">');
+      parts.push(`<div style="margin:0 0 8px;padding:8px 10px;border:1px solid rgba(255,255,255,0.12);border-radius:12px;background:rgba(0,0,0,0.18);font-size:0.86em;color:${secondaryTextColor};">`);
       parts.push('<div style="font-weight:600;opacity:0.94;margin:0 0 6px;">LaTeX document</div>');
       if (compileError) {
         parts.push(`<div style="color:rgba(255,120,120,0.95);margin:0 0 4px;">Last compile issue: ${escapeHtml(compileError.slice(0, 220))}</div>`);
@@ -6149,7 +6296,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     }
 
     if (node.isGenerating && !hasContent) {
-      parts.push('<div style="margin:8px 0 6px;color:rgba(255,255,255,0.55);font-size:0.93em;">Thinking...</div>');
+      parts.push(`<div style="margin:8px 0 6px;color:${mutedTextColor};font-size:0.93em;">Thinking...</div>`);
     }
 
     if (isAssistant) {
@@ -6166,7 +6313,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           const chevron = node.summaryExpanded ? '▾' : '▸';
           parts.push(
             `<div data-gcv1-summary-toggle="1" style="margin:8px 0 4px;display:inline-flex;align-items:center;gap:6px;` +
-              `color:rgba(255,255,255,0.55);font-size:0.93em;cursor:pointer;user-select:none;">` +
+              `color:${mutedTextColor};font-size:0.93em;cursor:pointer;user-select:none;">` +
               `<span aria-hidden="true" style="width:1em;display:inline-flex;justify-content:center;">${chevron}</span>` +
               `<span>Thinking summary</span>` +
               `</div>`,
@@ -6174,7 +6321,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         }
 
         if (showBody) {
-          parts.push('<div style="margin:0 0 8px;color:rgba(255,255,255,0.55);font-size:0.93em;">');
+          parts.push(`<div style="margin:0 0 8px;color:${mutedTextColor};font-size:0.93em;">`);
           const rows: Array<{ summaryIndex: number; text: string; done: boolean }> = node.isGenerating
             ? streaming.map((c) => ({ summaryIndex: c.summaryIndex ?? 0, text: c.text ?? '', done: Boolean(c.done) }))
             : finalBlocks.map((b) => ({ summaryIndex: b.id ?? 0, text: b.text ?? '', done: true }));
@@ -6202,7 +6349,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
               `<div style="display:flex;align-items:flex-start;gap:6px;margin:2px 0;">` +
                 `<span data-gcv1-summary-chunk-toggle="${idx}" aria-hidden="true" ` +
                 `style="width:1em;flex:0 0 1em;margin-top:0.15em;display:inline-flex;justify-content:center;` +
-                `color:rgba(255,255,255,0.55);cursor:pointer;user-select:none;">${chevron}</span>` +
+                `color:${mutedTextColor};cursor:pointer;user-select:none;">${chevron}</span>` +
                 `<div style="${textStyle}flex:1;min-width:0;">${escapeHtml(display)}</div>` +
                 `</div>`,
             );
@@ -6219,7 +6366,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       if (replyTo || ctx.length > 0) {
         parts.push(
           '<div style="margin:8px 0 10px;padding:8px 10px;border:1px solid rgba(255,255,255,0.12);' +
-            'border-radius:12px;background:rgba(0,0,0,0.18);font-size:0.85em;color:rgba(255,255,255,0.88);">',
+            `border-radius:12px;background:rgba(0,0,0,0.18);font-size:0.85em;color:${secondaryTextColor};">`,
         );
         if (replyTo) {
           parts.push('<div style="margin:0 0 10px;">');
@@ -6240,7 +6387,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
               `<div style="display:flex;align-items:${rowAlign};gap:6px;margin:0 0 6px;">` +
                 `<span data-gcv1-preface-context-toggle="${i}" aria-hidden="true" ` +
                 `style="width:1em;flex:0 0 1em;margin-top:${chevronMarginTop};display:inline-flex;justify-content:center;` +
-                'color:rgba(255,255,255,0.55);cursor:pointer;user-select:none;">' +
+                `color:${mutedTextColor};cursor:pointer;user-select:none;">` +
                 chevron +
                 '</span>' +
                 `<div style="flex:1;min-width:0;display:flex;align-items:center;">` +
@@ -6259,7 +6406,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
             `<div style="display:flex;align-items:${rowAlign};gap:6px;margin:0 0 10px;">` +
               `<span data-gcv1-preface-context-toggle="${i}" aria-hidden="true" ` +
               `style="width:1em;flex:0 0 1em;margin-top:${chevronMarginTop};display:inline-flex;justify-content:center;` +
-              'color:rgba(255,255,255,0.55);cursor:pointer;user-select:none;">' +
+              `color:${mutedTextColor};cursor:pointer;user-select:none;">` +
               chevron +
               '</span>' +
               `<div style="flex:1;min-width:0;">` +
@@ -6327,7 +6474,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     if (hasContent) {
       if (node.isGenerating && !isUser) {
-        parts.push('<div style="font-size:0.79em;color:rgba(255,255,255,0.45);margin:0 0 4px;">Streaming…</div>');
+        parts.push(`<div style="font-size:0.79em;color:${quietTextColor};margin:0 0 4px;">Streaming…</div>`);
       }
       parts.push(renderMarkdownMath(content));
     }
@@ -6341,11 +6488,13 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const ctx = ctxRaw.map((t) => String(t ?? '').trim()).filter(Boolean);
     const atts = Array.isArray(node.attachments) ? node.attachments : [];
     if (!replyTo && ctx.length === 0 && atts.length === 0) return null;
+    const secondaryTextColor = this.nodeTextFillStyle(0.88);
+    const mutedTextColor = this.nodeTextFillStyle(0.55);
 
     const parts: string[] = [];
     parts.push(
       `<div style="padding:8px 10px;border:1px solid rgba(255,255,255,0.12);border-radius:${INK_NODE_INNER_RADIUS_PX}px;` +
-        'background:rgba(0,0,0,0.18);font-size:0.85em;color:rgba(255,255,255,0.88);">',
+        `background:rgba(0,0,0,0.18);font-size:0.85em;color:${secondaryTextColor};">`,
     );
 
     if (replyTo) {
@@ -6368,7 +6517,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
           `<div style="display:flex;align-items:${rowAlign};gap:6px;margin:0 0 6px;">` +
             `<span data-gcv1-preface-context-toggle="${i}" aria-hidden="true" ` +
             `style="width:1em;flex:0 0 1em;margin-top:${chevronMarginTop};display:inline-flex;justify-content:center;` +
-            'color:rgba(255,255,255,0.55);cursor:pointer;user-select:none;">' +
+            `color:${mutedTextColor};cursor:pointer;user-select:none;">` +
             chevron +
             '</span>' +
             `<div style="flex:1;min-width:0;display:flex;align-items:center;">` +
@@ -6387,7 +6536,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         `<div style="display:flex;align-items:${rowAlign};gap:6px;margin:0 0 10px;">` +
           `<span data-gcv1-preface-context-toggle="${i}" aria-hidden="true" ` +
           `style="width:1em;flex:0 0 1em;margin-top:${chevronMarginTop};display:inline-flex;justify-content:center;` +
-          'color:rgba(255,255,255,0.55);cursor:pointer;user-select:none;">' +
+          `color:${mutedTextColor};cursor:pointer;user-select:none;">` +
           chevron +
           '</span>' +
           `<div style="flex:1;min-width:0;">` +
@@ -9041,6 +9190,26 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       }
     }
 
+    if (hit.kind === 'text' && this.isHeaderAttachmentsEnabled(hit)) {
+      const attachmentsMainBtn = this.attachmentsButtonMainRect(hit);
+      const attachmentsArrowBtn = this.attachmentsButtonArrowRect(hit);
+      const inAttachmentsMain =
+        world.x >= attachmentsMainBtn.x &&
+        world.x <= attachmentsMainBtn.x + attachmentsMainBtn.w &&
+        world.y >= attachmentsMainBtn.y &&
+        world.y <= attachmentsMainBtn.y + attachmentsMainBtn.h;
+      const inAttachmentsArrow =
+        world.x >= attachmentsArrowBtn.x &&
+        world.x <= attachmentsArrowBtn.x + attachmentsArrowBtn.w &&
+        world.y >= attachmentsArrowBtn.y &&
+        world.y <= attachmentsArrowBtn.y + attachmentsArrowBtn.h;
+      if (inAttachmentsMain || inAttachmentsArrow) {
+        this.requestRender();
+        if (selectionChanged) this.emitUiState();
+        return 'node';
+      }
+    }
+
     if (hit.kind === 'text' && this.isHeaderEditEnabled(hit)) {
       const editBtn = this.editButtonRect(hit);
       const inEdit =
@@ -10207,6 +10376,30 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         }
       }
 
+      if (hit.kind === 'text' && this.isHeaderAttachmentsEnabled(hit)) {
+        const mainBtn = this.attachmentsButtonMainRect(hit);
+        const arrowBtn = this.attachmentsButtonArrowRect(hit);
+        const inMain =
+          world.x >= mainBtn.x &&
+          world.x <= mainBtn.x + mainBtn.w &&
+          world.y >= mainBtn.y &&
+          world.y <= mainBtn.y + mainBtn.h;
+        const inArrow =
+          world.x >= arrowBtn.x &&
+          world.x <= arrowBtn.x + arrowBtn.w &&
+          world.y >= arrowBtn.y &&
+          world.y <= arrowBtn.y + arrowBtn.h;
+        if (inMain || inArrow) {
+          const changed = this.selectedNodeId !== hit.id;
+          this.selectedNodeId = hit.id;
+          this.bringNodeToFront(hit.id);
+          this.requestRender();
+          if (changed) this.emitUiState();
+          this.onRequestSendEditNodeAttachmentsMenu?.(hit.id);
+          return;
+        }
+      }
+
       if (hit.kind === 'text' && this.isHeaderEditEnabled(hit)) {
         const editBtn = this.editButtonRect(hit);
         const inEdit =
@@ -10574,6 +10767,31 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     return { x: rect.x, y: rect.y, w: Math.max(1, arrow.x - TEXT_NODE_SEND_BUTTON_SPLIT_GAP_PX - rect.x), h: rect.h };
   }
 
+  private attachmentsButtonRect(node: TextNode): Rect {
+    const pad = TEXT_NODE_PAD_PX;
+    const w = 108;
+    const h = 22;
+    const gap = 8;
+
+    const anchor = this.sendButtonRect(node.rect);
+    const x = anchor.x - gap - w;
+    const y = anchor.y;
+    const minX = node.rect.x + pad;
+    return { x: Math.max(minX, x), y, w, h };
+  }
+
+  private attachmentsButtonArrowRect(node: TextNode): Rect {
+    const rect = this.attachmentsButtonRect(node);
+    const w = 18;
+    return { x: rect.x + rect.w - w, y: rect.y, w, h: rect.h };
+  }
+
+  private attachmentsButtonMainRect(node: TextNode): Rect {
+    const rect = this.attachmentsButtonRect(node);
+    const arrow = this.attachmentsButtonArrowRect(node);
+    return { x: rect.x, y: rect.y, w: Math.max(1, arrow.x - TEXT_NODE_SEND_BUTTON_SPLIT_GAP_PX - rect.x), h: rect.h };
+  }
+
   private editButtonRect(node: TextNode): Rect {
     const pad = TEXT_NODE_PAD_PX;
     const w = 62;
@@ -10582,6 +10800,8 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 
     const anchor = this.canCancelNode(node)
       ? this.stopButtonRect(node)
+      : this.isHeaderAttachmentsEnabled(node)
+        ? this.attachmentsButtonRect(node)
       : this.isHeaderSendEnabled(node)
         ? this.sendButtonRect(node.rect)
         : this.replyButtonRect(node.rect);
@@ -10750,7 +10970,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const textX = mainRect.x + (mainRect.w - (m.width || 0)) * 0.5;
     ctx.fillText(label, textX, mainRect.y + mainRect.h * 0.5);
 
-    const arrowLabel = '▾';
+    const arrowLabel = '\u25BE';
     const ma = ctx.measureText(arrowLabel);
     const arrowX = arrowRect.x + (arrowRect.w - (ma.width || 0)) * 0.5;
     ctx.fillText(arrowLabel, arrowX, arrowRect.y + arrowRect.h * 0.5);
@@ -10804,7 +11024,86 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
     const textX = mainRect.x + (mainRect.w - (m.width || 0)) * 0.5;
     ctx.fillText(label, textX, mainRect.y + mainRect.h * 0.5);
 
-    const arrowLabel = '▾';
+    const arrowLabel = '\u25BE';
+    const ma = ctx.measureText(arrowLabel);
+    const arrowX = arrowRect.x + (arrowRect.w - (ma.width || 0)) * 0.5;
+    ctx.fillText(arrowLabel, arrowX, arrowRect.y + arrowRect.h * 0.5);
+
+    ctx.restore();
+  }
+
+  private drawAttachmentsButton(node: TextNode, opts?: { active?: boolean; hovered?: boolean; arrowHovered?: boolean }): void {
+    const ctx = this.ctx;
+    const r = 9;
+    const active = Boolean(opts?.active);
+    const hovered = Boolean(opts?.hovered);
+    const arrowHovered = Boolean(opts?.arrowHovered);
+    const mainHovered = hovered && !arrowHovered;
+    const mainRect = this.attachmentsButtonMainRect(node);
+    const arrowRect = this.attachmentsButtonArrowRect(node);
+
+    ctx.save();
+    if (hovered) {
+      ctx.shadowColor = active ? 'rgba(147,197,253,0.45)' : 'rgba(255,255,255,0.28)';
+      ctx.shadowBlur = 14;
+    }
+
+    ctx.strokeStyle = active
+      ? hovered
+        ? 'rgba(147,197,253,0.75)'
+        : 'rgba(147,197,253,0.46)'
+      : hovered
+        ? 'rgba(255,255,255,0.28)'
+        : 'rgba(255,255,255,0.14)';
+    ctx.lineWidth = 1;
+
+    const drawRoundedRect = (rect: Rect) => {
+      ctx.beginPath();
+      ctx.moveTo(rect.x + r, rect.y);
+      ctx.lineTo(rect.x + rect.w - r, rect.y);
+      ctx.arcTo(rect.x + rect.w, rect.y, rect.x + rect.w, rect.y + r, r);
+      ctx.lineTo(rect.x + rect.w, rect.y + rect.h - r);
+      ctx.arcTo(rect.x + rect.w, rect.y + rect.h, rect.x + rect.w - r, rect.y + rect.h, r);
+      ctx.lineTo(rect.x + r, rect.y + rect.h);
+      ctx.arcTo(rect.x, rect.y + rect.h, rect.x, rect.y + rect.h - r, r);
+      ctx.lineTo(rect.x, rect.y + r);
+      ctx.arcTo(rect.x, rect.y, rect.x + r, rect.y, r);
+      ctx.closePath();
+    };
+
+    ctx.fillStyle = active
+      ? mainHovered
+        ? 'rgba(147,197,253,0.30)'
+        : 'rgba(147,197,253,0.20)'
+      : mainHovered
+        ? 'rgba(255,255,255,0.10)'
+        : 'rgba(0,0,0,0.22)';
+    drawRoundedRect(mainRect);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = active
+      ? arrowHovered
+        ? 'rgba(147,197,253,0.30)'
+        : 'rgba(147,197,253,0.20)'
+      : arrowHovered
+        ? 'rgba(255,255,255,0.10)'
+        : 'rgba(0,0,0,0.22)';
+    drawRoundedRect(arrowRect);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.shadowBlur = 0;
+    ctx.shadowColor = 'transparent';
+    ctx.fillStyle = hovered || active ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.86)';
+    ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
+    ctx.textBaseline = 'middle';
+    const label = 'Attachments';
+    const m = ctx.measureText(label);
+    const textX = mainRect.x + (mainRect.w - (m.width || 0)) * 0.5;
+    ctx.fillText(label, textX, mainRect.y + mainRect.h * 0.5);
+
+    const arrowLabel = '\u25BE';
     const ma = ctx.measureText(arrowLabel);
     const arrowX = arrowRect.x + (arrowRect.w - (ma.width || 0)) * 0.5;
     ctx.fillText(arrowLabel, arrowX, arrowRect.y + arrowRect.h * 0.5);
@@ -11088,7 +11387,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       ctx.fill();
       ctx.stroke();
 
-      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      ctx.fillStyle = this.nodeTextFillStyle(0.85);
       ctx.font = '600 14px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
       const headerBtn = this.menuButtonRect(node.rect);
       ctx.textBaseline = 'middle';
@@ -11101,10 +11400,19 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
       const hoverStop = headerHover?.nodeId === node.id && headerHover.kind === 'stop';
       const hoverSend = headerHover?.nodeId === node.id && headerHover.kind === 'send';
       const hoverSendMenu = headerHover?.nodeId === node.id && headerHover.kind === 'send_menu';
+      const hoverAttachments = headerHover?.nodeId === node.id && headerHover.kind === 'attachments';
+      const hoverAttachmentsMenu = headerHover?.nodeId === node.id && headerHover.kind === 'attachments_menu';
       const hoverEdit = headerHover?.nodeId === node.id && headerHover.kind === 'edit';
 
       if (node.kind === 'text' && this.canCancelNode(node)) this.drawStopButton(node, { hovered: hoverStop });
       if (node.kind === 'text' && this.isHeaderEditEnabled(node)) this.drawEditButton(node, { active: isSelected, hovered: hoverEdit });
+      if (node.kind === 'text' && this.isHeaderAttachmentsEnabled(node)) {
+        this.drawAttachmentsButton(node, {
+          active: isSelected,
+          hovered: hoverAttachments || hoverAttachmentsMenu,
+          arrowHovered: hoverAttachmentsMenu,
+        });
+      }
       this.drawMenuButton(node.rect, { active: isSelected, hovered: hoverMenu });
       this.drawReplyButton(node.rect, {
         active: isSelected,
@@ -11119,7 +11427,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
         });
       }
 
-      ctx.fillStyle = 'rgba(255,255,255,0.55)';
+      ctx.fillStyle = this.nodeTextFillStyle(0.55);
       ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
 
       // Header separator.
@@ -11151,29 +11459,29 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
 	            const line = node.content.split('\n').find((s) => s.trim()) ?? '';
 	            const preview = line.replace(/^#+\s*/, '').slice(0, 120);
 	            ctx.fillText(preview ? preview : '…', contentRect.x, contentRect.y + 4);
-	            ctx.fillStyle = 'rgba(255,255,255,0.45)';
+	            ctx.fillStyle = this.nodeTextFillStyle(0.45);
 	            ctx.fillText('Rendering…', contentRect.x, contentRect.y + 24);
 	          }
 	        }
       } else if (node.kind === 'pdf') {
         const contentRect = this.textContentRect(node.rect);
         if (node.status === 'empty') {
-          ctx.fillStyle = 'rgba(255,255,255,0.55)';
+          ctx.fillStyle = this.nodeTextFillStyle(0.55);
           ctx.fillText('Import a PDF to begin.', contentRect.x, contentRect.y + 4);
         } else if (node.status === 'loading') {
-          ctx.fillStyle = 'rgba(255,255,255,0.55)';
+          ctx.fillStyle = this.nodeTextFillStyle(0.55);
           ctx.fillText('Loading PDF…', contentRect.x, contentRect.y + 4);
         } else if (node.status === 'error') {
           ctx.fillStyle = 'rgba(255,80,80,0.85)';
           ctx.fillText('Failed to load PDF', contentRect.x, contentRect.y + 4);
           if (node.error) {
-            ctx.fillStyle = 'rgba(255,255,255,0.55)';
+            ctx.fillStyle = this.nodeTextFillStyle(0.55);
             ctx.fillText(String(node.error).slice(0, 140), contentRect.x, contentRect.y + 24);
           }
         } else if (node.status === 'ready') {
           const state = this.pdfStateByNodeId.get(node.id);
           if (!state) {
-            ctx.fillStyle = 'rgba(255,255,255,0.55)';
+            ctx.fillStyle = this.nodeTextFillStyle(0.55);
             ctx.fillText('PDF missing state', contentRect.x, contentRect.y + 4);
           } else {
             const pageW = Math.max(1, contentRect.w);
@@ -11309,7 +11617,7 @@ If you want, I can also write the hom-set adjunction statement explicitly here:
                 ctx.lineWidth = 1 / z;
                 ctx.fillRect(prefaceRect.x, prefaceRect.y, prefaceRect.w, prefaceRect.h);
                 ctx.strokeRect(prefaceRect.x, prefaceRect.y, prefaceRect.w, prefaceRect.h);
-                ctx.fillStyle = 'rgba(255,255,255,0.55)';
+                ctx.fillStyle = this.nodeTextFillStyle(0.55);
                 ctx.font = `${12 / z}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
                 ctx.textBaseline = 'top';
                 ctx.fillText('Rendering context…', prefaceRect.x + 12, prefaceRect.y + 10);
