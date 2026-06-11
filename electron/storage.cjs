@@ -1353,10 +1353,12 @@ async function googleDriveReadHead(accessToken, folderId) {
   const revision = asTrimmedString(parsed.revision);
   if (!revision) return null;
   const updatedAtRaw = Number(parsed.updatedAt);
+  const snapshotFile = asTrimmedString(parsed.snapshotFile) || null;
   return {
     fileId: headFileId,
     revision,
     updatedAt: Number.isFinite(updatedAtRaw) ? updatedAtRaw : 0,
+    snapshotFile,
   };
 }
 
@@ -1770,16 +1772,36 @@ async function pullStorageFromGoogleDrive(app, opts = {}) {
   const revision = asTrimmedString(remoteHead?.revision);
   if (!revision) throw new Error('Google Drive has no pushed snapshot yet.');
 
-  const snapshotFileName = googleSnapshotArtifactFileName(revision);
-  const snapshotFile = await waitForGoogleDriveFileByName(accessToken, cfg.folderId, snapshotFileName, {
-    timeoutMs: GOOGLE_DRIVE_SNAPSHOT_APPEAR_TIMEOUT_MS,
-    pollMs: GOOGLE_DRIVE_SNAPSHOT_APPEAR_POLL_MS,
-  });
+  const canonicalSnapshotFileName = googleSnapshotArtifactFileName(revision);
+  const snapshotFileNameRaw = asTrimmedString(remoteHead?.snapshotFile) || canonicalSnapshotFileName;
+  const snapshotFileName = path.basename(snapshotFileNameRaw);
+  if (!snapshotFileName || snapshotFileName !== snapshotFileNameRaw) {
+    throw new Error('Google Drive snapshot metadata is invalid.');
+  }
+
+  const candidateNames = Array.from(new Set([snapshotFileName, canonicalSnapshotFileName]));
+  let snapshotFile = null;
+  let resolvedSnapshotFileName = snapshotFileName;
+  for (const candidateName of candidateNames) {
+    const found = await googleDriveFindFileByName(accessToken, cfg.folderId, candidateName);
+    if (!asTrimmedString(found?.id)) continue;
+    snapshotFile = found;
+    resolvedSnapshotFileName = candidateName;
+    break;
+  }
+  if (!snapshotFile) {
+    snapshotFile = await waitForGoogleDriveFileByName(accessToken, cfg.folderId, snapshotFileName, {
+      timeoutMs: GOOGLE_DRIVE_SNAPSHOT_APPEAR_TIMEOUT_MS,
+      pollMs: GOOGLE_DRIVE_SNAPSHOT_APPEAR_POLL_MS,
+    });
+    resolvedSnapshotFileName = snapshotFileName;
+  }
   const snapshotFileId = asTrimmedString(snapshotFile?.id);
   if (!snapshotFileId) {
     const available = await listGoogleDriveSnapshotArtifactNames(accessToken, cfg.folderId, 8).catch(() => []);
     const suffix = available.length > 0 ? ` Available: ${available.join(', ')}` : ' Available: none';
-    throw new Error(`Google Drive snapshot artifact is missing for revision ${revision} (expected ${snapshotFileName}).${suffix}`);
+    const expected = candidateNames.join(' or ');
+    throw new Error(`Google Drive snapshot artifact is missing for revision ${revision} (expected ${expected}).${suffix}`);
   }
 
   let fileCount = 0;
@@ -1821,7 +1843,9 @@ async function pullStorageFromGoogleDrive(app, opts = {}) {
     });
     const extracted = await extractGoogleDriveSnapshotArtifactToDir(artifactBytes, localTmpDir);
     if (extracted.revision && extracted.revision !== revision) {
-      throw new Error(`Snapshot artifact revision mismatch (expected ${revision}, got ${extracted.revision}).`);
+      throw new Error(
+        `Snapshot artifact ${resolvedSnapshotFileName} revision mismatch (expected ${revision}, got ${extracted.revision}).`,
+      );
     }
     fileCount = Math.max(0, Number(extracted.fileCount) || 0);
   } catch (err) {

@@ -2850,6 +2850,7 @@ export default function App() {
   const persistForcePendingRef = useRef(false);
   const persistFailureNotifiedRef = useRef(false);
   const persistNowRef = useRef<((opts?: { force?: boolean }) => void) | null>(null);
+  const storageReplacementInProgressRef = useRef(false);
   const hydratingPdfChatsRef = useRef<Set<string>>(new Set());
   const attachmentsGcDirtyRef = useRef(false);
   const attachmentsGcRunningRef = useRef(false);
@@ -3545,6 +3546,7 @@ export default function App() {
 
   const schedulePersistSoon = useMemo(() => {
     const persist = (opts?: { force?: boolean }) => {
+      if (storageReplacementInProgressRef.current) return;
       if (!bootedRef.current) return;
       if (!persistPendingRef.current) return;
       if (opts?.force) persistForcePendingRef.current = true;
@@ -3720,6 +3722,7 @@ export default function App() {
 
     persistNowRef.current = persist;
     return () => {
+      if (storageReplacementInProgressRef.current) return;
       if (!bootedRef.current) return;
       persistPendingRef.current = true;
       if (persistTimerRef.current != null) return;
@@ -6437,6 +6440,7 @@ export default function App() {
 
   useEffect(() => {
     const requestImmediatePersist = () => {
+      if (storageReplacementInProgressRef.current) return;
       const engine = engineRef.current;
       if (engine) syncActiveEditingDraftToEngine(engine);
       persistPendingRef.current = true;
@@ -7952,6 +7956,7 @@ export default function App() {
   };
 
   async function flushPendingPersistenceForCloudSync(): Promise<void> {
+    if (storageReplacementInProgressRef.current) return;
     const engine = engineRef.current;
     if (engine) syncActiveEditingDraftToEngine(engine);
     persistPendingRef.current = true;
@@ -7982,6 +7987,22 @@ export default function App() {
     }
     throw new Error('Timed out while saving local changes before cloud sync.');
   }
+
+  const beginStorageReplacement = () => {
+    storageReplacementInProgressRef.current = true;
+    persistPendingRef.current = false;
+    persistForcePendingRef.current = false;
+    if (persistTimerRef.current != null) {
+      window.clearTimeout(persistTimerRef.current);
+      persistTimerRef.current = null;
+    }
+  };
+
+  const cancelStorageReplacement = () => {
+    if (!storageReplacementInProgressRef.current) return;
+    storageReplacementInProgressRef.current = false;
+    schedulePersistSoon();
+  };
 
   useEffect(() => {
     const api = (window as any)?.gcElectron;
@@ -8036,8 +8057,10 @@ export default function App() {
     void (async () => {
       try {
         await flushPendingPersistenceForCloudSync();
+        beginStorageReplacement();
         const res = await api.storageCloudSyncPull();
         if (!res?.ok) {
+          cancelStorageReplacement();
           showToast(`Cloud pull failed: ${String(res?.error ?? 'unknown error')}`, 'error', 5200);
           refreshLocalSyncBackupInfo();
           return;
@@ -8054,6 +8077,7 @@ export default function App() {
           window.location.reload();
         }, 260);
       } catch (err: any) {
+        cancelStorageReplacement();
         showToast(`Cloud pull failed: ${err?.message || String(err)}`, 'error', 5200);
         refreshLocalSyncBackupInfo();
       }
@@ -8222,8 +8246,10 @@ export default function App() {
           cancelJob(assistantNodeId);
         }
         await flushPendingPersistenceForCloudSync();
+        beginStorageReplacement();
         const res = await api.storageGoogleDriveSyncPull();
         if (!res?.ok) {
+          cancelStorageReplacement();
           showToast(`Google Drive pull failed: ${String(res?.error ?? 'unknown error')}`, 'error', 5200);
           refreshLocalSyncBackupInfo();
           setGoogleDriveSyncRun(null);
@@ -8241,6 +8267,7 @@ export default function App() {
           window.location.reload();
         }, 260);
       } catch (err: any) {
+        cancelStorageReplacement();
         showToast(`Google Drive pull failed: ${err?.message || String(err)}`, 'error', 5200);
         refreshLocalSyncBackupInfo();
         setGoogleDriveSyncRun(null);
