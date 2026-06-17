@@ -6408,7 +6408,12 @@ export default function App() {
       if (!node) return false;
       if (node.kind === 'ink') return true;
       if (node.kind !== 'text') return false;
-      return node.author === 'user' ? (node as any).apiRequest !== undefined : (node as any).apiResponse !== undefined;
+      if (node.author === 'user') {
+        const requestKey = typeof (node as any).apiRequestKey === 'string' ? (node as any).apiRequestKey.trim() : '';
+        return (node as any).apiRequest !== undefined || Boolean(requestKey);
+      }
+      const responseKey = typeof (node as any).apiResponseKey === 'string' ? (node as any).apiResponseKey.trim() : '';
+      return (node as any).apiResponse !== undefined || Boolean(responseKey);
     } catch {
       return false;
     }
